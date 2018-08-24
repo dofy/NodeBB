@@ -1,5 +1,5 @@
-"use strict";
-/*global utils*/
+'use strict';
+
 
 $('document').ready(function () {
 	setupInputs();
@@ -10,13 +10,17 @@ $('document').ready(function () {
 	if ($('#database-error').length) {
 		$('[name="database"]').parents('.input-row').addClass('error');
 		$('html, body').animate({
-			scrollTop: ($('#database-error').offset().top + 100) + 'px'
+			scrollTop: ($('#database-error').offset().top + 100) + 'px',
 		}, 400);
 	}
 
 	$('#launch').on('click', launchForum);
 
-
+	if ($('#installing').length) {
+		setTimeout(function () {
+			window.location.reload(true);
+		}, 5000);
+	}
 
 	function setupInputs() {
 		$('form').on('focus', '.form-control', function () {
@@ -43,18 +47,17 @@ $('document').ready(function () {
 
 		if ($('form .admin .error').length) {
 			ev.preventDefault();
-			$('html, body').animate({'scrollTop': '0px'}, 400);
+			$('html, body').animate({ scrollTop: '0px' }, 400);
 
 			return false;
-		} else {
-			$('#submit .fa-spin').removeClass('hide');
 		}
+		$('#submit .working').removeClass('hide');
 	}
 
 	function activate(type, el) {
-		var field = el.val(),
-			parent = el.parents('.input-row'),
-			help = parent.children('.help-text');
+		var field = el.val();
+		var parent = el.parents('.input-row');
+		var help = parent.children('.help-text');
 
 		function validateUsername(field) {
 			if (!utils.isUserNameValid(field) || !utils.slugify(field)) {
@@ -77,7 +80,7 @@ $('document').ready(function () {
 			}
 		}
 
-		function validateConfirmPassword(field) {
+		function validateConfirmPassword() {
 			if ($('[name="admin:password"]').val() !== $('[name="admin:passwordConfirm"]').val()) {
 				parent.addClass('error');
 				help.html('Passwords do not match.');
@@ -100,26 +103,31 @@ $('document').ready(function () {
 		}
 
 		switch (type) {
-			case 'admin:username':
-				return validateUsername(field);
-			case 'admin:password':
-				return validatePassword(field);
-			case 'admin:passwordConfirm':
-				return validateConfirmPassword(field);
-			case 'admin:email':
-				return validateEmail(field);
-			case 'database':
-				return switchDatabase(field);
+		case 'admin:username':
+			return validateUsername(field);
+		case 'admin:password':
+			return validatePassword(field);
+		case 'admin:passwordConfirm':
+			return validateConfirmPassword(field);
+		case 'admin:email':
+			return validateEmail(field);
+		case 'database':
+			return switchDatabase(field);
 		}
 	}
 
 	function launchForum() {
-		$('#launch .fa-spin').removeClass('hide');
-
+		$('#launch .working').removeClass('hide');
 		$.post('/launch', function () {
+			var successCount = 0;
+			var url = $('#launch').attr('data-url');
 			setInterval(function () {
-				$.get('/admin').done(function (data) {
-					window.location = 'admin';
+				$.get(url + '/admin').done(function () {
+					if (successCount >= 5) {
+						window.location = 'admin';
+					} else {
+						successCount += 1;
+					}
 				});
 			}, 750);
 		});

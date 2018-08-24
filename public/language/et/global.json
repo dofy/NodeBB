@@ -53,6 +53,7 @@
     "topics": "Teemat",
     "posts": "Postitust",
     "best": "Parim",
+    "votes": "Votes",
     "upvoters": "Poolt hääletajad",
     "upvoted": "Kiideti heaks",
     "downvoters": "Vastu hääletajad",
@@ -96,11 +97,16 @@
     "enter_page_number": "Sisesta lehekülje number",
     "upload_file": "Lae fail üles",
     "upload": "Lae üles",
+    "uploads": "Uploads",
     "allowed-file-types": "Lubatud faili formaadid on %1",
     "unsaved-changes": "Sul on salvestamata muudatusi. Oled kindel, et soovid lahkuda?",
     "reconnecting-message": "Looks like your connection to %1 was lost, please wait while we try to reconnect.",
     "play": "Play",
     "cookies.message": "This website uses cookies to ensure you get the best experience on our website.",
     "cookies.accept": "Got it!",
-    "cookies.learn_more": "Learn More"
+    "cookies.learn_more": "Learn More",
+    "edited": "Edited",
+    "disabled": "Disabled",
+    "select": "Select",
+    "user-search-prompt": "Type something here to find users..."
 }

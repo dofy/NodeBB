@@ -1,7 +1,6 @@
-"use strict";
+'use strict';
 
 module.exports = function (redisClient, module) {
-
 	var helpers = module.helpers.redis;
 
 	module.setObject = function (key, data, callback) {
@@ -9,11 +8,17 @@ module.exports = function (redisClient, module) {
 		if (!key || !data) {
 			return callback();
 		}
+
+		if (data.hasOwnProperty('')) {
+			delete data[''];
+		}
+
 		Object.keys(data).forEach(function (key) {
-			if (data[key] === undefined) {
+			if (data[key] === undefined || data[key] === null) {
 				delete data[key];
 			}
 		});
+
 		redisClient.hmset(key, data, function (err) {
 			callback(err);
 		});
@@ -21,6 +26,9 @@ module.exports = function (redisClient, module) {
 
 	module.setObjectField = function (key, field, value, callback) {
 		callback = callback || function () {};
+		if (!field) {
+			return callback();
+		}
 		redisClient.hset(key, field, value, function (err) {
 			callback(err);
 		});
@@ -50,16 +58,16 @@ module.exports = function (redisClient, module) {
 		if (!Array.isArray(fields) || !fields.length) {
 			return callback(null, keys.map(function () { return {}; }));
 		}
-		var	multi = redisClient.multi();
+		var multi = redisClient.multi();
 
-		for(var x = 0; x < keys.length; ++x) {
+		for (var x = 0; x < keys.length; x += 1) {
 			multi.hmget.apply(multi, [keys[x]].concat(fields));
 		}
 
 		function makeObject(array) {
 			var obj = {};
 
-			for (var i = 0, ii = fields.length; i < ii; ++i) {
+			for (var i = 0, ii = fields.length; i < ii; i += 1) {
 				obj[fields[i]] = array[i];
 			}
 			return obj;
@@ -97,26 +105,41 @@ module.exports = function (redisClient, module) {
 
 	module.deleteObjectField = function (key, field, callback) {
 		callback = callback || function () {};
-		redisClient.hdel(key, field, function (err, res) {
+		if (key === undefined || key === null || field === undefined || field === null) {
+			return setImmediate(callback);
+		}
+		redisClient.hdel(key, field, function (err) {
 			callback(err);
 		});
 	};
 
 	module.deleteObjectFields = function (key, fields, callback) {
-		helpers.multiKeyValues(redisClient, 'hdel', key, fields, function (err, results) {
+		helpers.multiKeyValues(redisClient, 'hdel', key, fields, function (err) {
 			callback(err);
 		});
 	};
 
 	module.incrObjectField = function (key, field, callback) {
-		redisClient.hincrby(key, field, 1, callback);
+		module.incrObjectFieldBy(key, field, 1, callback);
 	};
 
 	module.decrObjectField = function (key, field, callback) {
-		redisClient.hincrby(key, field, -1, callback);
+		module.incrObjectFieldBy(key, field, -1, callback);
 	};
 
 	module.incrObjectFieldBy = function (key, field, value, callback) {
-		redisClient.hincrby(key, field, value, callback);
+		value = parseInt(value, 10);
+		if (!key || isNaN(value)) {
+			return callback(null, null);
+		}
+		if (Array.isArray(key)) {
+			var multi = redisClient.multi();
+			key.forEach(function (key) {
+				multi.hincrby(key, field, value);
+			});
+			multi.exec(callback);
+		} else {
+			redisClient.hincrby(key, field, value, callback);
+		}
 	};
 };

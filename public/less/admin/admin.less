@@ -1,5 +1,6 @@
-@import "./bootstrap/bootstrap";
-@import "./bootswatch";
+@import "bootstrap/less/bootstrap";
+@import "./paper/variables";
+@import "./paper/bootswatch";
 @import "./mixins";
 @import "./vars";
 
@@ -9,25 +10,28 @@
 @import "./general/dashboard";
 @import "./general/navigation";
 @import "./manage/categories";
+@import "./manage/privileges";
 @import "./manage/tags";
 @import "./manage/groups";
 @import "./manage/registration";
 @import "./manage/users";
+@import "./manage/admins-mods";
+@import "./manage/post-queue";
 @import "./appearance/customise";
 @import "./appearance/themes";
 @import "./extend/plugins";
 @import "./extend/rewards";
+@import "./extend/widgets";
 @import "./advanced/database";
 @import "./advanced/logs";
 @import "./advanced/errors";
 @import "./settings";
 
 @import "../flags";
-@import "../blacklist";
+@import "./manage/ip-blacklist";
 
 @import "./modules/alerts";
 @import "./modules/selectable";
-@import "./modules/snackbar";
 @import "./modules/nprogress";
 @import "./modules/search";
 
@@ -146,7 +150,7 @@ body {
 				color: @gray-dark;
 
 				&:hover, &.selected {
-					background: black;
+					background: @brand-primary;
 					color: white;
 				}
 			}
@@ -231,6 +235,11 @@ body {
 	}
 }
 
+.category-dropdown-menu {
+  max-height: 600px;
+  overflow-y: auto;
+}
+
 .table-reordering {
 	tr:hover {
 		cursor: move;
@@ -272,4 +281,8 @@ body {
 	border: 1px dashed @brand-success;
 	background: lighten(@brand-success, 10%);
 	opacity: 0.5;
+}
+
+form small {
+	color: @gray-light;
 }

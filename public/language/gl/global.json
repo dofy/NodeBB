@@ -53,6 +53,7 @@
     "topics": "Temas",
     "posts": "Publicacións",
     "best": "Mellor",
+    "votes": "Votes",
     "upvoters": "Positivos",
     "upvoted": "Votado positivamente",
     "downvoters": "Negativos",
@@ -96,11 +97,16 @@
     "enter_page_number": "Escribe o número da páxina",
     "upload_file": "Subir arquivo ",
     "upload": "Subir",
+    "uploads": "Uploads",
     "allowed-file-types": "Os tipos de arquivos permitidos son: %1",
     "unsaved-changes": "Non gardaches tódolos cambios. Queres continuar e saír da páxina?",
     "reconnecting-message": "Conexión perdida. Reconectando a %1.",
     "play": "Reproducir",
     "cookies.message": "Esta web emprega cookies para asegurar que recibes unha mellor experiencia de navegación.",
     "cookies.accept": "De Acordo!",
-    "cookies.learn_more": "Saber máis"
+    "cookies.learn_more": "Saber máis",
+    "edited": "Edited",
+    "disabled": "Disabled",
+    "select": "Select",
+    "user-search-prompt": "Type something here to find users..."
 }

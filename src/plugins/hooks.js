@@ -1,28 +1,30 @@
 'use strict';
 
-var winston = require('winston'),
-	async = require('async');
+var winston = require('winston');
+var async = require('async');
 
 module.exports = function (Plugins) {
 	Plugins.deprecatedHooks = {
-		'filter:user.custom_fields': null,	// remove in v1.1.0
-		'filter:post.save': 'filter:post.create',
-		'filter:user.profileLinks': 'filter:user.profileMenu'
+
 	};
-	/*
-		`data` is an object consisting of (* is required):
-			`data.hook`*, the name of the NodeBB hook
-			`data.method`*, the method called in that plugin
-			`data.priority`, the relative priority of the method when it is eventually called (default: 10)
-	*/
-	Plugins.registerHook = function (id, data, callback) {
-		callback = callback || function () {};
-		function register() {
+
+	Plugins.internals = {
+		_register: function (data, callback) {
 			Plugins.loadedHooks[data.hook] = Plugins.loadedHooks[data.hook] || [];
 			Plugins.loadedHooks[data.hook].push(data);
 
 			callback();
-		}
+		},
+	};
+
+	/*
+		`data` is an object consisting of (* is required):
+			`data.hook`*, the name of the NodeBB hook
+			`data.method`*, the method called in that plugin (can be an array of functions)
+			`data.priority`, the relative priority of the method when it is eventually called (default: 10)
+	*/
+	Plugins.registerHook = function (id, data, callback) {
+		callback = callback || function () {};
 
 		if (!data.hook) {
 			winston.warn('[plugins/' + id + '] registerHook called with invalid data.hook', data);
@@ -36,15 +38,7 @@ module.exports = function (Plugins) {
 				(Plugins.deprecatedHooks[data.hook] ?
 					'please use `' + Plugins.deprecatedHooks[data.hook] + '` instead.' :
 					'there is no alternative.'
-				)
-			);
-		} else {
-			// handle hook's startsWith, i.e. action:homepage.get
-			var parts = data.hook.split(':');
-			if (parts.length > 2) {
-				parts.pop();
-			}
-			var hook = parts.join(':');
+				));
 		}
 
 		if (data.hook && data.method) {
@@ -53,22 +47,27 @@ module.exports = function (Plugins) {
 				data.priority = 10;
 			}
 
-			if (typeof data.method === 'string' && data.method.length > 0) {
+			if (Array.isArray(data.method) && data.method.every(method => typeof method === 'function' || typeof method === 'string')) {
+				// Go go gadget recursion!
+				async.eachSeries(data.method, function (method, next) {
+					const singularData = Object.assign({}, data, { method: method });
+					Plugins.registerHook(id, singularData, next);
+				}, callback);
+			} else if (typeof data.method === 'string' && data.method.length > 0) {
 				method = data.method.split('.').reduce(function (memo, prop) {
 					if (memo && memo[prop]) {
 						return memo[prop];
-					} else {
-						// Couldn't find method by path, aborting
-						return null;
 					}
+					// Couldn't find method by path, aborting
+					return null;
 				}, Plugins.libraries[data.id]);
 
 				// Write the actual method reference to the hookObj
 				data.method = method;
 
-				register();
+				Plugins.internals._register(data, callback);
 			} else if (typeof data.method === 'function') {
-				register();
+				Plugins.internals._register(data, callback);
 			} else {
 				winston.warn('[plugins/' + id + '] Hook method mismatch: ' + data.hook + ' => ' + data.method);
 				return callback();
@@ -76,25 +75,33 @@ module.exports = function (Plugins) {
 		}
 	};
 
+	Plugins.unregisterHook = function (id, hook, method) {
+		var hooks = Plugins.loadedHooks[hook] || [];
+		Plugins.loadedHooks[hook] = hooks.filter(function (hookData) {
+			return hookData && hookData.id !== id && hookData.method !== method;
+		});
+	};
+
 	Plugins.fireHook = function (hook, params, callback) {
 		callback = typeof callback === 'function' ? callback : function () {};
 
 		var hookList = Plugins.loadedHooks[hook];
 		var hookType = hook.split(':')[0];
-
+		winston.verbose('[plugins/fireHook]', hook);
 		switch (hookType) {
-			case 'filter':
-				fireFilterHook(hook, hookList, params, callback);
-				break;
-			case 'action':
-				fireActionHook(hook, hookList, params, callback);
-				break;
-			case 'static':
-				fireStaticHook(hook, hookList, params, callback);
-				break;
-			default:
-				winston.warn('[plugins] Unknown hookType: ' + hookType + ', hook : ' + hook);
-				break;
+		case 'filter':
+			fireFilterHook(hook, hookList, params, callback);
+			break;
+		case 'action':
+			fireActionHook(hook, hookList, params, callback);
+			break;
+		case 'static':
+			fireStaticHook(hook, hookList, params, callback);
+			break;
+		default:
+			winston.warn('[plugins] Unknown hookType: ' + hookType + ', hook : ' + hook);
+			callback();
+			break;
 		}
 	};
 
@@ -112,13 +119,7 @@ module.exports = function (Plugins) {
 			}
 
 			hookObj.method(params, next);
-		}, function (err, values) {
-			if (err) {
-				winston.error('[plugins] ' + hook + ',  ' + err.message);
-			}
-
-			callback(err, values);
-		});
+		}, callback);
 	}
 
 	function fireActionHook(hook, hookList, params, callback) {
@@ -126,7 +127,6 @@ module.exports = function (Plugins) {
 			return callback();
 		}
 		async.each(hookList, function (hookObj, next) {
-
 			if (typeof hookObj.method !== 'function') {
 				if (global.env === 'development') {
 					winston.warn('[plugins] Expected method for hook \'' + hook + '\' in plugin \'' + hookObj.id + '\' not found, skipping.');
@@ -160,7 +160,7 @@ module.exports = function (Plugins) {
 							next.apply(null, arguments);
 						}
 					});
-				} catch(err) {
+				} catch (err) {
 					winston.error('[plugins] Error executing \'' + hook + '\' in plugin \'' + hookObj.id + '\'');
 					winston.error(err);
 					clearTimeout(timeoutId);

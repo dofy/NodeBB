@@ -1,17 +1,19 @@
 'use strict';
 
-var rewardsController = {};
+var async = require('async');
+
+var rewardsController = module.exports;
 
 rewardsController.get = function (req, res, next) {
-	require('../../rewards/admin').get(function (err, data) {
-		if (err) {
-			return next(err);
-		}
-
-		res.render('admin/extend/rewards', data);
-	});
+	async.waterfall([
+		function (next) {
+			require('../../rewards/admin').get(next);
+		},
+		function (data) {
+			res.render('admin/extend/rewards', data);
+		},
+	], next);
 };
-
 
 
 module.exports = rewardsController;

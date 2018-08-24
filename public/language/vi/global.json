@@ -53,6 +53,7 @@
     "topics": "Số Chủ đề",
     "posts": "Số bài viết",
     "best": "Hay nhất",
+    "votes": "Votes",
     "upvoters": "Tán thành",
     "upvoted": "Tán thành",
     "downvoters": "Phản đối",
@@ -96,11 +97,16 @@
     "enter_page_number": "Nhập vào số trang",
     "upload_file": "Tải file lên",
     "upload": "Tải lên",
+    "uploads": "Uploads",
     "allowed-file-types": "Các định dạng file được cho phép là %1",
     "unsaved-changes": "Có một vài thay đổi chưa được lưu. Bạn muốn rời đi ngay?",
     "reconnecting-message": "Có vẻ như bạn đã mất kết nối tới %1, vui lòng đợi một lúc để chúng tôi thử kết nối lại.",
     "play": "Chơi",
     "cookies.message": "Trang web này sử dụng cookie để đảm bảo trải nghiệm tốt nhất cho người dùng",
     "cookies.accept": "Đã rõ!",
-    "cookies.learn_more": "Xem thêm"
+    "cookies.learn_more": "Xem thêm",
+    "edited": "Đã cập nhật",
+    "disabled": "Bị khóa",
+    "select": "Chọn",
+    "user-search-prompt": "Nhập để tìm kiếm thành viên"
 }

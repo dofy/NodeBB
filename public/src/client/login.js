@@ -1,13 +1,13 @@
-"use strict";
-/* global define, app, config, RELATIVE_PATH */
+'use strict';
 
-define('forum/login', ['translator'], function (translator) {
+
+define('forum/login', [], function () {
 	var	Login = {};
 
 	Login.init = function () {
-		var errorEl = $('#login-error-notify'),
-			submitEl = $('#login'),
-			formEl = $('#login-form');
+		var errorEl = $('#login-error-notify');
+		var submitEl = $('#login');
+		var formEl = $('#login-form');
 
 		submitEl.on('click', function (e) {
 			e.preventDefault();
@@ -33,12 +33,18 @@ define('forum/login', ['translator'], function (translator) {
 
 				formEl.ajaxSubmit({
 					headers: {
-						'x-csrf-token': config.csrf_token
+						'x-csrf-token': config.csrf_token,
 					},
-					success: function (data, status) {
-						window.location.href = data + '?loggedin';
+					success: function (returnTo) {
+						var pathname = utils.urlToLocation(returnTo).pathname;
+
+						var params = utils.params({ url: returnTo });
+						params.loggedin = true;
+						var qs = decodeURIComponent($.param(params));
+
+						window.location.href = pathname + '?' + qs;
 					},
-					error: function (data, status) {
+					error: function (data) {
 						if (data.status === 403 && data.responseText === 'Forbidden') {
 							window.location.href = config.relative_path + '/login?error=csrf-invalid';
 						} else {
@@ -48,11 +54,11 @@ define('forum/login', ['translator'], function (translator) {
 							app.flags._sessionRefresh = false;
 
 							// Select the entire password if that field has focus
-							if ($('#password:focus').size()) {
+							if ($('#password:focus').length) {
 								$('#password').select();
 							}
 						}
-					}
+					},
 				});
 			}
 		});
@@ -68,6 +74,7 @@ define('forum/login', ['translator'], function (translator) {
 		} else {
 			$('#content #username').focus();
 		}
+		$('#content #noscript').val('false');
 	};
 
 	return Login;

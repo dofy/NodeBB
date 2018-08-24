@@ -1,16 +1,18 @@
-"use strict";
+'use strict';
 
 var adminController = {
 	dashboard: require('./admin/dashboard'),
 	categories: require('./admin/categories'),
+	privileges: require('./admin/privileges'),
+	adminsMods: require('./admin/admins-mods'),
 	tags: require('./admin/tags'),
-	flags: require('./admin/flags'),
+	postQueue: require('./admin/postqueue'),
 	blacklist: require('./admin/blacklist'),
 	groups: require('./admin/groups'),
 	appearance: require('./admin/appearance'),
 	extend: {
 		widgets: require('./admin/widgets'),
-		rewards: require('./admin/rewards')
+		rewards: require('./admin/rewards'),
 	},
 	events: require('./admin/events'),
 	logs: require('./admin/logs'),
@@ -28,7 +30,7 @@ var adminController = {
 	themes: require('./admin/themes'),
 	users: require('./admin/users'),
 	uploads: require('./admin/uploads'),
-	info: require('./admin/info')
+	info: require('./admin/info'),
 };
 
 

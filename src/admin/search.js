@@ -4,27 +4,29 @@ var fs = require('fs');
 var path = require('path');
 var async = require('async');
 var sanitizeHTML = require('sanitize-html');
+var nconf = require('nconf');
 
-var languages = require('../languages');
-var utils = require('../../public/src/utils');
-var Translator = require('../../public/src/modules/translator').Translator;
+var file = require('../file');
+var Translator = require('../translator').Translator;
 
 function filterDirectories(directories) {
 	return directories.map(function (dir) {
 		// get the relative path
 		return dir.replace(/^.*(admin.*?).tpl$/, '$1');
 	}).filter(function (dir) {
+		// exclude .js files
 		// exclude partials
 		// only include subpaths
 		// exclude category.tpl, group.tpl, category-analytics.tpl
-		return !dir.includes('/partials/') &&
+		return !dir.endsWith('.js') &&
+			!dir.includes('/partials/') &&
 			/\/.*\//.test(dir) &&
-			!/category|group|category\-analytics$/.test(dir);
+			!/manage\/(category|group|category-analytics)$/.test(dir);
 	});
 }
 
 function getAdminNamespaces(callback) {
-	utils.walk(path.resolve(__dirname, '../../public/templates/admin'), function (err, directories) {
+	file.walk(path.resolve(nconf.get('views_dir'), 'admin'), function (err, directories) {
 		if (err) {
 			return callback(err);
 		}
@@ -45,7 +47,7 @@ function sanitize(html) {
 function simplify(translations) {
 	return translations
 		// remove all mustaches
-		.replace(/(?:\{{1,2}[^\}]*?\}{1,2})/g, '')
+		.replace(/(?:\{{1,2}[^}]*?\}{1,2})/g, '')
 		// collapse whitespace
 		.replace(/(?:[ \t]*[\n\r]+[ \t]*)+/g, '\n')
 		.replace(/[\t ]+/g, ' ');
@@ -54,28 +56,29 @@ function simplify(translations) {
 function nsToTitle(namespace) {
 	return namespace.replace('admin/', '').split('/').map(function (str) {
 		return str[0].toUpperCase() + str.slice(1);
-	}).join(' > ');
+	}).join(' > ').replace(/[^a-zA-Z> ]/g, ' ');
 }
 
 var fallbackCacheInProgress = {};
 var fallbackCache = {};
 
 function initFallback(namespace, callback) {
-	fs.readFile(path.resolve(__dirname, '../../public/templates/', namespace + '.tpl'), function (err, file) {
+	fs.readFile(path.resolve(nconf.get('views_dir'), namespace + '.tpl'), 'utf8', function (err, template) {
 		if (err) {
 			return callback(err);
 		}
 
-		var template = file.toString();
+		var title = nsToTitle(namespace);
 
 		var translations = sanitize(template);
 		translations = Translator.removePatterns(translations);
 		translations = simplify(translations);
-		translations += '\n' + nsToTitle(namespace);
+		translations += '\n' + title;
 
 		callback(null, {
 			namespace: namespace,
 			translations: translations,
+			title: title,
 		});
 	});
 }
@@ -105,6 +108,8 @@ function fallback(namespace, callback) {
 }
 
 function initDict(language, callback) {
+	var translator = Translator.create(language);
+
 	getAdminNamespaces(function (err, namespaces) {
 		if (err) {
 			return callback(err);
@@ -113,7 +118,9 @@ function initDict(language, callback) {
 		async.map(namespaces, function (namespace, cb) {
 			async.waterfall([
 				function (next) {
-					languages.get(language, namespace, next);
+					translator.getTranslation(namespace).then(function (translations) {
+						next(null, translations);
+					}, next);
 				},
 				function (translations, next) {
 					if (!translations || !Object.keys(translations).length) {
@@ -124,17 +131,32 @@ function initDict(language, callback) {
 					var str = Object.keys(translations).map(function (key) {
 						return translations[key];
 					}).join('\n');
+					str = sanitize(str);
 
-					next(null, {
-						namespace: namespace,
-						translations: str,
-					});
-				}
+					var title = namespace;
+					if (/admin\/general\/dashboard$/.test(title)) {
+						title = '[[admin/menu:general/dashboard]]';
+					} else {
+						title = title.match(/admin\/(.+?)\/(.+?)$/);
+						title = '[[admin/menu:section-' +
+							(title[1] === 'development' ? 'advanced' : title[1]) +
+							']]' + (title[2] ? (' > [[admin/menu:' +
+							title[1] + '/' + title[2] + ']]') : '');
+					}
+
+					translator.translate(title).then(function (title) {
+						next(null, {
+							namespace: namespace,
+							translations: str + '\n' + title,
+							title: title,
+						});
+					}).catch(err);
+				},
 			], function (err, params) {
 				if (err) {
 					return fallback(namespace, function (err, params) {
 						if (err) {
-							return cb({
+							return cb(null, {
 								namespace: namespace,
 								translations: '',
 							});

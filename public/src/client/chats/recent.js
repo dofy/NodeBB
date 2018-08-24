@@ -1,18 +1,22 @@
 'use strict';
 
-/* globals define, socket, app */
 
 define('forum/chats/recent', function () {
-
 	var recent = {};
 
 	recent.init = function () {
-		$('[component="chat/recent"]').on('scroll', function () {
-			var $this = $(this);
-			var bottom = ($this[0].scrollHeight - $this.height()) * 0.9;
-			if ($this.scrollTop() > bottom) {
-				loadMoreRecentChats();
-			}
+		require(['forum/chats'], function (Chats) {
+			$('[component="chat/recent"]').on('click', '[component="chat/recent/room"]', function () {
+				Chats.switchChat($(this).attr('data-roomid'));
+			});
+
+			$('[component="chat/recent"]').on('scroll', function () {
+				var $this = $(this);
+				var bottom = ($this[0].scrollHeight - $this.height()) * 0.9;
+				if ($this.scrollTop() > bottom) {
+					loadMoreRecentChats();
+				}
+			});
 		});
 	};
 
@@ -24,7 +28,7 @@ define('forum/chats/recent', function () {
 		recentChats.attr('loading', 1);
 		socket.emit('modules.chats.getRecentChats', {
 			uid: ajaxify.data.uid,
-			after: recentChats.attr('data-nextstart')
+			after: recentChats.attr('data-nextstart'),
 		}, function (err, data) {
 			if (err) {
 				return app.alertError(err.message);

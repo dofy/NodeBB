@@ -2,24 +2,28 @@
 'use strict';
 
 var async = require('async');
+
 var meta = require('../meta');
 var db = require('../database');
 var plugins = require('../plugins');
+var notifications = require('../notifications');
 
 module.exports = function (User) {
-
 	User.getSettings = function (uid, callback) {
 		if (!parseInt(uid, 10)) {
 			return onSettingsLoaded(0, {}, callback);
 		}
 
-		db.getObject('user:' + uid + ':settings', function (err, settings) {
-			if (err) {
-				return callback(err);
-			}
-
-			onSettingsLoaded(uid, settings ? settings : {}, callback);
-		});
+		async.waterfall([
+			function (next) {
+				db.getObject('user:' + uid + ':settings', next);
+			},
+			function (settings, next) {
+				settings = settings || {};
+				settings.uid = uid;
+				onSettingsLoaded(uid, settings, next);
+			},
+		], callback);
 	};
 
 	User.getMultipleUserSettings = function (uids, callback) {
@@ -31,55 +35,64 @@ module.exports = function (User) {
 			return 'user:' + uid + ':settings';
 		});
 
-		db.getObjects(keys, function (err, settings) {
-			if (err) {
-				return callback(err);
-			}
-
-			for (var i = 0; i < settings.length; ++i) {
-				settings[i] = settings[i] || {};
-				settings[i].uid = uids[i];
-			}
-
-			async.map(settings, function (setting, next) {
-				onSettingsLoaded(setting.uid, setting, next);
-			}, callback);
-		});
+		async.waterfall([
+			function (next) {
+				db.getObjects(keys, next);
+			},
+			function (settings, next) {
+				settings = settings.map(function (userSettings, index) {
+					userSettings = userSettings || {};
+					userSettings.uid = uids[index];
+					return userSettings;
+				});
+				async.map(settings, function (userSettings, next) {
+					onSettingsLoaded(userSettings.uid, userSettings, next);
+				}, next);
+			},
+		], callback);
 	};
 
 	function onSettingsLoaded(uid, settings, callback) {
-		plugins.fireHook('filter:user.getSettings', {uid: uid, settings: settings}, function (err, data) {
-			if (err) {
-				return callback(err);
-			}
+		async.waterfall([
+			function (next) {
+				plugins.fireHook('filter:user.getSettings', { uid: uid, settings: settings }, next);
+			},
+			function (data, next) {
+				settings = data.settings;
 
-			settings = data.settings;
+				var defaultTopicsPerPage = parseInt(meta.config.topicsPerPage, 10) || 20;
+				var defaultPostsPerPage = parseInt(meta.config.postsPerPage, 10) || 20;
 
-			var defaultTopicsPerPage = parseInt(meta.config.topicsPerPage, 10) || 20;
-			var defaultPostsPerPage = parseInt(meta.config.postsPerPage, 10) || 20;
+				settings.showemail = parseInt(getSetting(settings, 'showemail', 0), 10) === 1;
+				settings.showfullname = parseInt(getSetting(settings, 'showfullname', 0), 10) === 1;
+				settings.openOutgoingLinksInNewTab = parseInt(getSetting(settings, 'openOutgoingLinksInNewTab', 0), 10) === 1;
+				settings.dailyDigestFreq = getSetting(settings, 'dailyDigestFreq', 'off');
+				settings.usePagination = parseInt(getSetting(settings, 'usePagination', 0), 10) === 1;
+				settings.topicsPerPage = Math.min(settings.topicsPerPage ? parseInt(settings.topicsPerPage, 10) : defaultTopicsPerPage, defaultTopicsPerPage);
+				settings.postsPerPage = Math.min(settings.postsPerPage ? parseInt(settings.postsPerPage, 10) : defaultPostsPerPage, defaultPostsPerPage);
+				settings.userLang = settings.userLang || meta.config.defaultLang || 'en-GB';
+				settings.acpLang = settings.acpLang || settings.userLang;
+				settings.topicPostSort = getSetting(settings, 'topicPostSort', 'oldest_to_newest');
+				settings.categoryTopicSort = getSetting(settings, 'categoryTopicSort', 'newest_to_oldest');
+				settings.followTopicsOnCreate = parseInt(getSetting(settings, 'followTopicsOnCreate', 1), 10) === 1;
+				settings.followTopicsOnReply = parseInt(getSetting(settings, 'followTopicsOnReply', 0), 10) === 1;
+				settings.upvoteNotifFreq = getSetting(settings, 'upvoteNotifFreq', 'all');
+				settings.restrictChat = parseInt(getSetting(settings, 'restrictChat', 0), 10) === 1;
+				settings.topicSearchEnabled = parseInt(getSetting(settings, 'topicSearchEnabled', 0), 10) === 1;
+				settings.delayImageLoading = parseInt(getSetting(settings, 'delayImageLoading', 1), 10) === 1;
+				settings.bootswatchSkin = settings.bootswatchSkin || meta.config.bootswatchSkin || 'default';
+				settings.scrollToMyPost = parseInt(getSetting(settings, 'scrollToMyPost', 1), 10) === 1;
 
-			settings.showemail = parseInt(getSetting(settings, 'showemail', 0), 10) === 1;
-			settings.showfullname = parseInt(getSetting(settings, 'showfullname', 0), 10) === 1;
-			settings.openOutgoingLinksInNewTab = parseInt(getSetting(settings, 'openOutgoingLinksInNewTab', 0), 10) === 1;
-			settings.dailyDigestFreq = getSetting(settings, 'dailyDigestFreq', 'off');
-			settings.usePagination = parseInt(getSetting(settings, 'usePagination', 0), 10) === 1;
-			settings.topicsPerPage = Math.min(settings.topicsPerPage ? parseInt(settings.topicsPerPage, 10) : defaultTopicsPerPage, defaultTopicsPerPage);
-			settings.postsPerPage = Math.min(settings.postsPerPage ? parseInt(settings.postsPerPage, 10) : defaultPostsPerPage, defaultPostsPerPage);
-			settings.userLang = settings.userLang || meta.config.defaultLang || 'en-GB';
-			settings.topicPostSort = getSetting(settings, 'topicPostSort', 'oldest_to_newest');
-			settings.categoryTopicSort = getSetting(settings, 'categoryTopicSort', 'newest_to_oldest');
-			settings.followTopicsOnCreate = parseInt(getSetting(settings, 'followTopicsOnCreate', 1), 10) === 1;
-			settings.followTopicsOnReply = parseInt(getSetting(settings, 'followTopicsOnReply', 0), 10) === 1;
-			settings.sendChatNotifications = parseInt(getSetting(settings, 'sendChatNotifications', 0), 10) === 1;
-			settings.sendPostNotifications = parseInt(getSetting(settings, 'sendPostNotifications', 0), 10) === 1;
-			settings.restrictChat = parseInt(getSetting(settings, 'restrictChat', 0), 10) === 1;
-			settings.topicSearchEnabled = parseInt(getSetting(settings, 'topicSearchEnabled', 0), 10) === 1;
-			settings.delayImageLoading = parseInt(getSetting(settings, 'delayImageLoading', 1), 10) === 1;
-			settings.bootswatchSkin = settings.bootswatchSkin || 'default';
-			settings.scrollToMyPost = parseInt(getSetting(settings, 'scrollToMyPost', 1), 10) === 1;
+				notifications.getAllNotificationTypes(next);
+			},
+			function (notificationTypes, next) {
+				notificationTypes.forEach(function (notificationType) {
+					settings[notificationType] = getSetting(settings, notificationType, 'notification');
+				});
 
-			callback(null, settings);
-		});
+				next(null, settings);
+			},
+		], callback);
 	}
 
 	function getSetting(settings, key, defaultValue) {
@@ -92,17 +105,19 @@ module.exports = function (User) {
 	}
 
 	User.saveSettings = function (uid, data, callback) {
-		if (!data.postsPerPage || parseInt(data.postsPerPage, 10) <= 1 || parseInt(data.postsPerPage, 10) > meta.config.postsPerPage) {
-			return callback(new Error('[[error:invalid-pagination-value, 2, ' + meta.config.postsPerPage + ']]'));
+		var maxPostsPerPage = meta.config.maxPostsPerPage || 20;
+		if (!data.postsPerPage || parseInt(data.postsPerPage, 10) <= 1 || parseInt(data.postsPerPage, 10) > maxPostsPerPage) {
+			return callback(new Error('[[error:invalid-pagination-value, 2, ' + maxPostsPerPage + ']]'));
 		}
 
-		if (!data.topicsPerPage || parseInt(data.topicsPerPage, 10) <= 1 || parseInt(data.topicsPerPage, 10) > meta.config.topicsPerPage) {
-			return callback(new Error('[[error:invalid-pagination-value, 2, ' + meta.config.topicsPerPage + ']]'));
+		var maxTopicsPerPage = meta.config.maxTopicsPerPage || 20;
+		if (!data.topicsPerPage || parseInt(data.topicsPerPage, 10) <= 1 || parseInt(data.topicsPerPage, 10) > maxTopicsPerPage) {
+			return callback(new Error('[[error:invalid-pagination-value, 2, ' + maxTopicsPerPage + ']]'));
 		}
 
 		data.userLang = data.userLang || meta.config.defaultLang;
 
-		plugins.fireHook('action:user.saveSettings', {uid: uid, settings: data});
+		plugins.fireHook('action:user.saveSettings', { uid: uid, settings: data });
 
 		var settings = {
 			showemail: data.showemail,
@@ -110,21 +125,21 @@ module.exports = function (User) {
 			openOutgoingLinksInNewTab: data.openOutgoingLinksInNewTab,
 			dailyDigestFreq: data.dailyDigestFreq || 'off',
 			usePagination: data.usePagination,
-			topicsPerPage: Math.min(data.topicsPerPage, parseInt(meta.config.topicsPerPage, 10) || 20),
-			postsPerPage: Math.min(data.postsPerPage, parseInt(meta.config.postsPerPage, 10) || 20),
+			topicsPerPage: Math.min(data.topicsPerPage, parseInt(maxTopicsPerPage, 10) || 20),
+			postsPerPage: Math.min(data.postsPerPage, parseInt(maxPostsPerPage, 10) || 20),
 			userLang: data.userLang || meta.config.defaultLang,
+			acpLang: data.acpLang || meta.config.defaultLang,
 			followTopicsOnCreate: data.followTopicsOnCreate,
 			followTopicsOnReply: data.followTopicsOnReply,
-			sendChatNotifications: data.sendChatNotifications,
-			sendPostNotifications: data.sendPostNotifications,
 			restrictChat: data.restrictChat,
 			topicSearchEnabled: data.topicSearchEnabled,
 			delayImageLoading: data.delayImageLoading,
-			homePageRoute : ((data.homePageRoute === 'custom' ? data.homePageCustom : data.homePageRoute) || '').replace(/^\//, ''),
+			homePageRoute: ((data.homePageRoute === 'custom' ? data.homePageCustom : data.homePageRoute) || '').replace(/^\//, ''),
 			scrollToMyPost: data.scrollToMyPost,
 			notificationSound: data.notificationSound,
 			incomingChatSound: data.incomingChatSound,
-			outgoingChatSound: data.outgoingChatSound
+			outgoingChatSound: data.outgoingChatSound,
+			upvoteNotifFreq: data.upvoteNotifFreq,
 		};
 
 		if (data.bootswatchSkin) {
@@ -133,14 +148,25 @@ module.exports = function (User) {
 
 		async.waterfall([
 			function (next) {
-				db.setObject('user:' + uid + ':settings', settings, next);
+				notifications.getAllNotificationTypes(next);
+			},
+			function (notificationTypes, next) {
+				notificationTypes.forEach(function (notificationType) {
+					if (data[notificationType]) {
+						settings[notificationType] = data[notificationType];
+					}
+				});
+				plugins.fireHook('filter:user.saveSettings', { settings: settings, data: data }, next);
+			},
+			function (result, next) {
+				db.setObject('user:' + uid + ':settings', result.settings, next);
 			},
 			function (next) {
 				User.updateDigestSetting(uid, data.dailyDigestFreq, next);
 			},
 			function (next) {
 				User.getSettings(uid, next);
-			}
+			},
 		], callback);
 	};
 
@@ -155,14 +181,15 @@ module.exports = function (User) {
 				} else {
 					next();
 				}
-			}
+			},
 		], callback);
 	};
 
 	User.setSetting = function (uid, key, value, callback) {
 		if (!parseInt(uid, 10)) {
-			return callback();
+			return setImmediate(callback);
 		}
+
 		db.setObjectField('user:' + uid + ':settings', key, value, callback);
 	};
 };

@@ -1,10 +1,9 @@
-"use strict";
-/* globals socket, ajaxify, app, define, config */
+'use strict';
 
-define('search', ['navigator', 'translator'], function (nav, translator) {
 
+define('search', ['navigator', 'translator', 'storage'], function (nav, translator, storage) {
 	var Search = {
-		current: {}
+		current: {},
 	};
 
 	Search.query = function (data, callback) {
@@ -18,7 +17,7 @@ define('search', ['navigator', 'translator'], function (nav, translator) {
 
 			try {
 				term = encodeURIComponent(term);
-			} catch(e) {
+			} catch (e) {
 				return app.alertError('[[error:invalid-search-term]]');
 			}
 
@@ -35,14 +34,18 @@ define('search', ['navigator', 'translator'], function (nav, translator) {
 	};
 
 	function createQueryString(data) {
-		var searchIn = data['in'] || 'titlesposts';
+		var searchIn = data.in || 'titlesposts';
 		var postedBy = data.by || '';
 		var query = {
 			term: data.term,
-			'in': searchIn
+			in: searchIn,
 		};
 
-		if (postedBy && (searchIn === 'posts' || searchIn === 'titles' || searchIn === 'titlesposts')) {
+		if (data.matchWords) {
+			query.matchWords = data.matchWords;
+		}
+
+		if (postedBy && postedBy.length && (searchIn === 'posts' || searchIn === 'titles' || searchIn === 'titlesposts')) {
 			query.by = postedBy;
 		}
 
@@ -51,6 +54,10 @@ define('search', ['navigator', 'translator'], function (nav, translator) {
 			if (data.searchChildren) {
 				query.searchChildren = data.searchChildren;
 			}
+		}
+
+		if (data.hasTags && data.hasTags.length) {
+			query.hasTags = data.hasTags;
 		}
 
 		if (parseInt(data.replies, 10) > 0) {
@@ -71,21 +78,27 @@ define('search', ['navigator', 'translator'], function (nav, translator) {
 		if (data.showAs) {
 			query.showAs = data.showAs;
 		}
+
+		$(window).trigger('action:search.createQueryString', {
+			query: query,
+			data: data,
+		});
+
 		return decodeURIComponent($.param(query));
 	}
 
 	Search.getSearchPreferences = function () {
 		try {
-			return JSON.parse(localStorage.getItem('search-preferences') || '{}');
-		} catch(e) {
+			return JSON.parse(storage.getItem('search-preferences') || '{}');
+		} catch (e) {
 			return {};
 		}
 	};
 
-	Search.queryTopic = function (tid, term, callback) {
+	Search.queryTopic = function (tid, term) {
 		socket.emit('topics.search', {
 			tid: tid,
-			term: term
+			term: term,
 		}, function (err, pids) {
 			if (err) {
 				return app.alertError(err.message);
@@ -98,7 +111,7 @@ define('search', ['navigator', 'translator'], function (nav, translator) {
 						return a - b;
 					}),
 					tid: tid,
-					term: term
+					term: term,
 				};
 
 				Search.checkPagePresence(tid, function () {
@@ -117,7 +130,7 @@ define('search', ['navigator', 'translator'], function (nav, translator) {
 	};
 
 	Search.topicDOM = {
-		active: false
+		active: false,
 	};
 
 	Search.topicDOM.prev = function () {
@@ -140,14 +153,14 @@ define('search', ['navigator', 'translator'], function (nav, translator) {
 			var data = {
 				pid: Search.current.results[index],
 				tid: Search.current.tid,
-				topicPostSort: config.topicPostSort
+				topicPostSort: config.topicPostSort,
 			};
 			socket.emit('posts.getPidIndex', data, function (err, postIndex) {
 				if (err) {
 					return app.alertError(err.message);
 				}
 
-				nav.scrollToPost(postIndex, true);
+				nav.scrollToIndex(postIndex, true);
 			});
 		} else {
 			translator.translate('[[search:no-matches]]', function (text) {

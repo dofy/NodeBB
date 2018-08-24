@@ -3,6 +3,7 @@
 
 var fs = require('fs');
 var path = require('path');
+var os = require('os');
 var nconf = require('nconf');
 var express = require('express');
 var app = express();
@@ -16,6 +17,8 @@ var cookieParser = require('cookie-parser');
 var session = require('express-session');
 var useragent = require('express-useragent');
 var favicon = require('serve-favicon');
+var detector = require('spider-detector');
+var helmet = require('helmet');
 
 var db = require('./database');
 var file = require('./file');
@@ -24,16 +27,17 @@ var meta = require('./meta');
 var languages = require('./languages');
 var logger = require('./logger');
 var plugins = require('./plugins');
+var flags = require('./flags');
 var routes = require('./routes');
 var auth = require('./routes/authentication');
-var templates = require('templates.js');
+var Benchpress = require('benchpressjs');
 
 var helpers = require('../public/src/modules/helpers');
 
 if (nconf.get('ssl')) {
 	server = require('https').createServer({
 		key: fs.readFileSync(nconf.get('ssl').key),
-		cert: fs.readFileSync(nconf.get('ssl').cert)
+		cert: fs.readFileSync(nconf.get('ssl').cert),
 	}, app);
 } else {
 	server = require('http').createServer(app);
@@ -42,44 +46,65 @@ if (nconf.get('ssl')) {
 module.exports.server = server;
 
 server.on('error', function (err) {
-	winston.error(err);
 	if (err.code === 'EADDRINUSE') {
-		winston.error('NodeBB address in use, exiting...');
-		process.exit(0);
+		winston.error('NodeBB address in use, exiting...', err);
 	} else {
-		throw err;
+		winston.error(err);
 	}
+
+	throw err;
 });
 
+// see https://github.com/isaacs/server-destroy/blob/master/index.js
+var connections = {};
+server.on('connection', function (conn) {
+	var key = conn.remoteAddress + ':' + conn.remotePort;
+	connections[key] = conn;
+	conn.on('close', function () {
+		delete connections[key];
+	});
+});
+
+module.exports.destroy = function (callback) {
+	server.close(callback);
+	for (var key in connections) {
+		if (connections.hasOwnProperty(key)) {
+			connections[key].destroy();
+		}
+	}
+};
+
 module.exports.listen = function (callback) {
-	callback = callback || function () {};
+	callback = callback || function () { };
 	emailer.registerApp(app);
 
-	setupExpressApp(app);
+	async.waterfall([
+		function (next) {
+			setupExpressApp(app, next);
+		},
+		function (next) {
+			helpers.register();
 
-	helpers.register();
+			logger.init(app);
 
-	logger.init(app);
+			initializeNodeBB(next);
+		},
+		function (next) {
+			winston.info('NodeBB Ready');
 
-	initializeNodeBB(function (err) {
-		if (err) {
-			return callback(err);
-		}
+			require('./socket.io').server.emit('event:nodebb.ready', {
+				'cache-buster': meta.config['cache-buster'],
+				hostname: os.hostname(),
+			});
 
-		winston.info('NodeBB Ready');
+			plugins.fireHook('action:nodebb.ready');
 
-		require('./socket.io').server.emit('event:nodebb.ready', {
-			'cache-buster': meta.config['cache-buster']
-		});
-
-		plugins.fireHook('action:nodebb.ready');
-
-		listen(callback);
-	});
+			listen(next);
+		},
+	], callback);
 };
 
 function initializeNodeBB(callback) {
-	winston.info('initializing NodeBB ...');
 	var middleware = require('./middleware');
 
 	async.waterfall([
@@ -88,42 +113,45 @@ function initializeNodeBB(callback) {
 			plugins.init(app, middleware, next);
 		},
 		async.apply(plugins.fireHook, 'static:assets.prepare', {}),
-		async.apply(meta.js.bridgeModules, app),
 		function (next) {
 			plugins.fireHook('static:app.preload', {
 				app: app,
-				middleware: middleware
+				middleware: middleware,
 			}, next);
 		},
 		function (next) {
 			plugins.fireHook('filter:hotswap.prepare', [], next);
 		},
 		function (hotswapIds, next) {
-			routes(app, middleware, hotswapIds);
-			next();
+			routes(app, middleware, hotswapIds, next);
 		},
 		function (next) {
 			async.series([
-				async.apply(meta.js.getFromFile, 'nodebb.min.js'),
-				async.apply(meta.js.getFromFile, 'acp.min.js'),
-				async.apply(meta.css.getFromFile),
-				async.apply(meta.sounds.init),
-				async.apply(languages.init),
-				async.apply(meta.blacklist.load)
+				meta.sounds.addUploads,
+				meta.blacklist.load,
+				flags.init,
 			], next);
-		}
-	], callback);
+		},
+	], function (err) {
+		callback(err);
+	});
 }
 
-function setupExpressApp(app) {
+function setupExpressApp(app, callback) {
 	var middleware = require('./middleware');
+	var pingController = require('./controllers/ping');
 
 	var relativePath = nconf.get('relative_path');
+	var viewsDir = nconf.get('views_dir');
 
-	app.engine('tpl', templates.__express);
+	app.engine('tpl', function (filepath, data, next) {
+		filepath = filepath.replace(/\.tpl$/, '.js');
+
+		Benchpress.__express(filepath, data, next);
+	});
 	app.set('view engine', 'tpl');
-	app.set('views', nconf.get('views_dir'));
-	app.set('json spaces', process.env.NODE_ENV === 'development' ? 4 : 0);
+	app.set('views', viewsDir);
+	app.set('json spaces', global.env === 'development' ? 4 : 0);
 	app.use(flash());
 
 	app.enable('view cache');
@@ -135,14 +163,18 @@ function setupExpressApp(app) {
 
 	app.use(compression());
 
+	app.get(relativePath + '/ping', pingController.ping);
+	app.get(relativePath + '/sping', pingController.ping);
+
 	setupFavicon(app);
 
 	app.use(relativePath + '/apple-touch-icon', middleware.routeTouchIcon);
 
-	app.use(bodyParser.urlencoded({extended: true}));
+	app.use(bodyParser.urlencoded({ extended: true }));
 	app.use(bodyParser.json());
 	app.use(cookieParser());
 	app.use(useragent.express());
+	app.use(detector.middleware());
 
 	app.use(session({
 		store: db.sessionStore,
@@ -150,9 +182,22 @@ function setupExpressApp(app) {
 		key: nconf.get('sessionKey'),
 		cookie: setupCookie(),
 		resave: true,
-		saveUninitialized: true
+		saveUninitialized: true,
 	}));
 
+	var hsts_option = {
+		maxAge: parseInt(meta.config['hsts-maxage'], 10) || 31536000,
+		includeSubdomains: !!parseInt(meta.config['hsts-subdomains'], 10),
+		preload: !!parseInt(meta.config['hsts-preload'], 10),
+		setIf: function () {
+			// If not set, default to on - previous and recommended behavior
+			return meta.config['hsts-enabled'] === undefined || !!parseInt(meta.config['hsts-enabled'], 10);
+		},
+	};
+	app.use(helmet({
+		hsts: hsts_option,
+	}));
+	app.use(helmet.referrerPolicy({ policy: 'strict-origin-when-cross-origin' }));
 	app.use(middleware.addHeaders);
 	app.use(middleware.processRender);
 	auth.initialize(app, middleware);
@@ -160,18 +205,23 @@ function setupExpressApp(app) {
 	var toobusy = require('toobusy-js');
 	toobusy.maxLag(parseInt(meta.config.eventLoopLagThreshold, 10) || 100);
 	toobusy.interval(parseInt(meta.config.eventLoopInterval, 10) || 500);
+
+	setupAutoLocale(app, callback);
 }
 
 function setupFavicon(app) {
-	var faviconPath = path.join(nconf.get('base_dir'), 'public', meta.config['brand:favicon'] ? meta.config['brand:favicon'] : 'favicon.ico');
+	var faviconPath = meta.config['brand:favicon'] || 'favicon.ico';
+	faviconPath = path.join(nconf.get('base_dir'), 'public', faviconPath.replace(/assets\/uploads/, 'uploads'));
 	if (file.existsSync(faviconPath)) {
 		app.use(nconf.get('relative_path'), favicon(faviconPath));
 	}
 }
 
 function setupCookie() {
+	var ttl = meta.getSessionTTLSeconds() * 1000;
+
 	var cookie = {
-		maxAge: 1000 * 60 * 60 * 24 * (parseInt(meta.config.loginDays, 10) || 14)
+		maxAge: ttl,
 	};
 
 	if (nconf.get('cookieDomain') || meta.config.cookieDomain) {
@@ -190,10 +240,39 @@ function setupCookie() {
 	return cookie;
 }
 
+function setupAutoLocale(app, callback) {
+	languages.listCodes(function (err, codes) {
+		if (err) {
+			return callback(err);
+		}
+
+		var defaultLang = meta.config.defaultLang || 'en-GB';
+
+		var langs = [defaultLang].concat(codes).filter(function (el, i, arr) {
+			return arr.indexOf(el) === i;
+		});
+
+		app.use(function (req, res, next) {
+			if (parseInt(req.uid, 10) > 0 || parseInt(meta.config.autoDetectLang, 10) !== 1) {
+				return next();
+			}
+
+			var lang = req.acceptsLanguages(langs);
+			if (!lang) {
+				return next();
+			}
+			req.query.lang = lang;
+			next();
+		});
+
+		callback();
+	});
+}
+
 function listen(callback) {
-	callback = callback || function () {};
-	var port = parseInt(nconf.get('port'), 10);
-	var isSocket = isNaN(port);
+	callback = callback || function () { };
+	var port = nconf.get('port');
+	var isSocket = isNaN(port) && !Array.isArray(port);
 	var socketPath = isSocket ? nconf.get('port') : '';
 
 	if (Array.isArray(port)) {
@@ -210,7 +289,7 @@ function listen(callback) {
 			process.exit();
 		}
 	}
-
+	port = parseInt(port, 10);
 	if ((port !== 80 && port !== 443) || nconf.get('trust_proxy') === true) {
 		winston.info('Enabling \'trust proxy\'');
 		app.enable('trust proxy');
@@ -220,7 +299,7 @@ function listen(callback) {
 		winston.info('Using ports 80 and 443 is not recommend; use a proxy instead. See README.md');
 	}
 
-	var bind_address = ((nconf.get('bind_address') === "0.0.0.0" || !nconf.get('bind_address')) ? '0.0.0.0' : nconf.get('bind_address'));
+	var bind_address = ((nconf.get('bind_address') === '0.0.0.0' || !nconf.get('bind_address')) ? '0.0.0.0' : nconf.get('bind_address'));
 	var args = isSocket ? [socketPath] : [port, bind_address];
 	var oldUmask;
 
@@ -241,13 +320,12 @@ function listen(callback) {
 	if (isSocket) {
 		oldUmask = process.umask('0000');
 		module.exports.testSocket(socketPath, function (err) {
-			if (!err) {
-				server.listen.apply(server, args);
-			} else {
-				winston.error('[startup] NodeBB was unable to secure domain socket access (' + socketPath + ')');
-				winston.error('[startup] ' + err.message);
-				process.exit();
+			if (err) {
+				winston.error('[startup] NodeBB was unable to secure domain socket access (' + socketPath + ')', err);
+				throw err;
 			}
+
+			server.listen.apply(server, args);
 		});
 	} else {
 		server.listen.apply(server, args);
@@ -262,11 +340,11 @@ module.exports.testSocket = function (socketPath, callback) {
 	var file = require('./file');
 	async.series([
 		function (next) {
-			file.exists(socketPath, function (exists) {
+			file.exists(socketPath, function (err, exists) {
 				if (exists) {
 					next();
 				} else {
-					callback();
+					callback(err);
 				}
 			});
 		},
@@ -283,5 +361,4 @@ module.exports.testSocket = function (socketPath, callback) {
 		async.apply(fs.unlink, socketPath),	// The socket was stale, kick it out of the way
 	], callback);
 };
-
 

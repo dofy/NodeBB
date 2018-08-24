@@ -1,7 +1,7 @@
 'use strict';
-/* globals define, templates */
 
-define('alerts', ['translator', 'components'], function (translator, components) {
+
+define('alerts', ['translator', 'components', 'benchpress'], function (translator, components, Benchpress) {
 	var module = {};
 
 	module.alert = function (params) {
@@ -19,7 +19,7 @@ define('alerts', ['translator', 'components'], function (translator, components)
 	};
 
 	function createNew(params) {
-		templates.parse('alert', params, function (alertTpl) {
+		Benchpress.parse('alert', params, function (alertTpl) {
 			translator.translate(alertTpl, function (translatedHTML) {
 				var alert = $('#' + params.alert_id);
 				if (alert.length) {
@@ -30,7 +30,7 @@ define('alerts', ['translator', 'components'], function (translator, components)
 
 				components.get('toaster/tray').prepend(alert);
 
-				if(typeof params.closefn === 'function') {
+				if (typeof params.closefn === 'function') {
 					alert.find('button').on('click', function () {
 						params.closefn();
 						fadeOut(alert);
@@ -46,7 +46,7 @@ define('alerts', ['translator', 'components'], function (translator, components)
 					alert
 						.addClass('pointer')
 						.on('click', function (e) {
-							if(!$(e.target).is('.close')) {
+							if (!$(e.target).is('.close')) {
 								params.clickfn();
 							}
 							fadeOut(alert);
@@ -63,7 +63,7 @@ define('alerts', ['translator', 'components'], function (translator, components)
 	function updateAlert(alert, params) {
 		alert.find('strong').html(params.title);
 		alert.find('p').html(params.message);
-		alert.attr('class', 'alert alert-dismissable alert-' + params.type);
+		alert.attr('class', 'alert alert-dismissable alert-' + params.type + ' clearfix');
 
 		clearTimeout(parseInt(alert.attr('timeoutId'), 10));
 		if (params.timeout) {
@@ -82,7 +82,7 @@ define('alerts', ['translator', 'components'], function (translator, components)
 			alert
 				.addClass('pointer')
 				.on('click', function (e) {
-					if(!$(e.target).is('.close')) {
+					if (!$(e.target).is('.close')) {
 						params.clickfn();
 					}
 					fadeOut(alert);
@@ -102,6 +102,22 @@ define('alerts', ['translator', 'components'], function (translator, components)
 		}, timeout);
 
 		alert.attr('timeoutId', timeoutId);
+
+		// Reset and start animation
+		alert.css('transition-property', 'none');
+		alert.removeClass('animate');
+
+		setTimeout(function () {
+			alert.css('transition-property', '');
+			alert.css('transition', 'width ' + (timeout + 450) + 'ms linear, background-color ' + (timeout + 450) + 'ms ease-in');
+			alert.addClass('animate');
+		}, 50);
+
+		// Handle mouseenter/mouseleave
+		alert
+			.on('mouseenter', function () {
+				$(this).css('transition-duration', 0);
+			});
 	}
 
 	return module;

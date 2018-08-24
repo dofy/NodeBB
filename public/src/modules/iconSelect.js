@@ -1,65 +1,68 @@
-"use strict";
+'use strict';
 
-/* globals define, bootbox, templates */
 
-define('iconSelect', function () {
+define('iconSelect', ['benchpress'], function (Benchpress) {
 	var iconSelect = {};
 
 	iconSelect.init = function (el, onModified) {
 		onModified = onModified || function () {};
-		var doubleSize = el.hasClass('fa-2x'),
-			selected = el.attr('class').replace('fa-2x', '').replace('fa', '').replace(/\s+/g, '');
+		var doubleSize = el.hasClass('fa-2x');
+		var selected = el.attr('class').replace('fa-2x', '').replace('fa', '').replace(/\s+/g, '');
 
 		$('#icons .selected').removeClass('selected');
 
 		if (selected) {
-			$('#icons .fa-icons .fa.' + selected).addClass('selected');
+			try {
+				$('#icons .fa-icons .fa.' + selected).addClass('selected');
+			} catch (err) {
+				selected = '';
+			}
 		}
 
-		templates.parse('partials/fontawesome', {}, function (html) {
+		Benchpress.parse('partials/fontawesome', {}, function (html) {
 			html = $(html);
 			html.find('.fa-icons').prepend($('<i class="fa fa-nbb-none"></i>'));
 
 			var picker = bootbox.dialog({
-					onEscape: true,
-					backdrop: true,
-					show: false,
-					message: html,
-					title: 'Select an Icon',
-					buttons: {
-						noIcon: {
-							label: 'No Icon',
-							className: 'btn-default',
-							callback: function () {
-								el.attr('class', 'fa ' + (doubleSize ? 'fa-2x ' : ''));
-								el.val('');
-								el.attr('value', '');
+				onEscape: true,
+				backdrop: true,
+				show: false,
+				message: html,
+				title: 'Select an Icon',
+				buttons: {
+					noIcon: {
+						label: 'No Icon',
+						className: 'btn-default',
+						callback: function () {
+							el.attr('class', 'fa ' + (doubleSize ? 'fa-2x ' : ''));
+							el.val('');
+							el.attr('value', '');
 
-								onModified(el);
-							}
+							onModified(el);
 						},
-						success: {
-							label: 'Select',
-							className: 'btn-primary',
-							callback: function (confirm) {
-								var iconClass = $('.bootbox .selected').attr('class');
-								var categoryIconClass = $('<div/>').addClass(iconClass).removeClass('fa').removeClass('selected').attr('class');
+					},
+					success: {
+						label: 'Select',
+						className: 'btn-primary',
+						callback: function () {
+							var iconClass = $('.bootbox .selected').attr('class');
+							var categoryIconClass = $('<div/>').addClass(iconClass).removeClass('fa').removeClass('selected').attr('class');
 
-								if (categoryIconClass) {
-									el.attr('class', 'fa ' + (doubleSize ? 'fa-2x ' : '') + categoryIconClass);
-									el.val(categoryIconClass);
-									el.attr('value', categoryIconClass);
-								}
-
-								onModified(el);
+							if (categoryIconClass) {
+								el.attr('class', 'fa ' + (doubleSize ? 'fa-2x ' : '') + categoryIconClass);
+								el.val(categoryIconClass);
+								el.attr('value', categoryIconClass);
 							}
-						}
-					}
-				});
+
+							onModified(el);
+						},
+					},
+				},
+			});
 
 			picker.on('show.bs.modal', function () {
-				var modalEl = $(this),
-					searchEl = modalEl.find('input');
+				var modalEl = $(this);
+				var searchEl = modalEl.find('input');
 
 				if (selected) {
 					modalEl.find('.' + selected).addClass('selected');
@@ -68,10 +71,10 @@ define('iconSelect', function () {
 			}).modal('show');
 
 			picker.on('shown.bs.modal', function () {
-				var modalEl = $(this),
-					searchEl = modalEl.find('input'),
-					icons = modalEl.find('.fa-icons i'),
-					submitEl = modalEl.find('button.btn-primary');
+				var modalEl = $(this);
+				var searchEl = modalEl.find('input');
+				var icons = modalEl.find('.fa-icons i');
+				var submitEl = modalEl.find('button.btn-primary');
 
 				function changeSelection(newSelection) {
 					modalEl.find('i.selected').removeClass('selected');

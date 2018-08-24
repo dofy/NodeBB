@@ -11,96 +11,99 @@ var pagination = require('../../pagination');
 var helpers = require('../helpers');
 var accountHelpers = require('./helpers');
 
-var postsController = {};
+var postsController = module.exports;
 
-postsController.getBookmarks = function (req, res, next) {
-	var data = {
-		template: 'account/bookmarks',
+var templateToData = {
+	'account/bookmarks': {
 		set: 'bookmarks',
 		type: 'posts',
 		noItemsFoundKey: '[[topic:bookmarks.has_no_bookmarks]]',
-		method: posts.getPostSummariesFromSet,
-		crumb: '[[user:bookmarks]]'
-	};
-	getFromUserSet(data, req, res, next);
-};
-
-postsController.getPosts = function (req, res, next) {
-	var data = {
-		template: 'account/posts',
+		crumb: '[[user:bookmarks]]',
+	},
+	'account/posts': {
 		set: 'posts',
 		type: 'posts',
 		noItemsFoundKey: '[[user:has_no_posts]]',
-		method: posts.getPostSummariesFromSet,
-		crumb: '[[global:posts]]'
-	};
-	getFromUserSet(data, req, res, next);
-};
-
-postsController.getUpVotedPosts = function (req, res, next) {
-	var data = {
-		template: 'account/upvoted',
+		crumb: '[[global:posts]]',
+	},
+	'account/upvoted': {
 		set: 'upvote',
 		type: 'posts',
 		noItemsFoundKey: '[[user:has_no_upvoted_posts]]',
-		method: posts.getPostSummariesFromSet,
-		crumb: '[[global:upvoted]]'
-	};
-	getFromUserSet(data, req, res, next);
-};
-
-postsController.getDownVotedPosts = function (req, res, next) {
-	var data = {
-		template: 'account/downvoted',
+		crumb: '[[global:upvoted]]',
+	},
+	'account/downvoted': {
 		set: 'downvote',
 		type: 'posts',
 		noItemsFoundKey: '[[user:has_no_downvoted_posts]]',
-		method: posts.getPostSummariesFromSet,
-		crumb: '[[global:downvoted]]'
-	};
-	getFromUserSet(data, req, res, next);
-};
-
-postsController.getBestPosts = function (req, res, next) {
-	var data = {
-		template: 'account/best',
+		crumb: '[[global:downvoted]]',
+	},
+	'account/best': {
 		set: 'posts:votes',
 		type: 'posts',
 		noItemsFoundKey: '[[user:has_no_voted_posts]]',
-		method: posts.getPostSummariesFromSet,
-		crumb: '[[global:best]]'
-	};
-	getFromUserSet(data, req, res, next);
-};
-
-postsController.getWatchedTopics = function (req, res, next) {
-	var data = {
-		template: 'account/watched',
+		crumb: '[[global:best]]',
+	},
+	'account/watched': {
 		set: 'followed_tids',
 		type: 'topics',
 		noItemsFoundKey: '[[user:has_no_watched_topics]]',
-		method: topics.getTopicsFromSet,
-		crumb: '[[user:watched]]'
-	};
-	getFromUserSet(data, req, res, next);
-};
-
-postsController.getTopics = function (req, res, next) {
-	var data = {
-		template: 'account/topics',
+		crumb: '[[user:watched]]',
+	},
+	'account/ignored': {
+		set: 'ignored_tids',
+		type: 'topics',
+		noItemsFoundKey: '[[user:has_no_ignored_topics]]',
+		crumb: '[[user:ignored]]',
+	},
+	'account/topics': {
 		set: 'topics',
 		type: 'topics',
 		noItemsFoundKey: '[[user:has_no_topics]]',
-		method: topics.getTopicsFromSet,
-		crumb: '[[global:topics]]'
-	};
-	getFromUserSet(data, req, res, next);
+		crumb: '[[global:topics]]',
+	},
 };
 
-function getFromUserSet(data, req, res, callback) {
+postsController.getBookmarks = function (req, res, next) {
+	getFromUserSet('account/bookmarks', req, res, next);
+};
+
+postsController.getPosts = function (req, res, next) {
+	getFromUserSet('account/posts', req, res, next);
+};
+
+postsController.getUpVotedPosts = function (req, res, next) {
+	getFromUserSet('account/upvoted', req, res, next);
+};
+
+postsController.getDownVotedPosts = function (req, res, next) {
+	getFromUserSet('account/downvoted', req, res, next);
+};
+
+postsController.getBestPosts = function (req, res, next) {
+	getFromUserSet('account/best', req, res, next);
+};
+
+postsController.getWatchedTopics = function (req, res, next) {
+	getFromUserSet('account/watched', req, res, next);
+};
+
+postsController.getIgnoredTopics = function (req, res, next) {
+	getFromUserSet('account/ignored', req, res, next);
+};
+
+postsController.getTopics = function (req, res, next) {
+	getFromUserSet('account/topics', req, res, next);
+};
+
+function getFromUserSet(template, req, res, callback) {
+	var data = templateToData[template];
+	data.template = template;
+	data.method = data.type === 'posts' ? posts.getPostSummariesFromSet : topics.getTopicsFromSet;
 	var userData;
 	var itemsPerPage;
 	var page = Math.max(1, parseInt(req.query.page, 10) || 1);
+
 	async.waterfall([
 		function (next) {
 			async.parallel({
@@ -109,7 +112,7 @@ function getFromUserSet(data, req, res, callback) {
 				},
 				userData: function (next) {
 					accountHelpers.getUserDataByUserSlug(req.params.userslug, req.uid, next);
-				}
+				},
 			}, next);
 		},
 		function (results, next) {
@@ -135,26 +138,23 @@ function getFromUserSet(data, req, res, callback) {
 					var start = (page - 1) * itemsPerPage;
 					var stop = start + itemsPerPage - 1;
 					data.method(setName, req.uid, start, stop, next);
-				}
+				},
 			}, next);
-		}
-	], function (err, results) {
-		if (err) {
-			return callback(err);
-		}
+		},
+		function (results) {
+			userData[data.type] = results.data[data.type];
+			userData.nextStart = results.data.nextStart;
 
-		userData[data.type] = results.data[data.type];
-		userData.nextStart = results.data.nextStart;
+			var pageCount = Math.ceil(results.itemCount / itemsPerPage);
+			userData.pagination = pagination.create(page, pageCount);
 
-		var pageCount = Math.ceil(results.itemCount / itemsPerPage);
-		userData.pagination = pagination.create(page, pageCount);
+			userData.noItemsFoundKey = data.noItemsFoundKey;
+			userData.title = '[[pages:' + data.template + ', ' + userData.username + ']]';
+			userData.breadcrumbs = helpers.buildBreadcrumbs([{ text: userData.username, url: '/user/' + userData.userslug }, { text: data.crumb }]);
 
-		userData.noItemsFoundKey = data.noItemsFoundKey;
-		userData.title = '[[pages:' + data.template + ', ' + userData.username + ']]';
-		userData.breadcrumbs = helpers.buildBreadcrumbs([{text: userData.username, url: '/user/' + userData.userslug}, {text: data.crumb}]);
-
-		res.render(data.template, userData);
-	});
+			res.render(data.template, userData);
+		},
+	], callback);
 }
 
 module.exports = postsController;

@@ -2,7 +2,6 @@
 
 var nconf = require('nconf');
 var async = require('async');
-var S = require('string');
 
 var user = require('../../user');
 var posts = require('../../posts');
@@ -12,8 +11,10 @@ var accountHelpers = require('./helpers');
 var helpers = require('../helpers');
 var pagination = require('../../pagination');
 var messaging = require('../../messaging');
+var translator = require('../../translator');
+var utils = require('../../utils');
 
-var profileController = {};
+var profileController = module.exports;
 
 profileController.get = function (req, res, callback) {
 	var lowercaseSlug = req.params.userslug.toLowerCase();
@@ -41,6 +42,7 @@ profileController.get = function (req, res, callback) {
 			userData = _userData;
 
 			req.session.uids_viewed = req.session.uids_viewed || {};
+
 			if (req.uid !== parseInt(userData.uid, 10) && (!req.session.uids_viewed[userData.uid] || req.session.uids_viewed[userData.uid] < Date.now() - 3600000)) {
 				user.incrementUserFieldBy(userData.uid, 'profileviews', 1);
 				req.session.uids_viewed[userData.uid] = Date.now();
@@ -62,7 +64,7 @@ profileController.get = function (req, res, callback) {
 					} else {
 						next();
 					}
-				}
+				},
 			}, next);
 		},
 		function (results, next) {
@@ -74,39 +76,37 @@ profileController.get = function (req, res, callback) {
 				return p && parseInt(p.deleted, 10) !== 1;
 			});
 			userData.hasPrivateChat = results.hasPrivateChat;
-			userData.aboutme = results.aboutme;
+			userData.aboutme = translator.escape(results.aboutme);
 			userData.nextStart = results.posts.nextStart;
-			userData.breadcrumbs = helpers.buildBreadcrumbs([{text: userData.username}]);
+			userData.breadcrumbs = helpers.buildBreadcrumbs([{ text: userData.username }]);
 			userData.title = userData.username;
+			userData.allowCoverPicture = !userData.isSelf || parseInt(userData.reputation, 10) >= (parseInt(meta.config['min:rep:cover-picture'], 10) || 0);
 			var pageCount = Math.ceil(userData.postcount / itemsPerPage);
 			userData.pagination = pagination.create(page, pageCount, req.query);
-
-			userData['cover:url'] = userData['cover:url'] || require('../../coverPhoto').getDefaultProfileCover(userData.uid);
-			userData['cover:position'] = userData['cover:position'] || '50% 50%';
 
 			if (!parseInt(userData.profileviews, 10)) {
 				userData.profileviews = 1;
 			}
 
-			var plainAboutMe = userData.aboutme ? S(userData.aboutme).decodeHTMLEntities().stripTags().s : '';
+			var plainAboutMe = userData.aboutme ? utils.stripHTMLTags(utils.decodeHTMLEntities(userData.aboutme)) : '';
 
 			res.locals.metaTags = [
 				{
-					name: "title",
-					content: userData.fullname || userData.username
+					name: 'title',
+					content: userData.fullname || userData.username,
 				},
 				{
-					name: "description",
-					content: plainAboutMe
+					name: 'description',
+					content: plainAboutMe,
 				},
 				{
 					property: 'og:title',
-					content: userData.fullname || userData.username
+					content: userData.fullname || userData.username,
 				},
 				{
 					property: 'og:description',
-					content: plainAboutMe
-				}
+					content: plainAboutMe,
+				},
 			];
 
 			if (userData.picture) {
@@ -114,27 +114,25 @@ profileController.get = function (req, res, callback) {
 					{
 						property: 'og:image',
 						content: userData.picture,
-						noEscape: true
+						noEscape: true,
 					},
 					{
-						property: "og:image:url",
+						property: 'og:image:url',
 						content: userData.picture,
-						noEscape: true
+						noEscape: true,
 					}
 				);
 			}
-			userData.selectedGroup = userData.groups.find(function (group) {
-				return group && group.name === userData.groupTitle;
+
+			userData.selectedGroup = userData.groups.filter(function (group) {
+				return group && userData.groupTitleArray.includes(group.name);
 			});
 
-			plugins.fireHook('filter:user.account', {userData: userData, uid: req.uid}, next);
-		}
-	], function (err, results) {
-		if (err) {
-			return callback(err);
-		}
-		res.render('account/profile', results.userData);
-	});
+			plugins.fireHook('filter:user.account', { userData: userData, uid: req.uid }, next);
+		},
+		function (results) {
+			res.render('account/profile', results.userData);
+		},
+	], callback);
 };
 
-module.exports = profileController;

@@ -1,5 +1,4 @@
-"use strict";
-/*global config, componentHandler, socket, app, bootbox, Slideout, NProgress*/
+'use strict';
 
 (function () {
 	var logoutTimer = 0;
@@ -9,16 +8,12 @@
 		}
 
 		logoutTimer = setTimeout(function () {
-			require(['translator'], function (translator) {
-				translator.translate('[[login:logged-out-due-to-inactivity]]', function (translated) {
-					bootbox.alert({
-						closeButton: false,
-						message: translated,
-						callback: function () {
-							window.location.reload();
-						}
-					});
-				});
+			bootbox.alert({
+				closeButton: false,
+				message: '[[login:logged-out-due-to-inactivity]]',
+				callback: function () {
+					window.location.reload();
+				},
 			});
 		}, 3600000);
 	}
@@ -36,16 +31,13 @@
 	}
 
 	$(document).ready(function () {
-		setupKeybindings();
-
-		if(!/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
+		if (!/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
 			require(['admin/modules/search'], function (search) {
 				search.init();
 			});
 		}
 
 		$('[component="logout"]').on('click', app.logout);
-		app.alert = launchSnackbar;
 
 		configureSlidemenu();
 		setupNProgress();
@@ -68,74 +60,77 @@
 		});
 	}
 
-	function setupKeybindings() {
-		require(['mousetrap'], function (mousetrap) {
-			mousetrap.bind('ctrl+shift+a r', function () {
-				require(['admin/modules/instance'], function (instance) {
-					instance.reload();
-				});
-			});
-
-			mousetrap.bind('ctrl+shift+a R', function () {
-				socket.emit('admin.restart');
-			});
-
-			mousetrap.bind('/', function () {
-				$('#acp-search input').focus();
-
-				return false;
-			});
-		});
-	}
-
 	function selectMenuItem(url) {
-		url = url
-			.replace(/\/\d+$/, '')
-			.split('/').slice(0, 3).join('/')
-			.split('?')[0];
+		require(['translator'], function (translator) {
+			url = url
+				.replace(/\/\d+$/, '')
+				.split('/').slice(0, 3).join('/')
+				.split(/[?#]/)[0].replace(/(\/+$)|(^\/+)/, '');
 
-		// If index is requested, load the dashboard
-		if (url === 'admin') {
-			url = 'admin/general/dashboard';
-		}
+			// If index is requested, load the dashboard
+			if (url === 'admin') {
+				url = 'admin/general/dashboard';
+			}
 
-		$('#main-menu li').removeClass('active');
-		$('#main-menu a').removeClass('active').each(function () {
-			var menu = $(this),
-				href = menu.attr('href'),
-				isLink = menu.parent().attr('data-link') === '1';
+			url = [config.relative_path, url].join('/');
+			var fallback;
 
-			if (!isLink && href && href === [config.relative_path, url].join('/')) {
+			$('#main-menu li').removeClass('active');
+			$('#main-menu a').removeClass('active').filter('[href="' + url + '"]').each(function () {
+				var menu = $(this);
+				if (menu.parent().attr('data-link')) {
+					return;
+				}
+
 				menu
 					.parent().addClass('active')
 					.parents('.menu-item').addClass('active');
+				fallback = menu.text();
+			});
 
-				$('#main-page-title').text(menu.text() + (menu.parents('.menu-item').children('a').text() === 'Settings' ? ' Settings' : ''));
+			var mainTitle;
+			var pageTitle;
+			if (/admin\/general\/dashboard$/.test(url)) {
+				pageTitle = '[[admin/menu:general/dashboard]]';
+				mainTitle = pageTitle;
+			} else if (/admin\/plugins\//.test(url)) {
+				mainTitle = fallback;
+				pageTitle = '[[admin/menu:section-plugins]] > ' + mainTitle;
+			} else {
+				var matches = url.match(/admin\/(.+?)\/(.+?)$/);
+				mainTitle = '[[admin/menu:' + matches[1] + '/' + matches[2] + ']]';
+				pageTitle = '[[admin/menu:section-' +
+					(matches[1] === 'development' ? 'advanced' : matches[1]) +
+					']]' + (matches[2] ? (' > ' + mainTitle) : '');
+				if (matches[2] === 'settings') {
+					mainTitle = translator.compile('admin/menu:settings.page-title', mainTitle);
+				}
 			}
-		});
 
-		var acpPath = url.replace('admin/', '').split('/');
-		acpPath.forEach(function (path, i) {
-			acpPath[i] = path.charAt(0).toUpperCase() + path.slice(1);
-		});
-		acpPath = acpPath.join(' > ');
+			pageTitle = translator.compile('admin/admin:acp-title', pageTitle);
 
-		document.title = (url === 'admin/general/dashboard' ? 'Dashboard' : acpPath) + ' | NodeBB Admin Control Panel';
+			translator.translate(pageTitle, function (title) {
+				document.title = title.replace(/&gt;/g, '>');
+			});
+			translator.translate(mainTitle, function (text) {
+				$('#main-page-title').text(text);
+			});
+		});
 	}
 
 	function setupRestartLinks() {
-		$('.reload').off('click').on('click', function () {
-			bootbox.confirm('Are you sure you wish to reload NodeBB?', function (confirm) {
+		$('.rebuild-and-restart').off('click').on('click', function () {
+			bootbox.confirm('[[admin/admin:alert.confirm-rebuild-and-restart]]', function (confirm) {
 				if (confirm) {
 					require(['admin/modules/instance'], function (instance) {
-						instance.reload();
+						instance.rebuildAndRestart();
 					});
 				}
 			});
 		});
 
 		$('.restart').off('click').on('click', function () {
-			bootbox.confirm('Are you sure you wish to restart NodeBB?', function (confirm) {
+			bootbox.confirm('[[admin/admin:alert.confirm-restart]]', function (confirm) {
 				if (confirm) {
 					require(['admin/modules/instance'], function (instance) {
 						instance.restart();
@@ -143,33 +138,21 @@
 				}
 			});
 		});
-	};
-
-	function launchSnackbar(params) {
-		var message = (params.title ? "<strong>" + params.title + "</strong>" : '') + (params.message ? params.message : '');
-
-		require(['translator'], function (translator) {
-			translator.translate(message, function (html) {
-				var bar = $.snackbar({
-					content: html,
-					timeout: params.timeout || 3000,
-					htmlAllowed: true
-				});
-
-				if (params.clickfn) {
-					bar.on('click', params.clickfn);
-				}
-			});
-		});
 	}
 
 	function configureSlidemenu() {
+		var env = utils.findBootstrapEnvironment();
+
 		var slideout = new Slideout({
-			'panel': document.getElementById('panel'),
-			'menu': document.getElementById('menu'),
-			'padding': 256,
-			'tolerance': 70
+			panel: document.getElementById('panel'),
+			menu: document.getElementById('menu'),
+			padding: 256,
+			tolerance: 70,
 		});
+
+		if (env === 'md' || env === 'lg') {
+			slideout.disableTouch();
+		}
 
 		$('#mobile-menu').on('click', function () {
 			slideout.toggle();
@@ -181,24 +164,42 @@
 
 		$(window).on('resize', function () {
 			slideout.close();
+
+			env = utils.findBootstrapEnvironment();
+
+			if (env === 'md' || env === 'lg') {
+				slideout.disableTouch();
+				$('#header').css({
+					position: 'relative',
+				});
+			} else {
+				slideout.enableTouch();
+				$('#header').css({
+					position: 'fixed',
+				});
+			}
 		});
 
 		function onOpeningMenu() {
 			$('#header').css({
-				'top': $('#panel').position().top * -1 + 'px',
-				'position': 'absolute'
+				top: ($('#panel').position().top * -1) + 'px',
+				position: 'absolute',
 			});
 		}
 
-		slideout.on('beforeopen', onOpeningMenu);
 		slideout.on('open', onOpeningMenu);
-		slideout.on('translate', onOpeningMenu);
 
 		slideout.on('close', function () {
 			$('#header').css({
-				'top': '0px',
-				'position': 'fixed'
+				top: '0px',
+				position: 'fixed',
 			});
 		});
 	}
+
+	// tell ace to use the right paths when requiring modules
+	require(['ace/ace'], function (ace) {
+		ace.config.set('packaged', true);
+		ace.config.set('basePath', config.relative_path + '/assets/src/modules/ace/');
+	});
 }());

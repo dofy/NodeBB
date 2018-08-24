@@ -6,14 +6,31 @@ var path = require('path');
 var fs = require('fs');
 var nconf = require('nconf');
 var os = require('os');
+var cproc = require('child_process');
 
 var db = require('../database');
 var meta = require('../meta');
 var pubsub = require('../pubsub');
+var events = require('../events');
 
+var packageManager = nconf.get('package_manager') === 'yarn' ? 'yarn' : 'npm';
+var packageManagerExecutable = packageManager;
+var packageManagerCommands = {
+	yarn: {
+		install: 'add',
+		uninstall: 'remove',
+	},
+	npm: {
+		install: 'install',
+		uninstall: 'uninstall',
+	},
+};
+
+if (process.platform === 'win32') {
+	packageManagerExecutable += '.cmd';
+}
 
 module.exports = function (Plugins) {
-
 	if (nconf.get('isPrimary') === 'true') {
 		pubsub.on('plugins:toggleInstall', function (data) {
 			if (data.hostname !== os.hostname()) {
@@ -50,26 +67,32 @@ module.exports = function (Plugins) {
 			},
 			function (next) {
 				meta.reloadRequired = true;
-				Plugins.fireHook(isActive ? 'action:plugin.deactivate' : 'action:plugin.activate', id);
-				next();
-			}
+				Plugins.fireHook(isActive ? 'action:plugin.deactivate' : 'action:plugin.activate', { id: id });
+				setImmediate(next);
+			},
+			function (next) {
+				events.log({
+					type: 'plugin-' + (isActive ? 'deactivate' : 'activate'),
+					text: id,
+				}, next);
+			},
 		], function (err) {
 			if (err) {
 				winston.warn('[plugins] Could not toggle active state on plugin \'' + id + '\'');
 				return callback(err);
 			}
-			callback(null, {id: id, active: !isActive});
+			callback(null, { id: id, active: !isActive });
 		});
 	};
 
 	Plugins.toggleInstall = function (id, version, callback) {
-		pubsub.publish('plugins:toggleInstall', {hostname: os.hostname(), id: id, version: version});
+		pubsub.publish('plugins:toggleInstall', { hostname: os.hostname(), id: id, version: version });
 		toggleInstall(id, version, callback);
 	};
 
 	function toggleInstall(id, version, callback) {
-		var type;
 		var installed;
+		var type;
 		async.waterfall([
 			function (next) {
 				Plugins.isInstalled(id, next);
@@ -81,54 +104,56 @@ module.exports = function (Plugins) {
 			},
 			function (active, next) {
 				if (active) {
-					Plugins.toggleActive(id, function (err, status) {
+					Plugins.toggleActive(id, function (err) {
 						next(err);
 					});
 					return;
 				}
-				next();
+				setImmediate(next);
 			},
 			function (next) {
-				var command = installed ? ('npm uninstall ' + id) : ('npm install ' + id + '@' + (version || 'latest'));
-				runNpmCommand(command, next);
+				runPackageManagerCommand(type, id, version || 'latest', next);
 			},
 			function (next) {
 				Plugins.get(id, next);
 			},
 			function (pluginData, next) {
-				Plugins.fireHook('action:plugin.' + type, id);
-				next(null, pluginData);
-			}
+				Plugins.fireHook('action:plugin.' + type, { id: id, version: version });
+				setImmediate(next, null, pluginData);
+			},
 		], callback);
 	}
 
-	function runNpmCommand(command, callback) {
-		require('child_process').exec(command, function (err, stdout) {
+	function runPackageManagerCommand(command, pkgName, version, callback) {
+		cproc.execFile(packageManagerExecutable, [
+			packageManagerCommands[packageManager][command],
+			pkgName + (command === 'install' ? '@' + version : ''),
+			'--save',
+		], function (err, stdout) {
 			if (err) {
 				return callback(err);
 			}
-			winston.verbose('[plugins] ' + stdout);
+
+			winston.verbose('[plugins/' + command + '] ' + stdout);
 			callback();
-		 });
+		});
 	}
 
 	Plugins.upgrade = function (id, version, callback) {
-		pubsub.publish('plugins:upgrade', {hostname: os.hostname(), id: id, version: version});
+		pubsub.publish('plugins:upgrade', { hostname: os.hostname(), id: id, version: version });
 		upgrade(id, version, callback);
 	};
 
 	function upgrade(id, version, callback) {
 		async.waterfall([
-			function (next) {
-				runNpmCommand('npm install ' + id + '@' + (version || 'latest'), next);
-			},
+			async.apply(runPackageManagerCommand, 'install', id, version || 'latest'),
 			function (next) {
 				Plugins.isActive(id, next);
 			},
 			function (isActive, next) {
 				meta.reloadRequired = isActive;
 				next(null, isActive);
-			}
+			},
 		], callback);
 	}
 

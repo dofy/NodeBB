@@ -3,17 +3,15 @@
 
 var async = require('async');
 var validator = require('validator');
-var S = require('string');
+var _ = require('lodash');
 
-var db = require('../database');
+var topics = require('../topics');
 var user = require('../user');
 var plugins = require('../plugins');
 var categories = require('../categories');
-var utils = require('../../public/src/utils');
-
+var utils = require('../utils');
 
 module.exports = function (Posts) {
-
 	Posts.getPostSummaryByPids = function (pids, uid, options, callback) {
 		if (!Array.isArray(pids) || !pids.length) {
 			return callback(null, []);
@@ -32,7 +30,9 @@ module.exports = function (Posts) {
 			},
 			function (_posts, next) {
 				posts = _posts.filter(Boolean);
-
+				user.blocks.filter(uid, posts, next);
+			},
+			function (_posts, next) {
 				var uids = [];
 				var topicKeys = [];
 
@@ -40,8 +40,8 @@ module.exports = function (Posts) {
 					if (uids.indexOf(posts[i].uid) === -1) {
 						uids.push(posts[i].uid);
 					}
-					if (topicKeys.indexOf('topic:' + posts[i].tid) === -1) {
-						topicKeys.push('topic:' + posts[i].tid);
+					if (topicKeys.indexOf(posts[i].tid) === -1) {
+						topicKeys.push(posts[i].tid);
 					}
 				});
 				async.parallel({
@@ -50,7 +50,7 @@ module.exports = function (Posts) {
 					},
 					topicsAndCategories: function (next) {
 						getTopicAndCategories(topicKeys, next);
-					}
+					},
 				}, next);
 			},
 			function (results, next) {
@@ -65,8 +65,8 @@ module.exports = function (Posts) {
 					}
 					post.user = results.users[post.uid];
 					post.topic = results.topics[post.tid];
-					post.category = results.categories[post.topic.cid];
-					post.isMainPost = parseInt(post.pid, 10) === parseInt(post.topic.mainPid, 10);
+					post.category = post.topic && results.categories[post.topic.cid];
+					post.isMainPost = post.topic && parseInt(post.pid, 10) === parseInt(post.topic.mainPid, 10);
 					post.deleted = parseInt(post.deleted, 10) === 1;
 					post.upvotes = parseInt(post.upvotes, 10) || 0;
 					post.downvotes = parseInt(post.downvotes, 10) || 0;
@@ -81,62 +81,63 @@ module.exports = function (Posts) {
 				parsePosts(posts, options, next);
 			},
 			function (posts, next) {
-				plugins.fireHook('filter:post.getPostSummaryByPids', {posts: posts, uid: uid}, next);
+				plugins.fireHook('filter:post.getPostSummaryByPids', { posts: posts, uid: uid }, next);
 			},
 			function (data, next) {
 				next(null, data.posts);
-			}
+			},
 		], callback);
 	};
 
 	function parsePosts(posts, options, callback) {
 		async.map(posts, function (post, next) {
-			if (!post.content || !options.parse) {
-				if (options.stripTags) {
-					post.content = stripTags(post.content);
-				}
-				post.content = post.content ? validator.escape(String(post.content)) : post.content;
-				return next(null, post);
-			}
-
-			Posts.parsePost(post, function (err, post) {
-				if (err) {
-					return next(err);
-				}
-				if (options.stripTags) {
-					post.content = stripTags(post.content);
-				}
-
-				next(null, post);
-			});
+			async.waterfall([
+				function (next) {
+					if (!post.content || !options.parse) {
+						post.content = post.content ? validator.escape(String(post.content)) : post.content;
+						return next(null, post);
+					}
+					Posts.parsePost(post, next);
+				},
+				function (post, next) {
+					if (options.stripTags) {
+						post.content = stripTags(post.content);
+					}
+					next(null, post);
+				},
+			], next);
 		}, callback);
 	}
 
-	function getTopicAndCategories(topicKeys, callback) {
-		db.getObjectsFields(topicKeys, ['uid', 'tid', 'title', 'cid', 'slug', 'deleted', 'postcount', 'mainPid'], function (err, topics) {
-			if (err) {
-				return callback(err);
-			}
+	function getTopicAndCategories(tids, callback) {
+		var topicsData;
+		async.waterfall([
+			function (next) {
+				topics.getTopicsFields(tids, ['uid', 'tid', 'title', 'cid', 'slug', 'deleted', 'postcount', 'mainPid'], next);
+			},
+			function (_topicsData, next) {
+				topicsData = _topicsData;
+				var cids = topicsData.map(function (topic) {
+					if (topic) {
+						topic.title = String(topic.title);
+						topic.deleted = parseInt(topic.deleted, 10) === 1;
+					}
+					return topic && parseInt(topic.cid, 10);
+				});
 
-			var cids = topics.map(function (topic) {
-				if (topic) {
-					topic.title = validator.escape(String(topic.title));
-					topic.deleted = parseInt(topic.deleted, 10) === 1;
-				}
-				return topic && topic.cid;
-			}).filter(function (topic, index, array) {
-				return topic && array.indexOf(topic) === index;
-			});
+				cids = _.uniq(cids);
 
-			categories.getCategoriesFields(cids, ['cid', 'name', 'icon', 'slug', 'parentCid', 'bgColor', 'color'], function (err, categories) {
-				callback(err, {topics: topics, categories: categories});
-			});
-		});
+				categories.getCategoriesFields(cids, ['cid', 'name', 'icon', 'slug', 'parentCid', 'bgColor', 'color'], next);
+			},
+			function (categoriesData, next) {
+				next(null, { topics: topicsData, categories: categoriesData });
+			},
+		], callback);
 	}
 
 	function toObject(key, data) {
 		var obj = {};
-		for(var i = 0; i < data.length; ++i) {
+		for (var i = 0; i < data.length; i += 1) {
 			obj[data[i][key]] = data[i];
 		}
 		return obj;
@@ -144,8 +145,7 @@ module.exports = function (Posts) {
 
 	function stripTags(content) {
 		if (content) {
-			var s = S(content);
-			return s.stripTags.apply(s, utils.stripTags).s;
+			return utils.stripHTMLTags(content, utils.stripTags);
 		}
 		return content;
 	}

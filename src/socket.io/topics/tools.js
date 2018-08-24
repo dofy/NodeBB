@@ -1,8 +1,6 @@
 'use strict';
 
 var async = require('async');
-var winston = require('winston');
-var validator = require('validator');
 
 var topics = require('../../topics');
 var events = require('../../events');
@@ -11,7 +9,6 @@ var plugins = require('../../plugins');
 var socketHelpers = require('../helpers');
 
 module.exports = function (SocketTopics) {
-
 	SocketTopics.loadTopicTools = function (socket, data, callback) {
 		if (!socket.uid) {
 			return callback(new Error('[[error:no-privileges]]'));
@@ -28,13 +25,13 @@ module.exports = function (SocketTopics) {
 					},
 					privileges: function (next) {
 						privileges.topics.get(data.tid, socket.uid, next);
-					}
+					},
 				}, next);
 			},
 			function (results, next) {
 				topic = results.topic;
 				topic.privileges = results.privileges;
-				plugins.fireHook('filter:topic.thread_tools', {topic: results.topic, uid: socket.uid, tools: []}, next);
+				plugins.fireHook('filter:topic.thread_tools', { topic: results.topic, uid: socket.uid, tools: [] }, next);
 			},
 			function (data, next) {
 				topic.deleted = parseInt(topic.deleted, 10) === 1;
@@ -42,7 +39,7 @@ module.exports = function (SocketTopics) {
 				topic.pinned = parseInt(topic.pinned, 10) === 1;
 				topic.thread_tools = data.tools;
 				next(null, topic);
-			}
+			},
 		], callback);
 	};
 
@@ -89,31 +86,42 @@ module.exports = function (SocketTopics) {
 		}
 
 		async.each(data.tids, function (tid, next) {
-			topics.tools[action](tid, socket.uid, function (err, data) {
-				if (err) {
-					return next(err);
-				}
-
-				socketHelpers.emitToTopicAndCategory(event, data);
-
-				if (action === 'delete' || action === 'restore' || action === 'purge') {
-					topics.getTopicField(tid, 'title', function (err, title) {
-						if (err) {
-							return winston.error(err);
-						}
-						events.log({
-							type: 'topic-' + action,
-							uid: socket.uid,
-							ip: socket.ip,
-							tid: tid,
-							title: validator.escape(String(title))
-						});
-					});
-				}
-
-				next();
-			});
+			var title;
+			async.waterfall([
+				function (next) {
+					topics.getTopicField(tid, 'title', next);
+				},
+				function (_title, next) {
+					title = _title;
+					topics.tools[action](tid, socket.uid, next);
+				},
+				function (data, next) {
+					socketHelpers.emitToTopicAndCategory(event, data);
+					logTopicAction(action, socket, tid, title, next);
+				},
+			], next);
 		}, callback);
 	};
 
+	function logTopicAction(action, socket, tid, title, callback) {
+		var actionsToLog = ['delete', 'restore', 'purge'];
+		if (actionsToLog.indexOf(action) === -1) {
+			return setImmediate(callback);
+		}
+		events.log({
+			type: 'topic-' + action,
+			uid: socket.uid,
+			ip: socket.ip,
+			tid: tid,
+			title: String(title),
+		}, callback);
+	}
+
+	SocketTopics.orderPinnedTopics = function (socket, data, callback) {
+		if (!Array.isArray(data)) {
+			return callback(new Error('[[error:invalid-data]]'));
+		}
+
+		topics.tools.orderPinnedTopics(socket.uid, data, callback);
+	};
 };

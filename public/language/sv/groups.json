@@ -27,6 +27,8 @@
     "details.disableJoinRequests": "Inaktivera förfrågningar om att gå med",
     "details.grant": "Tilldela/Dra tillbaka ägarskap",
     "details.kick": "Sparka ut",
+    "details.kick_confirm": "Vill du verkligen avlägsna denna användare från gruppen?",
+    "details.add-member": "Lägg till medlem",
     "details.owner_options": "Gruppadministration",
     "details.group_name": "Gruppnamn",
     "details.member_count": "Medlemsantal",
@@ -52,5 +54,6 @@
     "new-group.group_name": "Gruppnamn:",
     "upload-group-cover": "Ladda upp omslagsbild för grupp",
     "bulk-invite-instructions": "Ange en lista med kommaseparerade användarnamn som du vill bjuda in till denna grupp",
-    "bulk-invite": "Massinbjudning"
+    "bulk-invite": "Massinbjudning",
+    "remove_group_cover_confirm": "Vill du verkligen ta bort omslagsbilden?"
 }

@@ -1,12 +1,11 @@
 'use strict';
-/*global require, after, before*/
 
-var	async = require('async'),
-	assert = require('assert'),
-	db = require('../mocks/databasemock');
+
+var	async = require('async');
+var assert = require('assert');
+var db = require('../mocks/databasemock');
 
 describe('Set methods', function () {
-
 	describe('setAdd()', function () {
 		it('should add to a set', function (done) {
 			db.setAdd('testSet1', 5, function (err) {
@@ -27,7 +26,7 @@ describe('Set methods', function () {
 
 	describe('getSetMembers()', function () {
 		before(function (done) {
-			db.setAdd('testSet2', [1,2,3,4,5], done);
+			db.setAdd('testSet2', [1, 2, 3, 4, 5], done);
 		});
 
 		it('should return an empty set', function (done) {
@@ -139,7 +138,7 @@ describe('Set methods', function () {
 
 	describe('setCount()', function () {
 		before(function (done) {
-			db.setAdd('testSet5', [1,2,3,4,5], done);
+			db.setAdd('testSet5', [1, 2, 3, 4, 5], done);
 		});
 
 		it('should return the element count of set', function (done) {
@@ -155,9 +154,9 @@ describe('Set methods', function () {
 	describe('setsCount()', function () {
 		before(function (done) {
 			async.parallel([
-				async.apply(db.setAdd, 'set5', [1,2,3,4,5]),
+				async.apply(db.setAdd, 'set5', [1, 2, 3, 4, 5]),
 				async.apply(db.setAdd, 'set6', 1),
-				async.apply(db.setAdd, 'set7', 2)
+				async.apply(db.setAdd, 'set7', 2),
 			], done);
 		});
 
@@ -189,6 +188,42 @@ describe('Set methods', function () {
 				});
 			});
 		});
+
+		it('should remove multiple elements from set', function (done) {
+			db.setAdd('multiRemoveSet', [1, 2, 3, 4, 5], function (err) {
+				assert.ifError(err);
+				db.setRemove('multiRemoveSet', [1, 3, 5], function (err) {
+					assert.ifError(err);
+					db.getSetMembers('multiRemoveSet', function (err, members) {
+						assert.ifError(err);
+						assert(members.includes('2'));
+						assert(members.includes('4'));
+						done();
+					});
+				});
+			});
+		});
+
+		it('should remove multiple values from multiple keys', function (done) {
+			db.setAdd('multiSetTest1', ['one', 'two', 'three', 'four'], function (err) {
+				assert.ifError(err);
+				db.setAdd('multiSetTest2', ['three', 'four', 'five', 'six'], function (err) {
+					assert.ifError(err);
+					db.setRemove(['multiSetTest1', 'multiSetTest2'], ['three', 'four', 'five', 'doesnt exist'], function (err) {
+						assert.ifError(err);
+						db.getSetsMembers(['multiSetTest1', 'multiSetTest2'], function (err, members) {
+							assert.ifError(err);
+							assert.equal(members[0].length, 2);
+							assert.equal(members[1].length, 1);
+							assert(members[0].includes('one'));
+							assert(members[0].includes('two'));
+							assert(members[1].includes('six'));
+							done();
+						});
+					});
+				});
+			});
+		});
 	});
 
 	describe('setsRemove()', function () {
@@ -211,7 +246,7 @@ describe('Set methods', function () {
 
 	describe('setRemoveRandom()', function () {
 		before(function (done) {
-			db.setAdd('testSet7', [1,2,3,4,5], done);
+			db.setAdd('testSet7', [1, 2, 3, 4, 5], done);
 		});
 
 		it('should remove a random element from set', function (done) {
@@ -226,10 +261,5 @@ describe('Set methods', function () {
 				});
 			});
 		});
-	});
-
-
-	after(function (done) {
-		db.emptydb(done);
 	});
 });

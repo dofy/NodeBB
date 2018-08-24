@@ -1,7 +1,7 @@
 'use strict';
-/* globals config, io, ajaxify */
 
-var app = app || {};
+
+var app = window.app || {};
 var socket;
 app.isConnected = false;
 
@@ -12,31 +12,41 @@ app.isConnected = false;
 		reconnectionAttempts: config.maxReconnectionAttempts,
 		reconnectionDelay: config.reconnectionDelay,
 		transports: config.socketioTransports,
-		path: config.relative_path + '/socket.io'
+		path: config.relative_path + '/socket.io',
 	};
 
 	socket = io(config.websocketAddress, ioParams);
 
-	socket.on('connect', onConnect);
+	if (parseInt(app.user.uid, 10) >= 0) {
+		addHandlers();
+	}
 
-	socket.on('reconnecting', onReconnecting);
+	function addHandlers() {
+		socket.on('connect', onConnect);
 
-	socket.on('disconnect', onDisconnect);
+		socket.on('reconnecting', onReconnecting);
 
-	socket.on('reconnect_failed', function () {
-		// Wait ten times the reconnection delay and then start over
-		setTimeout(socket.connect.bind(socket), parseInt(config.reconnectionDelay, 10) * 10);
-	});
+		socket.on('disconnect', onDisconnect);
 
-	socket.on('checkSession', function (uid) {
-		if (parseInt(uid, 10) !== parseInt(app.user.uid, 10)) {
-			app.handleInvalidSession();
-		}
-	});
+		socket.on('reconnect_failed', function () {
+			// Wait ten times the reconnection delay and then start over
+			setTimeout(socket.connect.bind(socket), parseInt(config.reconnectionDelay, 10) * 10);
+		});
 
-	socket.on('event:banned', onEventBanned);
+		socket.on('checkSession', function (uid) {
+			if (parseInt(uid, 10) !== parseInt(app.user.uid, 10)) {
+				app.handleInvalidSession();
+			}
+		});
 
-	socket.on('event:alert', app.alert);
+		socket.on('setHostname', function (hostname) {
+			app.upstreamHost = hostname;
+		});
+
+		socket.on('event:banned', onEventBanned);
+
+		socket.on('event:alert', app.alert);
+	}
 
 	function onConnect() {
 		app.isConnected = true;
@@ -71,30 +81,30 @@ app.isConnected = false;
 		var	url_parts = window.location.pathname.slice(config.relative_path.length).split('/').slice(1);
 		var room;
 
-		switch(url_parts[0]) {
-			case 'user':
-				room = 'user/' + (ajaxify.data ? ajaxify.data.theirid : 0);
+		switch (url_parts[0]) {
+		case 'user':
+			room = 'user/' + (ajaxify.data ? ajaxify.data.theirid : 0);
 			break;
-			case 'topic':
-				room = 'topic_' + url_parts[1];
+		case 'topic':
+			room = 'topic_' + url_parts[1];
 			break;
-			case 'category':
-				room = 'category_' + url_parts[1];
+		case 'category':
+			room = 'category_' + url_parts[1];
 			break;
-			case 'recent':
-				room = 'recent_topics';
+		case 'recent':
+			room = 'recent_topics';
 			break;
-			case 'unread':
-				room = 'unread_topics';
+		case 'unread':
+			room = 'unread_topics';
 			break;
-			case 'popular':
-				room = 'popular_topics';
+		case 'popular':
+			room = 'popular_topics';
 			break;
-			case 'admin':
-				room = 'admin';
+		case 'admin':
+			room = 'admin';
 			break;
-			case 'categories':
-				room = 'categories';
+		case 'categories':
+			room = 'categories';
 			break;
 		}
 		app.currentRoom = '';
@@ -112,7 +122,7 @@ app.isConnected = false;
 		}
 
 		reconnectEl.addClass('active').removeClass('hide').tooltip({
-			placement: 'bottom'
+			placement: 'bottom',
 		});
 	}
 
@@ -121,8 +131,16 @@ app.isConnected = false;
 		app.isConnected = false;
 	}
 
-	function onEventBanned() {
-		window.location.href = config.relative_path + '/';
-	}
+	function onEventBanned(data) {
+		var message = data.until ? '[[error:user-banned-reason-until, ' + $.timeago(data.until) + ', ' + data.reason + ']]' : '[[error:user-banned-reason, ' + data.reason + ']]';
 
+		bootbox.alert({
+			title: '[[error:user-banned]]',
+			message: message,
+			closeButton: false,
+			callback: function () {
+				window.location.href = config.relative_path + '/';
+			},
+		});
+	}
 }());

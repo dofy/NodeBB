@@ -1,128 +1,153 @@
 
 'use strict';
 
-var winston = require('winston');
+var async = require('async');
 var nconf = require('nconf');
+var path = require('path');
+var winston = require('winston');
 
 var db = require('../database');
 var pubsub = require('../pubsub');
-var utils = require('../../public/src/utils');
+var Meta = require('../meta');
+var cacheBuster = require('./cacheBuster');
 
-module.exports = function (Meta) {
+var Configs = module.exports;
 
-	Meta.config = {};
-	Meta.configs = {};
+Meta.config = {};
 
-	Meta.configs.init = function (callback) {
-		delete Meta.config;
-
-		Meta.configs.list(function (err, config) {
-			if (err) {
-				winston.error(err.stack);
-				return callback(err);
-			}
-
-			config['cache-buster'] = utils.generateUUID();
-
+Configs.init = function (callback) {
+	var config;
+	async.waterfall([
+		function (next) {
+			Configs.list(next);
+		},
+		function (_config, next) {
+			config = _config;
+			cacheBuster.read(next);
+		},
+		function (buster, next) {
+			config['cache-buster'] = 'v=' + (buster || Date.now());
 			Meta.config = config;
-			callback();
-		});
-	};
+			next();
+		},
+	], callback);
+};
 
-	Meta.configs.list = function (callback) {
-		db.getObject('config', function (err, config) {
-			config = config || {};
-			config.version = nconf.get('version');
-			config.registry = nconf.get('registry');
-			callback(err, config);
-		});
-	};
-
-	Meta.configs.get = function (field, callback) {
-		db.getObjectField('config', field, callback);
-	};
-
-	Meta.configs.getFields = function (fields, callback) {
-		db.getObjectFields('config', fields, callback);
-	};
-
-	Meta.configs.set = function (field, value, callback) {
-		callback = callback || function () {};
-		if (!field) {
-			return callback(new Error('invalid config field'));
-		}
-
-		db.setObjectField('config', field, value, function (err) {
-			if (err) {
-				return callback(err);
-			}
-			var data = {};
-			data[field] = value;
-			updateConfig(data);
-
-			callback();
-		});
-	};
-
-	Meta.configs.setMultiple = function (data, callback) {
-		processConfig(data, function (err) {
-			if (err) {
-				return callback(err);
-			}
-			db.setObject('config', data, function (err) {
-				if (err) {
-					return callback(err);
-				}
-
-				updateConfig(data);
-				callback();
-			});
-		});
-	};
-
-	function processConfig(data, callback) {
-		if (data.customCSS) {
-			saveRenderedCss(data, callback);
-			return;
-		}
-		callback();
-	}
-
-	function saveRenderedCss(data, callback) {
-		var less = require('less');
-		less.render(data.customCSS, {
-			compress: true
-		}, function (err, lessObject) {
-			if (err) {
-				winston.error('[less] Could not convert custom LESS to CSS! Please check your syntax.');
-				return callback(null, '');
-			}
-			data.renderedCustomCSS = lessObject.css;
-			callback();
-		});
-	}
-
-	function updateConfig(config) {
-		pubsub.publish('config:update', config);
-	}
-
-	pubsub.on('config:update', function onConfigReceived(config) {
-		if (typeof config !== 'object' || !Meta.config) {
-			return;
-		}
-
-		for(var field in config) {
-			if(config.hasOwnProperty(field)) {
-				Meta.config[field] = config[field];
-			}
-		}
+Configs.list = function (callback) {
+	db.getObject('config', function (err, config) {
+		config = config || {};
+		config.version = nconf.get('version');
+		config.registry = nconf.get('registry');
+		callback(err, config);
 	});
+};
 
-	Meta.configs.setOnEmpty = function (values, callback) {
-		db.getObject('config', function (err, data) {
-			if (err) {
-				return callback(err);
+Configs.get = function (field, callback) {
+	db.getObjectField('config', field, callback);
+};
+
+Configs.getFields = function (fields, callback) {
+	db.getObjectFields('config', fields, callback);
+};
+
+Configs.set = function (field, value, callback) {
+	callback = callback || function () {};
+	if (!field) {
+		return callback(new Error('[[error:invalid-data]]'));
+	}
+
+	var data = {};
+	data[field] = value;
+	Configs.setMultiple(data, callback);
+};
+
+
+Configs.setMultiple = function (data, callback) {
+	async.waterfall([
+		function (next) {
+			processConfig(data, next);
+		},
+		function (next) {
+			db.setObject('config', data, next);
+		},
+		function (next) {
+			updateConfig(data);
+			setImmediate(next);
+		},
+	], callback);
+};
+
+function processConfig(data, callback) {
+	async.parallel([
+		async.apply(saveRenderedCss, data),
+		function (next) {
+			var image = require('../image');
+			if (data['brand:logo']) {
+				image.size(path.join(nconf.get('upload_path'), 'system', 'site-logo-x50.png'), function (err, size) {
+					if (err && err.code === 'ENOENT') {
+						// For whatever reason the x50 logo wasn't generated, gracefully error out
+						winston.warn('[logo] The email-safe logo doesn\'t seem to have been created, please re-upload your site logo.');
+						size = {
+							height: 0,
+							width: 0,
+						};
+					} else if (err) {
+						return next(err);
+					}
+
+					data['brand:emailLogo:height'] = size.height;
+					data['brand:emailLogo:width'] = size.width;
+					next();
+				});
+			} else {
+				setImmediate(next);
 			}
+		},
+	], function (err) {
+		callback(err);
+	});
+}
+
+function saveRenderedCss(data, callback) {
+	if (!data.customCSS) {
+		return setImmediate(callback);
+	}
+
+	var less = require('less');
+	async.waterfall([
+		function (next) {
+			less.render(data.customCSS, {
+				compress: true,
+			}, next);
+		},
+		function (lessObject, next) {
+			data.renderedCustomCSS = lessObject.css;
+			setImmediate(next);
+		},
+	], callback);
+}
+
+function updateConfig(config) {
+	updateLocalConfig(config);
+	pubsub.publish('config:update', config);
+}
+
+function updateLocalConfig(config) {
+	Object.assign(Meta.config, config);
+}
+
+pubsub.on('config:update', function onConfigReceived(config) {
+	if (typeof config === 'object' && Meta.config) {
+		updateLocalConfig(config);
+	}
+});
+
+Configs.setOnEmpty = function (values, callback) {
+	async.waterfall([
+		function (next) {
+			db.getObject('config', next);
+		},
+		function (data, next) {
 			data = data || {};
 			var empty = {};
 			Object.keys(values).forEach(function (key) {
@@ -131,15 +156,14 @@ module.exports = function (Meta) {
 				}
 			});
 			if (Object.keys(empty).length) {
-				db.setObject('config', empty, callback);
+				db.setObject('config', empty, next);
 			} else {
-				callback();
+				setImmediate(next);
 			}
-		});
-	};
+		},
+	], callback);
+};
 
-	Meta.configs.remove = function (field) {
-		db.deleteObjectField('config', field);
-	};
-
+Configs.remove = function (field, callback) {
+	db.deleteObjectField('config', field, callback);
 };

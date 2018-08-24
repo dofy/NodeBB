@@ -1,29 +1,30 @@
-"use strict";
+'use strict';
 
-var	async = require('async');
+var async = require('async');
 
 var posts = require('../posts');
 var privileges = require('../privileges');
+var plugins = require('../plugins');
 var meta = require('../meta');
 var topics = require('../topics');
 var user = require('../user');
 var websockets = require('./index');
 var socketHelpers = require('./helpers');
-var utils = require('../../public/src/utils');
+var utils = require('../utils');
 
 var apiController = require('../controllers/api');
 
-var SocketPosts = {};
+var SocketPosts = module.exports;
 
 require('./posts/edit')(SocketPosts);
 require('./posts/move')(SocketPosts);
 require('./posts/votes')(SocketPosts);
 require('./posts/bookmarks')(SocketPosts);
 require('./posts/tools')(SocketPosts);
-require('./posts/flag')(SocketPosts);
+require('./posts/diffs')(SocketPosts);
 
 SocketPosts.reply = function (socket, data, callback) {
-	if (!data || !data.tid || !data.content) {
+	if (!data || !data.tid || (parseInt(meta.config.minimumPostLength, 10) !== 0 && !data.content)) {
 		return callback(new Error('[[error:invalid-data]]'));
 	}
 
@@ -31,26 +32,45 @@ SocketPosts.reply = function (socket, data, callback) {
 	data.req = websockets.reqFromSocket(socket);
 	data.timestamp = Date.now();
 
-	topics.reply(data, function (err, postData) {
-		if (err) {
-			return callback(err);
-		}
-
-		var result = {
-			posts: [postData],
-			'reputation:disabled': parseInt(meta.config['reputation:disabled'], 10) === 1,
-			'downvote:disabled': parseInt(meta.config['downvote:disabled'], 10) === 1,
-		};
-
-		callback(null, postData);
-
-		websockets.in('uid_' + socket.uid).emit('event:new_post', result);
-
-		user.updateOnlineUsers(socket.uid);
-
-		socketHelpers.notifyNew(socket.uid, 'newPost', result);
-	});
+	async.waterfall([
+		function (next) {
+			meta.blacklist.test(data.req.ip, next);
+		},
+		function (next) {
+			posts.shouldQueue(socket.uid, data, next);
+		},
+		function (shouldQueue, next) {
+			if (shouldQueue) {
+				posts.addToQueue(data, next);
+			} else {
+				postReply(socket, data, next);
+			}
+		},
+	], callback);
 };
+
+function postReply(socket, data, callback) {
+	async.waterfall([
+		function (next) {
+			topics.reply(data, next);
+		},
+		function (postData, next) {
+			var result = {
+				posts: [postData],
+				'reputation:disabled': parseInt(meta.config['reputation:disabled'], 10) === 1,
+				'downvote:disabled': parseInt(meta.config['downvote:disabled'], 10) === 1,
+			};
+
+			next(null, postData);
+
+			socket.emit('event:new_post', result);
+
+			user.updateOnlineUsers(socket.uid);
+
+			socketHelpers.notifyNew(socket.uid, 'newPost', result);
+		},
+	], callback);
+}
 
 SocketPosts.getRawPost = function (socket, pid, callback) {
 	async.waterfall([
@@ -68,7 +88,7 @@ SocketPosts.getRawPost = function (socket, pid, callback) {
 				return next(new Error('[[error:no-post]]'));
 			}
 			next(null, postData.content);
-		}
+		},
 	], callback);
 };
 
@@ -120,7 +140,7 @@ SocketPosts.getPidIndex = function (socket, data, callback) {
 
 SocketPosts.getReplies = function (socket, pid, callback) {
 	if (!utils.isNumber(pid)) {
-		return callback(new Error('[[error:invalid-data]'));
+		return callback(new Error('[[error:invalid-data]]'));
 	}
 	var postPrivileges;
 	async.waterfall([
@@ -134,24 +154,59 @@ SocketPosts.getReplies = function (socket, pid, callback) {
 				},
 				privileges: function (next) {
 					privileges.posts.get(pids, socket.uid, next);
-				}
+				},
 			}, next);
 		},
 		function (results, next) {
 			postPrivileges = results.privileges;
-			results.posts = results.posts.filter(function (postData, index) {
-				return postData && postPrivileges[index].read;
-			});
+
 			topics.addPostData(results.posts, socket.uid, next);
 		},
 		function (postData, next) {
-			postData.forEach(function (postData) {
-				posts.modifyPostByPrivilege(postData, postPrivileges.isAdminOrMod);
+			postData.forEach(function (postData, index) {
+				posts.modifyPostByPrivilege(postData, postPrivileges[index]);
+			});
+			postData = postData.filter(function (postData, index) {
+				return postData && postPrivileges[index].read;
 			});
 			next(null, postData);
-		}
+		},
 	], callback);
 };
 
+SocketPosts.accept = function (socket, data, callback) {
+	acceptOrReject(posts.submitFromQueue, socket, data, callback);
+};
 
-module.exports = SocketPosts;
+SocketPosts.reject = function (socket, data, callback) {
+	acceptOrReject(posts.removeFromQueue, socket, data, callback);
+};
+
+SocketPosts.editQueuedContent = function (socket, data, callback) {
+	if (!data || !data.id || !data.content) {
+		return callback(new Error('[[error:invalid-data]]'));
+	}
+	async.waterfall([
+		function (next) {
+			posts.editQueuedContent(socket.uid, data.id, data.content, next);
+		},
+		function (next) {
+			plugins.fireHook('filter:parse.post', { postData: data }, next);
+		},
+	], callback);
+};
+
+function acceptOrReject(method, socket, data, callback) {
+	async.waterfall([
+		function (next) {
+			posts.canEditQueue(socket.uid, data.id, next);
+		},
+		function (canEditQueue, next) {
+			if (!canEditQueue) {
+				return callback(new Error('[[error:no-privileges]]'));
+			}
+
+			method(data.id, next);
+		},
+	], callback);
+}

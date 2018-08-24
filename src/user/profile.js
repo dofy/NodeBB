@@ -2,39 +2,36 @@
 'use strict';
 
 var async = require('async');
-var S = require('string');
 
-var utils = require('../../public/src/utils');
+var utils = require('../utils');
 var meta = require('../meta');
 var db = require('../database');
 var groups = require('../groups');
 var plugins = require('../plugins');
 
 module.exports = function (User) {
-
 	User.updateProfile = function (uid, data, callback) {
 		var fields = ['username', 'email', 'fullname', 'website', 'location',
-			'groupTitle', 'birthday', 'signature', 'aboutme', 'picture', 'uploadedpicture'];
+			'groupTitle', 'birthday', 'signature', 'aboutme'];
+
+		var updateUid = data.uid;
+		var oldData;
 
 		async.waterfall([
 			function (next) {
-				plugins.fireHook('filter:user.updateProfile', {uid: uid, data: data, fields: fields}, next);
+				plugins.fireHook('filter:user.updateProfile', { uid: uid, data: data, fields: fields }, next);
 			},
 			function (data, next) {
 				fields = data.fields;
 				data = data.data;
 
-				async.series([
-					async.apply(isAboutMeValid, data),
-					async.apply(isSignatureValid, data),
-					async.apply(isEmailAvailable, data, uid),
-					async.apply(isUsernameAvailable, data, uid),
-					async.apply(isGroupTitleValid, data)
-				], function (err) {
-					next(err);
-				});
+				validateData(uid, data, next);
 			},
 			function (next) {
+				User.getUserFields(updateUid, fields, next);
+			},
+			function (_oldData, next) {
+				oldData = _oldData;
 				async.each(fields, function (field, next) {
 					if (!(data[field] !== undefined && typeof data[field] === 'string')) {
 						return next();
@@ -43,39 +40,34 @@ module.exports = function (User) {
 					data[field] = data[field].trim();
 
 					if (field === 'email') {
-						return updateEmail(uid, data.email, next);
+						return updateEmail(updateUid, data.email, next);
 					} else if (field === 'username') {
-						return updateUsername(uid, data.username, next);
+						return updateUsername(updateUid, data.username, next);
 					} else if (field === 'fullname') {
-						return updateFullname(uid, data.fullname, next);
-					} else if (field === 'signature') {
-						data[field] = S(data[field]).stripTags().s;
+						return updateFullname(updateUid, data.fullname, next);
 					}
 
-					User.setUserField(uid, field, data[field], next);
+					User.setUserField(updateUid, field, data[field], next);
 				}, next);
 			},
 			function (next) {
-				plugins.fireHook('action:user.updateProfile', {data: data, uid: uid});
-				User.getUserFields(uid, ['email', 'username', 'userslug', 'picture', 'icon:text', 'icon:bgColor'], next);
-			}
+				plugins.fireHook('action:user.updateProfile', { uid: uid, data: data, fields: fields, oldData: oldData });
+				User.getUserFields(updateUid, ['email', 'username', 'userslug', 'picture', 'icon:text', 'icon:bgColor'], next);
+			},
 		], callback);
 	};
 
-	function isAboutMeValid(data, callback) {
-		if (data.aboutme !== undefined && data.aboutme.length > meta.config.maximumAboutMeLength) {
-			callback(new Error('[[error:about-me-too-long, ' + meta.config.maximumAboutMeLength + ']]'));
-		} else {
-			callback();
-		}
-	}
-
-	function isSignatureValid(data, callback) {
-		if (data.signature !== undefined && data.signature.length > meta.config.maximumSignatureLength) {
-			callback(new Error('[[error:signature-too-long, ' + meta.config.maximumSignatureLength + ']]'));
-		} else {
-			callback();
-		}
+	function validateData(callerUid, data, callback) {
+		async.series([
+			async.apply(isEmailAvailable, data, data.uid),
+			async.apply(isUsernameAvailable, data, data.uid),
+			async.apply(isGroupTitleValid, data),
+			async.apply(isWebsiteValid, callerUid, data),
+			async.apply(isAboutMeValid, callerUid, data),
+			async.apply(isSignatureValid, callerUid, data),
+		], function (err) {
+			callback(err);
+		});
 	}
 
 	function isEmailAvailable(data, uid, callback) {
@@ -99,7 +91,7 @@ module.exports = function (User) {
 			},
 			function (available, next) {
 				next(!available ? new Error('[[error:email-taken]]') : null);
-			}
+			},
 		], callback);
 	}
 
@@ -134,7 +126,7 @@ module.exports = function (User) {
 			},
 			function (exists, next) {
 				next(exists ? new Error('[[error:username-taken]]') : null);
-			}
+			},
 		], callback);
 	}
 
@@ -146,76 +138,141 @@ module.exports = function (User) {
 		}
 	}
 
-	function updateEmail(uid, newEmail, callback) {
-		User.getUserFields(uid, ['email', 'picture', 'uploadedpicture'], function (err, userData) {
-			if (err) {
-				return callback(err);
-			}
+	function isWebsiteValid(callerUid, data, callback) {
+		if (!data.website) {
+			return setImmediate(callback);
+		}
+		User.checkMinReputation(callerUid, data.uid, 'min:rep:website', callback);
+	}
 
-			userData.email = userData.email || '';
+	function isAboutMeValid(callerUid, data, callback) {
+		if (!data.aboutme) {
+			return setImmediate(callback);
+		}
+		if (data.aboutme !== undefined && data.aboutme.length > meta.config.maximumAboutMeLength) {
+			return callback(new Error('[[error:about-me-too-long, ' + meta.config.maximumAboutMeLength + ']]'));
+		}
 
-			if (userData.email === newEmail) {
-				return callback();
-			}
-			async.series([
-				async.apply(db.sortedSetRemove, 'email:uid', userData.email.toLowerCase()),
-				async.apply(db.sortedSetRemove, 'email:sorted', userData.email.toLowerCase() + ':' + uid)
-			], function (err) {
-				if (err) {
-					return callback(err);
+		User.checkMinReputation(callerUid, data.uid, 'min:rep:aboutme', callback);
+	}
+
+	function isSignatureValid(callerUid, data, callback) {
+		if (!data.signature) {
+			return setImmediate(callback);
+		}
+		if (data.signature !== undefined && data.signature.length > meta.config.maximumSignatureLength) {
+			return callback(new Error('[[error:signature-too-long, ' + meta.config.maximumSignatureLength + ']]'));
+		}
+		User.checkMinReputation(callerUid, data.uid, 'min:rep:signature', callback);
+	}
+
+	User.checkMinReputation = function (callerUid, uid, setting, callback) {
+		var isSelf = parseInt(callerUid, 10) === parseInt(uid, 10);
+		if (!isSelf) {
+			return setImmediate(callback);
+		}
+		async.waterfall([
+			function (next) {
+				User.getUserField(uid, 'reputation', next);
+			},
+			function (reputation, next) {
+				if (parseInt(reputation, 10) < (parseInt(meta.config[setting], 10) || 0)) {
+					return next(new Error('[[error:not-enough-reputation-' + setting.replace(/:/g, '-') + ']]'));
 				}
+				next();
+			},
+		], callback);
+	};
 
+	function updateEmail(uid, newEmail, callback) {
+		async.waterfall([
+			function (next) {
+				User.getUserField(uid, 'email', next);
+			},
+			function (oldEmail, next) {
+				oldEmail = oldEmail || '';
+
+				if (oldEmail === newEmail) {
+					return callback();
+				}
+				async.series([
+					async.apply(db.sortedSetRemove, 'email:uid', oldEmail.toLowerCase()),
+					async.apply(db.sortedSetRemove, 'email:sorted', oldEmail.toLowerCase() + ':' + uid),
+					async.apply(User.auth.revokeAllSessions, uid),
+				], function (err) {
+					next(err);
+				});
+			},
+			function (next) {
 				async.parallel([
 					function (next) {
 						db.sortedSetAdd('email:uid', uid, newEmail.toLowerCase(), next);
 					},
-					async.apply(db.sortedSetAdd, 'user:' + uid + ':emails', Date.now(), newEmail + ':' + Date.now()),
 					function (next) {
-						db.sortedSetAdd('email:sorted',  0, newEmail.toLowerCase() + ':' + uid, next);
+						db.sortedSetAdd('email:sorted', 0, newEmail.toLowerCase() + ':' + uid, next);
+					},
+					function (next) {
+						db.sortedSetAdd('user:' + uid + ':emails', Date.now(), newEmail + ':' + Date.now(), next);
 					},
 					function (next) {
 						User.setUserField(uid, 'email', newEmail, next);
 					},
 					function (next) {
 						if (parseInt(meta.config.requireEmailConfirmation, 10) === 1 && newEmail) {
-							User.email.sendValidationEmail(uid, newEmail);
+							User.email.sendValidationEmail(uid, {
+								email: newEmail,
+								subject: '[[email:email.verify-your-email.subject]]',
+								template: 'verify_email',
+							});
 						}
 						User.setUserField(uid, 'email:confirmed', 0, next);
 					},
 					function (next) {
 						db.sortedSetAdd('users:notvalidated', Date.now(), uid, next);
-					}
-				], callback);
-			});
-		});
+					},
+					function (next) {
+						User.reset.cleanByUid(uid, next);
+					},
+				], function (err) {
+					next(err);
+				});
+			},
+		], callback);
 	}
 
 	function updateUsername(uid, newUsername, callback) {
 		if (!newUsername) {
-			return callback();
+			return setImmediate(callback);
 		}
 
-		User.getUserFields(uid, ['username', 'userslug'], function (err, userData) {
-			if (err) {
-				return callback(err);
-			}
-
-			async.parallel([
-				function (next) {
-					updateUidMapping('username', uid, newUsername, userData.username, next);
-				},
-				function (next) {
-					var newUserslug = utils.slugify(newUsername);
-					updateUidMapping('userslug', uid, newUserslug, userData.userslug, next);
-				},
-				function (next) {
-					async.series([
-						async.apply(db.sortedSetRemove, 'username:sorted', userData.username.toLowerCase() + ':' + uid),
-						async.apply(db.sortedSetAdd, 'username:sorted', 0, newUsername.toLowerCase() + ':' + uid),
-						async.apply(db.sortedSetAdd, 'user:' + uid + ':usernames', Date.now(), newUsername + ':' + Date.now())
-					], next);
-				},
-			], callback);
+		async.waterfall([
+			function (next) {
+				User.getUserFields(uid, ['username', 'userslug'], next);
+			},
+			function (userData, next) {
+				if (userData.username === newUsername) {
+					return callback();
+				}
+				async.parallel([
+					function (next) {
+						updateUidMapping('username', uid, newUsername, userData.username, next);
+					},
+					function (next) {
+						var newUserslug = utils.slugify(newUsername);
+						updateUidMapping('userslug', uid, newUserslug, userData.userslug, next);
+					},
+					function (next) {
+						var now = Date.now();
+						async.series([
+							async.apply(db.sortedSetRemove, 'username:sorted', userData.username.toLowerCase() + ':' + uid),
+							async.apply(db.sortedSetAdd, 'username:sorted', 0, newUsername.toLowerCase() + ':' + uid),
+							async.apply(db.sortedSetAdd, 'user:' + uid + ':usernames', now, newUsername + ':' + now),
+						], next);
+					},
+				], next);
+			},
+		], function (err) {
+			callback(err);
 		});
 	}
 
@@ -237,7 +294,7 @@ module.exports = function (User) {
 				} else {
 					next();
 				}
-			}
+			},
 		], callback);
 	}
 
@@ -248,7 +305,7 @@ module.exports = function (User) {
 			},
 			function (fullname, next) {
 				updateUidMapping('fullname', uid, newFullname, fullname, next);
-			}
+			},
 		], callback);
 	}
 
@@ -265,24 +322,29 @@ module.exports = function (User) {
 				if (parseInt(uid, 10) !== parseInt(data.uid, 10)) {
 					User.isAdministrator(uid, next);
 				} else {
-					User.isPasswordCorrect(uid, data.currentPassword, next);
+					User.isPasswordCorrect(uid, data.currentPassword, data.ip, next);
 				}
 			},
 			function (isAdminOrPasswordMatch, next) {
 				if (!isAdminOrPasswordMatch) {
-					return next(new Error('[[error:change_password_error_wrong_current]]'));
+					return next(new Error('[[user:change_password_error_wrong_current]]'));
 				}
 
 				User.hashPassword(data.newPassword, next);
 			},
 			function (hashedPassword, next) {
 				async.parallel([
-					async.apply(User.setUserField, data.uid, 'password', hashedPassword),
-					async.apply(User.reset.updateExpiry, data.uid)
+					async.apply(User.setUserFields, data.uid, {
+						password: hashedPassword,
+						rss_token: utils.generateUUID(),
+					}),
+					async.apply(User.reset.updateExpiry, data.uid),
+					async.apply(User.auth.revokeAllSessions, data.uid),
+					async.apply(plugins.fireHook, 'action:password.change', { uid: uid }),
 				], function (err) {
 					next(err);
 				});
-			}
+			},
 		], callback);
 	};
 };

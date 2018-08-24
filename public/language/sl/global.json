@@ -53,6 +53,7 @@
     "topics": "Teme",
     "posts": "Objave",
     "best": "Najboljše",
+    "votes": "Votes",
     "upvoters": "Glasovalcev za",
     "upvoted": "Glasov za",
     "downvoters": "Glasovalcev proti",
@@ -96,11 +97,16 @@
     "enter_page_number": "Vnesi številko strani",
     "upload_file": "Prenesi datoteko",
     "upload": "Prenos",
+    "uploads": "Uploads",
     "allowed-file-types": "Dovoljene vrste datotek: %1",
     "unsaved-changes": "Nekatere spremembe niso shranjene. A res želite zapustiti stran?",
     "reconnecting-message": "Kaže, da je bila povezava s/z %1 prekinjena. Prosimo, počakajte, ponovno poskušamo vzpostaviti povezavo.",
     "play": "Play",
     "cookies.message": "This website uses cookies to ensure you get the best experience on our website.",
     "cookies.accept": "Got it!",
-    "cookies.learn_more": "Learn More"
+    "cookies.learn_more": "Learn More",
+    "edited": "Edited",
+    "disabled": "Disabled",
+    "select": "Select",
+    "user-search-prompt": "Type something here to find users..."
 }

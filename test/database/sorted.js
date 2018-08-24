@@ -1,16 +1,15 @@
 'use strict';
-/*global require, after, before*/
 
-var	async = require('async'),
-	assert = require('assert'),
-	db = require('../mocks/databasemock');
+
+var	async = require('async');
+var assert = require('assert');
+var db = require('../mocks/databasemock');
 
 describe('Sorted Set methods', function () {
-
 	before(function (done) {
 		async.parallel([
 			function (next) {
-				db.sortedSetAdd('sortedSetTest1', [1, 2, 3], ['value1', 'value2', 'value3'], next);
+				db.sortedSetAdd('sortedSetTest1', [1.1, 1.2, 1.3], ['value1', 'value2', 'value3'], next);
 			},
 			function (next) {
 				db.sortedSetAdd('sortedSetTest2', [1, 4], ['value1', 'value4'], next);
@@ -19,8 +18,11 @@ describe('Sorted Set methods', function () {
 				db.sortedSetAdd('sortedSetTest3', [2, 4], ['value2', 'value4'], next);
 			},
 			function (next) {
+				db.sortedSetAdd('sortedSetTest4', [1, 1, 2, 3, 5], ['b', 'a', 'd', 'e', 'c'], next);
+			},
+			function (next) {
 				db.sortedSetAdd('sortedSetLex', [0, 0, 0, 0], ['a', 'b', 'c', 'd'], next);
-			}
+			},
 		], done);
 	});
 
@@ -38,6 +40,21 @@ describe('Sorted Set methods', function () {
 				assert.equal(err, null);
 				assert.equal(arguments.length, 1);
 				done();
+			});
+		});
+
+		it('should gracefully handle adding the same element twice', function (done) {
+			db.sortedSetAdd('sorted2', [1, 2], ['value1', 'value1'], function (err) {
+				assert.equal(err, null);
+				assert.equal(arguments.length, 1);
+
+				db.sortedSetScore('sorted2', 'value1', function (err, score) {
+					assert.equal(err, null);
+					assert.equal(score, 2);
+					assert.equal(arguments.length, 2);
+
+					done();
+				});
 			});
 		});
 	});
@@ -70,6 +87,58 @@ describe('Sorted Set methods', function () {
 				done();
 			});
 		});
+
+		it('should return empty array if set does not exist', function (done) {
+			db.getSortedSetRange('doesnotexist', 0, -1, function (err, values) {
+				assert.ifError(err);
+				assert(Array.isArray(values));
+				assert.equal(values.length, 0);
+				done();
+			});
+		});
+
+		it('should handle negative start/stop', function (done) {
+			db.sortedSetAdd('negatives', [1, 2, 3, 4, 5], ['1', '2', '3', '4', '5'], function (err) {
+				assert.ifError(err);
+				db.getSortedSetRange('negatives', -2, -4, function (err, data) {
+					assert.ifError(err);
+					assert.deepEqual(data, []);
+					done();
+				});
+			});
+		});
+
+		it('should handle negative start/stop', function (done) {
+			db.getSortedSetRange('negatives', -4, -2, function (err, data) {
+				assert.ifError(err);
+				assert.deepEqual(data, ['2', '3', '4']);
+				done();
+			});
+		});
+
+		it('should handle negative start/stop', function (done) {
+			db.getSortedSetRevRange('negatives', -4, -2, function (err, data) {
+				assert.ifError(err);
+				assert.deepEqual(data, ['4', '3', '2']);
+				done();
+			});
+		});
+
+		it('should handle negative start/stop', function (done) {
+			db.getSortedSetRange('negatives', -5, -1, function (err, data) {
+				assert.ifError(err);
+				assert.deepEqual(data, ['1', '2', '3', '4', '5']);
+				done();
+			});
+		});
+
+		it('should handle negative start/stop', function (done) {
+			db.getSortedSetRange('negatives', 0, -2, function (err, data) {
+				assert.ifError(err);
+				assert.deepEqual(data, ['1', '2', '3', '4']);
+				done();
+			});
+		});
 	});
 
 	describe('getSortedSetRevRange()', function () {
@@ -97,7 +166,7 @@ describe('Sorted Set methods', function () {
 			db.getSortedSetRangeWithScores('sortedSetTest1', 0, -1, function (err, values) {
 				assert.equal(err, null);
 				assert.equal(arguments.length, 2);
-				assert.deepEqual(values, [{value: 'value1', score: 1}, {value: 'value2', score: 2}, {value: 'value3', score: 3}]);
+				assert.deepEqual(values, [{ value: 'value1', score: 1.1 }, { value: 'value2', score: 1.2 }, { value: 'value3', score: 1.3 }]);
 				done();
 			});
 		});
@@ -108,7 +177,7 @@ describe('Sorted Set methods', function () {
 			db.getSortedSetRevRangeWithScores('sortedSetTest1', 0, -1, function (err, values) {
 				assert.equal(err, null);
 				assert.equal(arguments.length, 2);
-				assert.deepEqual(values, [{value: 'value3', score: 3}, {value: 'value2', score: 2}, {value: 'value1', score: 1}]);
+				assert.deepEqual(values, [{ value: 'value3', score: 1.3 }, { value: 'value2', score: 1.2 }, { value: 'value1', score: 1.1 }]);
 				done();
 			});
 		});
@@ -116,10 +185,19 @@ describe('Sorted Set methods', function () {
 
 	describe('getSortedSetRangeByScore()', function () {
 		it('should get count elements with score between min max sorted by score lowest to highest', function (done) {
-			db.getSortedSetRangeByScore('sortedSetTest1', 0, -1, '-inf', 2, function (err, values) {
+			db.getSortedSetRangeByScore('sortedSetTest1', 0, -1, '-inf', 1.2, function (err, values) {
 				assert.equal(err, null);
 				assert.equal(arguments.length, 2);
 				assert.deepEqual(values, ['value1', 'value2']);
+				done();
+			});
+		});
+
+		it('should return empty array if set does not exist', function (done) {
+			db.getSortedSetRangeByScore('doesnotexist', 0, -1, '-inf', 0, function (err, values) {
+				assert.ifError(err);
+				assert(Array.isArray(values));
+				assert.equal(values.length, 0);
 				done();
 			});
 		});
@@ -127,7 +205,7 @@ describe('Sorted Set methods', function () {
 
 	describe('getSortedSetRevRangeByScore()', function () {
 		it('should get count elements with score between max min sorted by score highest to lowest', function (done) {
-			db.getSortedSetRevRangeByScore('sortedSetTest1', 0, -1, '+inf', 2, function (err, values) {
+			db.getSortedSetRevRangeByScore('sortedSetTest1', 0, -1, '+inf', 1.2, function (err, values) {
 				assert.equal(err, null);
 				assert.equal(arguments.length, 2);
 				assert.deepEqual(values, ['value3', 'value2']);
@@ -138,10 +216,10 @@ describe('Sorted Set methods', function () {
 
 	describe('getSortedSetRangeByScoreWithScores()', function () {
 		it('should get count elements with score between min max sorted by score lowest to highest with scores', function (done) {
-			db.getSortedSetRangeByScoreWithScores('sortedSetTest1', 0, -1, '-inf', 2, function (err, values) {
+			db.getSortedSetRangeByScoreWithScores('sortedSetTest1', 0, -1, '-inf', 1.2, function (err, values) {
 				assert.equal(err, null);
 				assert.equal(arguments.length, 2);
-				assert.deepEqual(values, [{value: 'value1', score: 1}, {value: 'value2', score: 2}]);
+				assert.deepEqual(values, [{ value: 'value1', score: 1.1 }, { value: 'value2', score: 1.2 }]);
 				done();
 			});
 		});
@@ -149,10 +227,10 @@ describe('Sorted Set methods', function () {
 
 	describe('getSortedSetRevRangeByScoreWithScores()', function () {
 		it('should get count elements with score between max min sorted by score highest to lowest', function (done) {
-			db.getSortedSetRevRangeByScoreWithScores('sortedSetTest1', 0, -1, '+inf', 2, function (err, values) {
+			db.getSortedSetRevRangeByScoreWithScores('sortedSetTest1', 0, -1, '+inf', 1.2, function (err, values) {
 				assert.equal(err, null);
 				assert.equal(arguments.length, 2);
-				assert.deepEqual(values, [{value: 'value3', score: 3}, {value: 'value2', score: 2}]);
+				assert.deepEqual(values, [{ value: 'value3', score: 1.3 }, { value: 'value2', score: 1.2 }]);
 				done();
 			});
 		});
@@ -169,7 +247,7 @@ describe('Sorted Set methods', function () {
 		});
 
 		it('should return number of elements between scores min max inclusive', function (done) {
-			db.sortedSetCount('sortedSetTest1', '-inf', 2, function (err, count) {
+			db.sortedSetCount('sortedSetTest1', '-inf', 1.2, function (err, count) {
 				assert.equal(err, null);
 				assert.equal(arguments.length, 2);
 				assert.equal(count, 2);
@@ -245,6 +323,33 @@ describe('Sorted Set methods', function () {
 				done();
 			});
 		});
+
+		it('should return the rank sorted by the score and then the value (a)', function (done) {
+			db.sortedSetRank('sortedSetTest4', 'a', function (err, rank) {
+				assert.equal(err, null);
+				assert.equal(arguments.length, 2);
+				assert.equal(rank, 0);
+				done();
+			});
+		});
+
+		it('should return the rank sorted by the score and then the value (b)', function (done) {
+			db.sortedSetRank('sortedSetTest4', 'b', function (err, rank) {
+				assert.equal(err, null);
+				assert.equal(arguments.length, 2);
+				assert.equal(rank, 1);
+				done();
+			});
+		});
+
+		it('should return the rank sorted by the score and then the value (c)', function (done) {
+			db.sortedSetRank('sortedSetTest4', 'c', function (err, rank) {
+				assert.equal(err, null);
+				assert.equal(arguments.length, 2);
+				assert.equal(rank, 4);
+				done();
+			});
+		});
 	});
 
 	describe('sortedSetRevRank()', function () {
@@ -304,6 +409,7 @@ describe('Sorted Set methods', function () {
 				assert.equal(err, null);
 				assert.equal(arguments.length, 2);
 				assert.equal(!!score, false);
+				assert.strictEqual(score, null);
 				done();
 			});
 		});
@@ -313,6 +419,7 @@ describe('Sorted Set methods', function () {
 				assert.equal(err, null);
 				assert.equal(arguments.length, 2);
 				assert.equal(!!score, false);
+				assert.strictEqual(score, null);
 				done();
 			});
 		});
@@ -321,7 +428,23 @@ describe('Sorted Set methods', function () {
 			db.sortedSetScore('sortedSetTest1', 'value2', function (err, score) {
 				assert.equal(err, null);
 				assert.equal(arguments.length, 2);
-				assert.equal(score, 2);
+				assert.equal(score, 1.2);
+				done();
+			});
+		});
+
+		it('should not error if key is undefined', function (done) {
+			db.sortedSetScore(undefined, 1, function (err, score) {
+				assert.ifError(err);
+				assert.strictEqual(score, null);
+				done();
+			});
+		});
+
+		it('should not error if value is undefined', function (done) {
+			db.sortedSetScore('sortedSetTest1', undefined, function (err, score) {
+				assert.ifError(err);
+				assert.strictEqual(score, null);
 				done();
 			});
 		});
@@ -332,7 +455,16 @@ describe('Sorted Set methods', function () {
 			db.sortedSetsScore(['sortedSetTest1', 'sortedSetTest2', 'doesnotexist'], 'value1', function (err, scores) {
 				assert.equal(err, null);
 				assert.equal(arguments.length, 2);
-				assert.deepEqual(scores, [1, 1, null]);
+				assert.deepEqual(scores, [1.1, 1, null]);
+				done();
+			});
+		});
+
+		it('should return scores even if some keys are undefined', function (done) {
+			db.sortedSetsScore(['sortedSetTest1', undefined, 'doesnotexist'], 'value1', function (err, scores) {
+				assert.equal(err, null);
+				assert.equal(arguments.length, 2);
+				assert.deepEqual(scores, [1.1, null, null]);
 				done();
 			});
 		});
@@ -355,7 +487,16 @@ describe('Sorted Set methods', function () {
 			db.sortedSetScores('sortedSetTest1', ['value2', 'value1', 'doesnotexist'], function (err, scores) {
 				assert.equal(err, null);
 				assert.equal(arguments.length, 2);
-				assert.deepEqual(scores, [2, 1, null]);
+				assert.deepEqual(scores, [1.2, 1.1, null]);
+				done();
+			});
+		});
+
+		it('should return scores even if some values are undefined', function (done) {
+			db.sortedSetScores('sortedSetTest1', ['value2', undefined, 'doesnotexist'], function (err, scores) {
+				assert.equal(err, null);
+				assert.equal(arguments.length, 2);
+				assert.deepEqual(scores, [1.2, null, null]);
 				done();
 			});
 		});
@@ -451,10 +592,19 @@ describe('Sorted Set methods', function () {
 
 	describe('getSortedSetUnion()', function () {
 		it('should return an array of values from both sorted sets sorted by scores lowest to highest', function (done) {
-			db.getSortedSetUnion({sets: ['sortedSetTest2', 'sortedSetTest3'], start: 0, stop: -1}, function (err, values) {
+			db.getSortedSetUnion({ sets: ['sortedSetTest2', 'sortedSetTest3'], start: 0, stop: -1 }, function (err, values) {
 				assert.equal(err, null);
 				assert.equal(arguments.length, 2);
 				assert.deepEqual(values, ['value1', 'value2', 'value4']);
+				done();
+			});
+		});
+
+		it('should return an array of values and scores from both sorted sets sorted by scores lowest to highest', function (done) {
+			db.getSortedSetUnion({ sets: ['sortedSetTest2', 'sortedSetTest3'], start: 0, stop: -1, withScores: true }, function (err, data) {
+				assert.equal(err, null);
+				assert.equal(arguments.length, 2);
+				assert.deepEqual(data, [{ value: 'value1', score: 1 }, { value: 'value2', score: 2 }, { value: 'value4', score: 8 }]);
 				done();
 			});
 		});
@@ -462,7 +612,7 @@ describe('Sorted Set methods', function () {
 
 	describe('getSortedSetRevUnion()', function () {
 		it('should return an array of values from both sorted sets sorted by scores highest to lowest', function (done) {
-			db.getSortedSetRevUnion({sets: ['sortedSetTest2', 'sortedSetTest3'], start: 0, stop: -1}, function (err, values) {
+			db.getSortedSetRevUnion({ sets: ['sortedSetTest2', 'sortedSetTest3'], start: 0, stop: -1 }, function (err, values) {
 				assert.equal(err, null);
 				assert.equal(arguments.length, 2);
 				assert.deepEqual(values, ['value4', 'value2', 'value1']);
@@ -516,13 +666,69 @@ describe('Sorted Set methods', function () {
 				});
 			});
 		});
+
+		it('should remove multiple values from multiple keys', function (done) {
+			db.sortedSetAdd('multiTest1', [1, 2, 3, 4], ['one', 'two', 'three', 'four'], function (err) {
+				assert.ifError(err);
+				db.sortedSetAdd('multiTest2', [3, 4, 5, 6], ['three', 'four', 'five', 'six'], function (err) {
+					assert.ifError(err);
+					db.sortedSetRemove(['multiTest1', 'multiTest2'], ['two', 'three', 'four', 'five', 'doesnt exist'], function (err) {
+						assert.ifError(err);
+						db.getSortedSetsMembers(['multiTest1', 'multiTest2'], function (err, members) {
+							assert.ifError(err);
+							assert.equal(members[0].length, 1);
+							assert.equal(members[1].length, 1);
+							assert.deepEqual(members, [['one'], ['six']]);
+							done();
+						});
+					});
+				});
+			});
+		});
+
+		it('should remove value from multiple keys', function (done) {
+			db.sortedSetAdd('multiTest3', [1, 2, 3, 4], ['one', 'two', 'three', 'four'], function (err) {
+				assert.ifError(err);
+				db.sortedSetAdd('multiTest4', [3, 4, 5, 6], ['three', 'four', 'five', 'six'], function (err) {
+					assert.ifError(err);
+					db.sortedSetRemove(['multiTest3', 'multiTest4'], 'three', function (err) {
+						assert.ifError(err);
+						db.getSortedSetsMembers(['multiTest3', 'multiTest4'], function (err, members) {
+							assert.ifError(err);
+							assert.deepEqual(members, [['one', 'two', 'four'], ['four', 'five', 'six']]);
+							done();
+						});
+					});
+				});
+			});
+		});
+
+		it('should remove multiple values from multiple keys', function (done) {
+			db.sortedSetAdd('multiTest5', [1], ['one'], function (err) {
+				assert.ifError(err);
+				db.sortedSetAdd('multiTest6', [2], ['two'], function (err) {
+					assert.ifError(err);
+					db.sortedSetAdd('multiTest7', [3], ['three'], function (err) {
+						assert.ifError(err);
+						db.sortedSetRemove(['multiTest5', 'multiTest6', 'multiTest7'], ['one', 'two', 'three'], function (err) {
+							assert.ifError(err);
+							db.getSortedSetsMembers(['multiTest5', 'multiTest6', 'multiTest7'], function (err, members) {
+								assert.ifError(err);
+								assert.deepEqual(members, [[], [], []]);
+								done();
+							});
+						});
+					});
+				});
+			});
+		});
 	});
 
 	describe('sortedSetsRemove()', function () {
 		before(function (done) {
 			async.parallel([
-				async.apply(db.sortedSetAdd, 'sorted4', [1,2], ['value1', 'value2']),
-				async.apply(db.sortedSetAdd, 'sorted5', [1,2], ['value1', 'value3']),
+				async.apply(db.sortedSetAdd, 'sorted4', [1, 2], ['value1', 'value2']),
+				async.apply(db.sortedSetAdd, 'sorted5', [1, 2], ['value1', 'value3']),
 			], done);
 		});
 
@@ -541,17 +747,31 @@ describe('Sorted Set methods', function () {
 
 	describe('sortedSetsRemoveRangeByScore()', function () {
 		before(function (done) {
-			db.sortedSetAdd('sorted6', [1,2,3,4,5], ['value1','value2','value3','value4','value5'], done);
+			db.sortedSetAdd('sorted6', [1, 2, 3, 4, 5], ['value1', 'value2', 'value3', 'value4', 'value5'], done);
 		});
 
 		it('should remove elements with scores between min max inclusive', function (done) {
 			db.sortedSetsRemoveRangeByScore(['sorted6'], 4, 5, function (err) {
-				assert.equal(err, null);
+				assert.ifError(err);
 				assert.equal(arguments.length, 1);
 				db.getSortedSetRange('sorted6', 0, -1, function (err, values) {
-					assert.equal(err, null);
+					assert.ifError(err);
 					assert.deepEqual(values, ['value1', 'value2', 'value3']);
 					done();
+				});
+			});
+		});
+
+		it('should remove elements with if strin score is passed in', function (done) {
+			db.sortedSetAdd('sortedForRemove', [11, 22, 33], ['value1', 'value2', 'value3'], function (err) {
+				assert.ifError(err);
+				db.sortedSetsRemoveRangeByScore(['sortedForRemove'], '22', '22', function (err) {
+					assert.ifError(err);
+					db.getSortedSetRange('sortedForRemove', 0, -1, function (err, values) {
+						assert.ifError(err);
+						assert.deepEqual(values, ['value1', 'value3']);
+						done();
+					});
 				});
 			});
 		});
@@ -561,11 +781,11 @@ describe('Sorted Set methods', function () {
 		before(function (done) {
 			async.parallel([
 				function (next) {
-					db.sortedSetAdd('interSet1', [1,2,3], ['value1', 'value2', 'value3'], next);
+					db.sortedSetAdd('interSet1', [1, 2, 3], ['value1', 'value2', 'value3'], next);
 				},
 				function (next) {
-					db.sortedSetAdd('interSet2', [4,5,6], ['value2', 'value3', 'value5'], next);
-				}
+					db.sortedSetAdd('interSet2', [4, 5, 6], ['value2', 'value3', 'value5'], next);
+				},
 			], done);
 		});
 
@@ -573,7 +793,7 @@ describe('Sorted Set methods', function () {
 			db.getSortedSetIntersect({
 				sets: ['interSet1', 'interSet2'],
 				start: 0,
-				stop: -1
+				stop: -1,
 			}, function (err, data) {
 				assert.ifError(err);
 				assert.deepEqual(['value2', 'value3'], data);
@@ -586,10 +806,22 @@ describe('Sorted Set methods', function () {
 				sets: ['interSet1', 'interSet2'],
 				start: 0,
 				stop: -1,
-				withScores: true
+				withScores: true,
 			}, function (err, data) {
 				assert.ifError(err);
-				assert.deepEqual([{value: 'value2', score: 6}, {value: 'value3', score: 8}], data);
+				assert.deepEqual([{ value: 'value2', score: 6 }, { value: 'value3', score: 8 }], data);
+				done();
+			});
+		});
+
+		it('should return the reverse intersection of two sets', function (done) {
+			db.getSortedSetRevIntersect({
+				sets: ['interSet1', 'interSet2'],
+				start: 0,
+				stop: 2,
+			}, function (err, data) {
+				assert.ifError(err);
+				assert.deepEqual(['value3', 'value2'], data);
 				done();
 			});
 		});
@@ -600,10 +832,10 @@ describe('Sorted Set methods', function () {
 				start: 0,
 				stop: -1,
 				withScores: true,
-				aggregate: 'MIN'
+				aggregate: 'MIN',
 			}, function (err, data) {
 				assert.ifError(err);
-				assert.deepEqual([{value: 'value2', score: 2}, {value: 'value3', score: 3}], data);
+				assert.deepEqual([{ value: 'value2', score: 2 }, { value: 'value3', score: 3 }], data);
 				done();
 			});
 		});
@@ -614,10 +846,10 @@ describe('Sorted Set methods', function () {
 				start: 0,
 				stop: -1,
 				withScores: true,
-				aggregate: 'MAX'
+				aggregate: 'MAX',
 			}, function (err, data) {
 				assert.ifError(err);
-				assert.deepEqual([{value: 'value2', score: 4}, {value: 'value3', score: 5}], data);
+				assert.deepEqual([{ value: 'value2', score: 4 }, { value: 'value3', score: 5 }], data);
 				done();
 			});
 		});
@@ -628,10 +860,10 @@ describe('Sorted Set methods', function () {
 				start: 0,
 				stop: -1,
 				withScores: true,
-				weights: [1, 0.5]
+				weights: [1, 0.5],
 			}, function (err, data) {
 				assert.ifError(err);
-				assert.deepEqual([{value: 'value2', score: 4}, {value: 'value3', score: 5.5}], data);
+				assert.deepEqual([{ value: 'value2', score: 4 }, { value: 'value3', score: 5.5 }], data);
 				done();
 			});
 		});
@@ -640,7 +872,7 @@ describe('Sorted Set methods', function () {
 			db.getSortedSetIntersect({
 				sets: ['interSet10', 'interSet12'],
 				start: 0,
-				stop: -1
+				stop: -1,
 			}, function (err, data) {
 				assert.ifError(err);
 				assert.equal(data.length, 0);
@@ -652,14 +884,13 @@ describe('Sorted Set methods', function () {
 			db.getSortedSetIntersect({
 				sets: ['interSet1', 'interSet12'],
 				start: 0,
-				stop: -1
+				stop: -1,
 			}, function (err, data) {
 				assert.ifError(err);
 				assert.equal(data.length, 0);
 				done();
 			});
 		});
-
 	});
 
 	describe('sortedSetIntersectCard', function () {
@@ -676,7 +907,7 @@ describe('Sorted Set methods', function () {
 				},
 				function (next) {
 					db.sortedSetAdd('interCard4', [0, 0, 0], ['value4', 'value5', 'value6'], next);
-				}
+				},
 			], done);
 		});
 
@@ -867,9 +1098,5 @@ describe('Sorted Set methods', function () {
 				});
 			});
 		});
-	});
-
-	after(function (done) {
-		db.emptydb(done);
 	});
 });

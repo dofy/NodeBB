@@ -3,7 +3,6 @@
 
 var async = require('async');
 var nconf = require('nconf');
-var validator = require('validator');
 
 var user = require('../user');
 var topics = require('../topics');
@@ -11,21 +10,36 @@ var meta = require('../meta');
 var helpers = require('./helpers');
 var pagination = require('../pagination');
 
-var recentController = {};
-
-var validFilter = {'': true, 'new': true, 'watched': true};
+var recentController = module.exports;
 
 recentController.get = function (req, res, next) {
+	async.waterfall([
+		function (next) {
+			recentController.getData(req, 'recent', 'recent', next);
+		},
+		function (data, next) {
+			if (!data) {
+				return next();
+			}
+			res.render('recent', data);
+		},
+	], next);
+};
+
+recentController.getData = function (req, url, sort, callback) {
 	var page = parseInt(req.query.page, 10) || 1;
 	var stop = 0;
+	var term = helpers.terms[req.query.term];
 	var settings;
 	var cid = req.query.cid;
-	var filter = req.params.filter || '';
+	var filter = req.query.filter || '';
 	var categoryData;
+	var rssToken;
 
-	if (!validFilter[filter]) {
-		return next();
+	if (!helpers.validFilters[filter] || (!term && req.query.term)) {
+		return callback(null, null);
 	}
+	term = term || 'alltime';
 
 	async.waterfall([
 		function (next) {
@@ -35,61 +49,61 @@ recentController.get = function (req, res, next) {
 				},
 				watchedCategories: function (next) {
 					helpers.getWatchedCategories(req.uid, cid, next);
-				}
+				},
+				rssToken: function (next) {
+					user.auth.getFeedToken(req.uid, next);
+				},
 			}, next);
 		},
 		function (results, next) {
+			rssToken = results.rssToken;
 			settings = results.settings;
 			categoryData = results.watchedCategories;
 
 			var start = Math.max(0, (page - 1) * settings.topicsPerPage);
 			stop = start + settings.topicsPerPage - 1;
 
-			topics.getRecentTopics(cid, req.uid, start, stop, filter, next);
-		}
-	], function (err, data) {
-		if (err) {
-			return next(err);
-		}
+			topics.getSortedTopics({
+				cids: cid,
+				uid: req.uid,
+				start: start,
+				stop: stop,
+				filter: filter,
+				term: term,
+				sort: sort,
+			}, next);
+		},
+		function (data, next) {
+			data.categories = categoryData.categories;
+			data.allCategoriesUrl = url + helpers.buildQueryString('', filter, '');
+			data.selectedCategory = categoryData.selectedCategory;
+			data.selectedCids = categoryData.selectedCids;
+			data.nextStart = stop + 1;
+			data['feeds:disableRSS'] = parseInt(meta.config['feeds:disableRSS'], 10) === 1;
+			data.rssFeedUrl = nconf.get('relative_path') + '/' + url + '.rss';
+			if (req.loggedIn) {
+				data.rssFeedUrl += '?uid=' + req.uid + '&token=' + rssToken;
+			}
+			data.title = meta.config.homePageTitle || '[[pages:home]]';
 
-		data.categories = categoryData.categories;
-		data.selectedCategory = categoryData.selectedCategory;
-		data.nextStart = stop + 1;
-		data.set = 'topics:recent';
-		data['feeds:disableRSS'] = parseInt(meta.config['feeds:disableRSS'], 10) === 1;
-		data.rssFeedUrl = nconf.get('relative_path') + '/recent.rss';
-		data.title = '[[pages:recent]]';
-		data.filters = [{
-			name: '[[unread:all-topics]]',
-			url: 'recent',
-			selected: filter === '',
-			filter: ''
-		}, {
-			name: '[[unread:new-topics]]',
-			url: 'recent/new',
-			selected: filter === 'new',
-			filter: 'new'
-		}, {
-			name: '[[unread:watched-topics]]',
-			url: 'recent/watched',
-			selected: filter === 'watched',
-			filter: 'watched'
-		}];
+			data.filters = helpers.buildFilters(url, filter, req.query);
+			data.selectedFilter = data.filters.find(function (filter) {
+				return filter && filter.selected;
+			});
+			data.terms = helpers.buildTerms(url, term, req.query);
+			data.selectedTerm = data.terms.find(function (term) {
+				return term && term.selected;
+			});
 
-		data.selectedFilter = data.filters.find(function (filter) {
-			return filter && filter.selected;
-		});
+			var pageCount = Math.max(1, Math.ceil(data.topicCount / settings.topicsPerPage));
+			data.pagination = pagination.create(page, pageCount, req.query);
 
-		var pageCount = Math.max(1, Math.ceil(data.topicCount / settings.topicsPerPage));
-		data.pagination = pagination.create(page, pageCount, req.query);
+			if (req.originalUrl.startsWith(nconf.get('relative_path') + '/api/' + url) || req.originalUrl.startsWith(nconf.get('relative_path') + '/' + url)) {
+				data.title = '[[pages:' + url + ']]';
+				data.breadcrumbs = helpers.buildBreadcrumbs([{ text: '[[' + url + ':title]]' }]);
+			}
 
-		if (req.path.startsWith('/api/recent') || req.path.startsWith('/recent')) {
-			data.breadcrumbs = helpers.buildBreadcrumbs([{text: '[[recent:title]]'}]);
-		}
-
-		data.querystring = cid ? ('?cid=' + validator.escape(String(cid))) : '';
-		res.render('recent', data);
-	});
+			next(null, data);
+		},
+	], callback);
 };
-
-module.exports = recentController;

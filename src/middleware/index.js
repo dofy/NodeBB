@@ -1,28 +1,32 @@
-"use strict";
+'use strict';
 
 var async = require('async');
-var fs = require('fs');
 var path = require('path');
 var csrf = require('csurf');
 var validator = require('validator');
 var nconf = require('nconf');
 var ensureLoggedIn = require('connect-ensure-login');
 var toobusy = require('toobusy-js');
+var LRU = require('lru-cache');
 
 var plugins = require('../plugins');
-var languages = require('../languages');
 var meta = require('../meta');
 var user = require('../user');
 var groups = require('../groups');
+var file = require('../file');
 
 var analytics = require('../analytics');
 
 var controllers = {
 	api: require('./../controllers/api'),
-	helpers: require('../controllers/helpers')
+	helpers: require('../controllers/helpers'),
 };
 
-var middleware = {};
+var delayCache = LRU({
+	maxAge: 1000 * 60,
+});
+
+var middleware = module.exports;
 
 middleware.applyCSRF = csrf();
 
@@ -35,59 +39,29 @@ require('./maintenance')(middleware);
 require('./user')(middleware);
 require('./headers')(middleware);
 
-middleware.authenticate = function (req, res, next) {
-	if (req.user) {
-		return next();
-	} else if (plugins.hasListeners('action:middleware.authenticate')) {
-		return plugins.fireHook('action:middleware.authenticate', {
-			req: req,
-			res: res,
-			next: next
-		});
-	}
-
-	controllers.helpers.notAllowed(req, res);
-};
-
-middleware.ensureSelfOrGlobalPrivilege = function (req, res, next) {
-	/*
-		The "self" part of this middleware hinges on you having used
-		middleware.exposeUid prior to invoking this middleware.
-	*/
-	if (req.user) {
-		if (req.user.uid === res.locals.uid) {
-			return next();
-		}
-
-		user.isAdminOrGlobalMod(req.uid, function (err, ok) {
-			if (err) {
-				return next(err);
-			} else if (ok) {
-				return next();
-			} else {
-				controllers.helpers.notAllowed(req, res);
-			}
-		});
+middleware.stripLeadingSlashes = function (req, res, next) {
+	var target = req.originalUrl.replace(nconf.get('relative_path'), '');
+	if (target.startsWith('//')) {
+		res.redirect(nconf.get('relative_path') + target.replace(/^\/+/, '/'));
 	} else {
-		controllers.helpers.notAllowed(req, res);
+		setImmediate(next);
 	}
 };
 
 middleware.pageView = function (req, res, next) {
 	analytics.pageView({
 		ip: req.ip,
-		path: req.path,
-		uid: req.uid
+		uid: req.uid,
 	});
 
-	plugins.fireHook('action:middleware.pageView', {req: req});
+	plugins.fireHook('action:middleware.pageView', { req: req });
 
-	if (req.user) {
-		user.updateLastOnlineTime(req.user.uid);
+	if (req.loggedIn) {
+		user.updateLastOnlineTime(req.uid);
 		if (req.path.startsWith('/api/users') || req.path.startsWith('/users')) {
-			user.updateOnlineUsers(req.user.uid, next);
+			user.updateOnlineUsers(req.uid, next);
 		} else {
-			user.updateOnlineUsers(req.user.uid);
+			user.updateOnlineUsers(req.uid);
 			next();
 		}
 	} else {
@@ -99,9 +73,9 @@ middleware.pageView = function (req, res, next) {
 middleware.pluginHooks = function (req, res, next) {
 	async.each(plugins.loadedHooks['filter:router.page'] || [], function (hookObj, next) {
 		hookObj.method(req, res, next);
-	}, function () {
+	}, function (err) {
 		// If it got here, then none of the subscribed hooks did anything, or there were no hooks
-		next();
+		next(err);
 	});
 };
 
@@ -121,15 +95,21 @@ middleware.prepareAPI = function (req, res, next) {
 middleware.routeTouchIcon = function (req, res) {
 	if (meta.config['brand:touchIcon'] && validator.isURL(meta.config['brand:touchIcon'])) {
 		return res.redirect(meta.config['brand:touchIcon']);
-	} else {
-		return res.sendFile(path.join(__dirname, '../../public', meta.config['brand:touchIcon'] || '/logo.png'), {
-			maxAge: req.app.enabled('cache') ? 5184000000 : 0
-		});
 	}
+	var iconPath = '';
+	if (meta.config['brand:touchIcon']) {
+		iconPath = path.join(nconf.get('upload_path'), meta.config['brand:touchIcon'].replace(/assets\/uploads/, ''));
+	} else {
+		iconPath = path.join(nconf.get('base_dir'), 'public/logo.png');
+	}
+
+	return res.sendFile(iconPath, {
+		maxAge: req.app.enabled('cache') ? 5184000000 : 0,
+	});
 };
 
 middleware.privateTagListing = function (req, res, next) {
-	if (!req.user && parseInt(meta.config.privateTagListing, 10) === 1) {
+	if (!req.loggedIn && parseInt(meta.config.privateTagListing, 10) === 1) {
 		controllers.helpers.notAllowed(req, res);
 	} else {
 		next();
@@ -148,22 +128,29 @@ function expose(exposedField, method, field, req, res, next) {
 	if (!req.params.hasOwnProperty(field)) {
 		return next();
 	}
-	method(req.params[field], function (err, id) {
-		if (err) {
-			return next(err);
-		}
-
-		res.locals[exposedField] = id;
-		next();
-	});
+	async.waterfall([
+		function (next) {
+			method(req.params[field], next);
+		},
+		function (id, next) {
+			res.locals[exposedField] = id;
+			next();
+		},
+	], next);
 }
 
 middleware.privateUploads = function (req, res, next) {
-	if (req.user || parseInt(meta.config.privateUploads, 10) !== 1) {
+	if (req.loggedIn || parseInt(meta.config.privateUploads, 10) !== 1) {
 		return next();
 	}
-	if (req.path.startsWith('/uploads/files')) {
-		return res.status(403).json('not-allowed');
+
+	if (req.path.startsWith(nconf.get('relative_path') + '/assets/uploads/files')) {
+		var extensions = (meta.config.privateUploadsExtensions || '').split(',').filter(Boolean);
+		var ext = path.extname(req.path);
+		ext = ext ? ext.replace(/^\./, '') : ext;
+		if (!extensions.length || extensions.includes(ext)) {
+			return res.status(403).json('not-allowed');
+		}
 	}
 	next();
 };
@@ -183,44 +170,38 @@ middleware.applyBlacklist = function (req, res, next) {
 	});
 };
 
-middleware.getTranslation = function (req, res, next) {
-	var language = req.params.language;
-	var namespace = req.params.namespace;
-
-	if (language && namespace) {
-		languages.get(language, namespace, function (err, translations) {
-			if (err) {
-				return next(err);
-			}
-
-			res.status(200).json(translations);
-		});
-	} else {
-		res.status(404).json('{}');
-	}
-};
-
 middleware.processTimeagoLocales = function (req, res, next) {
-	var fallback = req.path.indexOf('-short') === -1 ? 'jquery.timeago.en.js' : 'jquery.timeago.en-short.js',
-		localPath = path.join(__dirname, '../../public/vendor/jquery/timeago/locales', req.path),
-		exists;
+	var fallback = req.path.indexOf('-short') === -1 ? 'jquery.timeago.en.js' : 'jquery.timeago.en-short.js';
+	var localPath = path.join(__dirname, '../../public/vendor/jquery/timeago/locales', req.path);
 
-	try {
-		exists = fs.accessSync(localPath, fs.F_OK | fs.R_OK);
-	} catch(e) {
-		exists = false;
-	}
-
-	if (exists) {
-		res.status(200).sendFile(localPath, {
-			maxAge: req.app.enabled('cache') ? 5184000000 : 0
-		});
-	} else {
-		res.status(200).sendFile(path.join(__dirname, '../../public/vendor/jquery/timeago/locales', fallback), {
-			maxAge: req.app.enabled('cache') ? 5184000000 : 0
-		});
-	}
+	async.waterfall([
+		function (next) {
+			file.exists(localPath, next);
+		},
+		function (exists, next) {
+			if (exists) {
+				next(null, localPath);
+			} else {
+				next(null, path.join(__dirname, '../../public/vendor/jquery/timeago/locales', fallback));
+			}
+		},
+		function (path) {
+			res.status(200).sendFile(path, {
+				maxAge: req.app.enabled('cache') ? 5184000000 : 0,
+			});
+		},
+	], next);
 };
 
+middleware.delayLoading = function (req, res, next) {
+	// Introduces an artificial delay during load so that brute force attacks are effectively mitigated
 
-module.exports = middleware;
+	// Add IP to cache so if too many requests are made, subsequent requests are blocked for a minute
+	var timesSeen = delayCache.get(req.ip) || 0;
+	if (timesSeen > 10) {
+		return res.sendStatus(429);
+	}
+	delayCache.set(req.ip, timesSeen += 1);
+
+	setTimeout(next, 1000);
+};

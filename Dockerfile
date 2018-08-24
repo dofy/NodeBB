@@ -1,15 +1,20 @@
-# The base image is the latest 4.x node (LTS) on jessie (debian)
-# -onbuild will install the node dependencies found in the project package.json
-# and copy its content in /usr/src/app, its WORKDIR
-FROM node:4-onbuild
+# The base image is the latest 8.x node (LTS)
+FROM node:8.11.4@sha256:cd8ebd022c01f519eb58a98fcbb05c1d1195ac356ef01851036671ec9e9d5580
+
+RUN mkdir -p /usr/src/app
+WORKDIR /usr/src/app
+
+ARG NODE_ENV
+ENV NODE_ENV $NODE_ENV
+COPY install/package.json /usr/src/app/package.json
+RUN npm install && npm cache clean --force
+COPY . /usr/src/app
 
 ENV NODE_ENV=production \
     daemon=false \
     silent=false
 
-# nodebb setup will ask you for connection information to a redis (default), mongodb then run the forum
-# nodebb upgrade is not included and might be desired
-CMD node app --setup && npm start
+CMD ./nodebb start
 
 # the default port for NodeBB is exposed outside the container
 EXPOSE 4567

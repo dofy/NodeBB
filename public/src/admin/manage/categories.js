@@ -1,12 +1,14 @@
-"use strict";
-/*global define, socket, app, bootbox, templates, ajaxify, Sortable */
+'use strict';
 
-define('admin/manage/categories', ['vendor/jquery/serializeObject/jquery.ba-serializeobject.min', 'translator'], function (serialize, translator) {
-	var	Categories = {}, newCategoryId = -1, sortables;
+
+define('admin/manage/categories', ['vendor/jquery/serializeObject/jquery.ba-serializeobject.min', 'translator', 'benchpress'], function (serialize, translator, Benchpress) {
+	var	Categories = {};
+	var newCategoryId = -1;
+	var sortables;
 
 	Categories.init = function () {
 		socket.emit('admin.categories.getAll', function (error, payload) {
-			if(error) {
+			if (error) {
 				return app.alertError(error.message);
 			}
 
@@ -17,10 +19,10 @@ define('admin/manage/categories', ['vendor/jquery/serializeObject/jquery.ba-seri
 
 		// Enable/Disable toggle events
 		$('.categories').on('click', 'button[data-action="toggle"]', function () {
-			var $this = $(this),
-				cid = $this.attr('data-cid'),
-				parentEl = $this.parents('li[data-cid="' + cid + '"]'),
-				disabled = parentEl.hasClass('disabled');
+			var $this = $(this);
+			var cid = $this.attr('data-cid');
+			var parentEl = $this.parents('li[data-cid="' + cid + '"]');
+			var disabled = parentEl.hasClass('disabled');
 
 			var children = parentEl.find('li[data-cid]').map(function () {
 				return $(this).attr('data-cid');
@@ -29,6 +31,26 @@ define('admin/manage/categories', ['vendor/jquery/serializeObject/jquery.ba-seri
 			Categories.toggle([cid].concat(children), !disabled);
 			return false;
 		});
+
+		$('.categories').on('click', '.toggle', function () {
+			var el = $(this);
+			el.find('i').toggleClass('fa-minus').toggleClass('fa-plus');
+			el.closest('[data-cid]').find('> ul[data-cid]').toggleClass('hidden');
+		});
+
+		$('#collapse-all').on('click', function () {
+			toggleAll(false);
+		});
+
+		$('#expand-all').on('click', function () {
+			toggleAll(true);
+		});
+
+		function toggleAll(expand) {
+			var el = $('.categories .toggle');
+			el.find('i').toggleClass('fa-minus', expand).toggleClass('fa-plus', !expand);
+			el.closest('[data-cid]').find('> ul[data-cid]').toggleClass('hidden', !expand);
+		}
 	};
 
 	Categories.throwCreateModal = function () {
@@ -37,28 +59,41 @@ define('admin/manage/categories', ['vendor/jquery/serializeObject/jquery.ba-seri
 				return app.alertError(err.message);
 			}
 
-			templates.parse('admin/partials/categories/create', {
-				categories: categories
+			Benchpress.parse('admin/partials/categories/create', {
+				categories: categories,
 			}, function (html) {
+				var modal = bootbox.dialog({
+					title: '[[admin/manage/categories:alert.create]]',
+					message: html,
+					buttons: {
+						save: {
+							label: '[[global:save]]',
+							className: 'btn-primary',
+							callback: submit,
+						},
+					},
+				});
+
 				function submit() {
 					var formData = modal.find('form').serializeObject();
 					formData.description = '';
 					formData.icon = 'fa-comments';
+					formData.uid = app.user.uid;
 
 					Categories.create(formData);
 					modal.modal('hide');
 					return false;
 				}
 
-				var modal = bootbox.dialog({
-					title: 'Create a Category',
-					message: html,
-					buttons: {
-						save: {
-							label: 'Save',
-							className: 'btn-primary',
-							callback: submit
-						}
+				$('#cloneChildren').on('change', function () {
+					var check = $(this);
+					var parentSelect = $('#parentCid');
+
+					if (check.prop('checked')) {
+						parentSelect.attr('disabled', 'disabled');
+						parentSelect.val('');
+					} else {
+						parentSelect.removeAttr('disabled');
 					}
 				});
 
@@ -75,10 +110,10 @@ define('admin/manage/categories', ['vendor/jquery/serializeObject/jquery.ba-seri
 
 			app.alert({
 				alert_id: 'category_created',
-				title: 'Created',
-				message: 'Category successfully created!',
+				title: '[[admin/manage/categories:alert.created]]',
+				message: '[[admin/manage/categories:alert.create-success]]',
 				type: 'success',
-				timeout: 2000
+				timeout: 2000,
 			});
 
 			ajaxify.go('admin/manage/categories/' + data.cid);
@@ -89,10 +124,12 @@ define('admin/manage/categories', ['vendor/jquery/serializeObject/jquery.ba-seri
 		var container = $('.categories');
 
 		if (!categories || !categories.length) {
-			$('<div></div>')
-				.addClass('alert alert-info text-center')
-				.text('You have no active categories.')
-				.appendTo(container);
+			translator.translate('[[admin/manage/categories:alert.none-active]]', function (text) {
+				$('<div></div>')
+					.addClass('alert alert-info text-center')
+					.text(text)
+					.appendTo(container);
+			});
 		} else {
 			sortables = {};
 			renderList(categories, container, 0);
@@ -104,7 +141,7 @@ define('admin/manage/categories', ['vendor/jquery/serializeObject/jquery.ba-seri
 
 		cids.forEach(function (cid) {
 			payload[cid] = {
-				disabled: disabled ? 1 : 0
+				disabled: disabled ? 1 : 0,
 			};
 		});
 
@@ -121,16 +158,19 @@ define('admin/manage/categories', ['vendor/jquery/serializeObject/jquery.ba-seri
 	}
 
 	function itemDragDidEnd(e) {
-		var isCategoryUpdate = (newCategoryId != -1);
+		var isCategoryUpdate = parseInt(newCategoryId, 10) !== -1;
 
-		//Update needed?
-		if((e.newIndex != undefined && e.oldIndex != e.newIndex) || isCategoryUpdate) {
-			var parentCategory = isCategoryUpdate ? sortables[newCategoryId] : sortables[e.from.dataset.cid],
-				modified = {}, i = 0, list = parentCategory.toArray(), len = list.length;
+		// Update needed?
+		if ((e.newIndex != null && parseInt(e.oldIndex, 10) !== parseInt(e.newIndex, 10)) || isCategoryUpdate) {
+			var parentCategory = isCategoryUpdate ? sortables[newCategoryId] : sortables[e.from.dataset.cid];
+			var modified = {};
+			var i = 0;
+			var list = parentCategory.toArray();
+			var len = list.length;
 
-			for(i; i < len; ++i) {
+			for (i; i < len; i += 1) {
 				modified[list[i]] = {
-					order: (i + 1)
+					order: (i + 1),
 				};
 			}
 
@@ -159,7 +199,7 @@ define('admin/manage/categories', ['vendor/jquery/serializeObject/jquery.ba-seri
 				if (category.name !== translated) {
 					category.name = translated;
 				}
-				++count;
+				count += 1;
 
 				if (count === parent.length) {
 					continueRender();
@@ -172,26 +212,28 @@ define('admin/manage/categories', ['vendor/jquery/serializeObject/jquery.ba-seri
 		}
 
 		function continueRender() {
-			templates.parse('admin/partials/categories/category-rows', {
+			Benchpress.parse('admin/partials/categories/category-rows', {
 				cid: parentId,
-				categories: categories
+				categories: categories,
 			}, function (html) {
-				container.append(html);
+				translator.translate(html, function (html) {
+					container.append(html);
 
-				// Handle and children categories in this level have
-				for(var x = 0,numCategories = categories.length; x < numCategories; x++) {
-					renderList(categories[x].children, $('li[data-cid="' + categories[x].cid + '"]'), categories[x].cid);
-				}
+					// Handle and children categories in this level have
+					for (var x = 0, numCategories = categories.length; x < numCategories; x += 1) {
+						renderList(categories[x].children, $('li[data-cid="' + categories[x].cid + '"]'), categories[x].cid);
+					}
 
-				// Make list sortable
-				sortables[parentId] = Sortable.create($('ul[data-cid="' + parentId + '"]')[0], {
-					group: 'cross-categories',
-					animation: 150,
-					handle: '.icon',
-					dataIdAttr: 'data-cid',
-					ghostClass: "placeholder",
-					onAdd: itemDidAdd,
-					onEnd: itemDragDidEnd
+					// Make list sortable
+					sortables[parentId] = Sortable.create($('ul[data-cid="' + parentId + '"]')[0], {
+						group: 'cross-categories',
+						animation: 150,
+						handle: '.icon',
+						dataIdAttr: 'data-cid',
+						ghostClass: 'placeholder',
+						onAdd: itemDidAdd,
+						onEnd: itemDragDidEnd,
+					});
 				});
 			});
 		}

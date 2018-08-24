@@ -1,12 +1,13 @@
 'use strict';
-/* globals define, app, config, ajaxify, socket, bootbox, templates */
+
 
 define('forum/account/header', [
 	'coverPhoto',
-	'uploader',
+	'pictureCropper',
 	'components',
-	'translator'
-], function (coverPhoto, uploader, components, translator) {
+	'translator',
+	'benchpress',
+], function (coverPhoto, pictureCropper, components, translator, Benchpress) {
 	var AccountHeader = {};
 	var isAdminOrSelfOrGlobalMod;
 
@@ -42,13 +43,17 @@ define('forum/account/header', [
 		});
 
 		components.get('account/new-chat').on('click', function () {
-			app.newChat(ajaxify.data.uid);
+			app.newChat(ajaxify.data.uid, function () {
+				components.get('account/chat').parent().removeClass('hidden');
+			});
 		});
 
 
 		components.get('account/ban').on('click', banAccount);
 		components.get('account/unban').on('click', unbanAccount);
 		components.get('account/delete').on('click', deleteAccount);
+		components.get('account/flag').on('click', flagAccount);
+		components.get('account/block').on('click', toggleBlockAccount);
 	};
 
 	function hidePrivateLinks() {
@@ -69,22 +74,28 @@ define('forum/account/header', [
 	}
 
 	function setupCoverPhoto() {
-		coverPhoto.init(components.get('account/cover'),
+		coverPhoto.init(
+			components.get('account/cover'),
 			function (imageData, position, callback) {
 				socket.emit('user.updateCover', {
 					uid: ajaxify.data.uid,
 					imageData: imageData,
-					position: position
+					position: position,
 				}, callback);
 			},
 			function () {
-				uploader.show({
+				pictureCropper.show({
 					title: '[[user:upload_cover_picture]]',
-					route: config.relative_path + '/api/user/' + ajaxify.data.userslug + '/uploadcover',
-					params: {uid: ajaxify.data.uid },
-					accept: '.png,.jpg,.bmp'
+					socketMethod: 'user.updateCover',
+					aspectRatio: NaN,
+					allowSkippingCrop: true,
+					restrictImageDimension: false,
+					paramName: 'uid',
+					paramValue: ajaxify.data.theirid,
+					accept: '.png,.jpg,.bmp',
 				}, function (imageUrlOnServer) {
-					components.get('account/cover').css('background-image', 'url(' + imageUrlOnServer + '?v=' + Date.now() + ')');
+					imageUrlOnServer = (!imageUrlOnServer.startsWith('http') ? config.relative_path : '') + imageUrlOnServer + '?' + Date.now();
+					components.get('account/cover').css('background-image', 'url(' + imageUrlOnServer + ')');
 				});
 			},
 			removeCover
@@ -93,7 +104,7 @@ define('forum/account/header', [
 
 	function toggleFollow(type) {
 		socket.emit('user.' + type, {
-			uid: ajaxify.data.uid
+			uid: ajaxify.data.uid,
 		}, function (err) {
 			if (err) {
 				return app.alertError(err.message);
@@ -107,7 +118,7 @@ define('forum/account/header', [
 	}
 
 	function banAccount() {
-		templates.parse('admin/partials/temporary-ban', {}, function (html) {
+		Benchpress.parse('admin/partials/temporary-ban', {}, function (html) {
 			bootbox.dialog({
 				className: 'ban-modal',
 				title: '[[user:ban_account]]',
@@ -116,7 +127,7 @@ define('forum/account/header', [
 				buttons: {
 					close: {
 						label: '[[global:close]]',
-						className: 'btn-link'
+						className: 'btn-link',
 					},
 					submit: {
 						label: '[[user:ban_account]]',
@@ -125,17 +136,22 @@ define('forum/account/header', [
 								data[cur.name] = cur.value;
 								return data;
 							}, {});
-							var until = parseInt(formData.length, 10) ? (Date.now() + formData.length * 1000 * 60 * 60 * (parseInt(formData.unit, 10) ? 24 : 1)) : 0;
 
-							socket.emit('user.banUsers', { uids: [ajaxify.data.theirid], until: until, reason: formData.reason || '' }, function (err) {
+							var until = formData.length > 0 ? (Date.now() + (formData.length * 1000 * 60 * 60 * (parseInt(formData.unit, 10) ? 24 : 1))) : 0;
+
+							socket.emit('user.banUsers', {
+								uids: [ajaxify.data.theirid],
+								until: until,
+								reason: formData.reason || '',
+							}, function (err) {
 								if (err) {
 									return app.alertError(err.message);
 								}
 								ajaxify.refresh();
 							});
-						}
-					}
-				}
+						},
+					},
+				},
 			});
 		});
 	}
@@ -167,15 +183,51 @@ define('forum/account/header', [
 		});
 	}
 
-	function removeCover() {
-		socket.emit('user.removeCover', {
-			uid: ajaxify.data.uid
-		}, function (err) {
-			if (!err) {
-				ajaxify.refresh();
-			} else {
-				app.alertError(err.message);
+	function flagAccount() {
+		require(['flags'], function (flags) {
+			flags.showFlagModal({
+				type: 'user',
+				id: ajaxify.data.uid,
+			});
+		});
+	}
+
+	function toggleBlockAccount() {
+		var targetEl = this;
+		socket.emit('user.toggleBlock', {
+			blockeeUid: ajaxify.data.uid,
+			blockerUid: app.user.uid,
+		}, function (err, blocked) {
+			if (err) {
+				return app.alertError(err.message);
 			}
+
+			translator.translate('[[user:' + (blocked ? 'unblock' : 'block') + '_user]]', function (label) {
+				$(targetEl).text(label);
+			});
+		});
+
+		// Keep dropdown open
+		return false;
+	}
+
+	function removeCover() {
+		translator.translate('[[user:remove_cover_picture_confirm]]', function (translated) {
+			bootbox.confirm(translated, function (confirm) {
+				if (!confirm) {
+					return;
+				}
+
+				socket.emit('user.removeCover', {
+					uid: ajaxify.data.uid,
+				}, function (err) {
+					if (!err) {
+						ajaxify.refresh();
+					} else {
+						app.alertError(err.message);
+					}
+				});
+			});
 		});
 	}
 

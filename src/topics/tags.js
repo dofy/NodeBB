@@ -2,16 +2,16 @@
 'use strict';
 
 var async = require('async');
+var validator = require('validator');
 
 var db = require('../database');
 var meta = require('../meta');
-var _ = require('underscore');
+var _ = require('lodash');
 var plugins = require('../plugins');
-var utils = require('../../public/src/utils');
-
+var utils = require('../utils');
+var batch = require('../batch');
 
 module.exports = function (Topics) {
-
 	Topics.createTags = function (tags, tid, timestamp, callback) {
 		callback = callback || function () {};
 
@@ -21,14 +21,15 @@ module.exports = function (Topics) {
 
 		async.waterfall([
 			function (next) {
-				plugins.fireHook('filter:tags.filter', {tags: tags, tid: tid}, next);
+				plugins.fireHook('filter:tags.filter', { tags: tags, tid: tid }, next);
 			},
 			function (data, next) {
-				tags = data.tags.slice(0, meta.config.maximumTagsPerTopic || 5);
+				tags = _.uniq(data.tags);
+				tags = tags.slice(0, meta.config.maximumTagsPerTopic || 5);
 				tags = tags.map(function (tag) {
 					return utils.cleanUpTag(tag, meta.config.maximumTagLength);
-				}).filter(function (tag, index, array) {
-					return tag && tag.length >= (meta.config.minimumTagLength || 3) && array.indexOf(tag) === index;
+				}).filter(function (tag) {
+					return tag && tag.length >= (meta.config.minimumTagLength || 3);
 				});
 
 				filterCategoryTags(tags, tid, next);
@@ -41,14 +42,14 @@ module.exports = function (Topics) {
 
 				async.parallel([
 					async.apply(db.setAdd, 'topic:' + tid + ':tags', tags),
-					async.apply(db.sortedSetsAdd, keys, timestamp, tid)
+					async.apply(db.sortedSetsAdd, keys, timestamp, tid),
 				], function (err) {
 					next(err);
 				});
 			},
 			function (next) {
 				async.each(tags, updateTagCount, next);
-			}
+			},
 		], callback);
 	};
 
@@ -68,7 +69,7 @@ module.exports = function (Topics) {
 					return tagWhitelist.indexOf(tag) !== -1;
 				});
 				next(null, tags);
-			}
+			},
 		], callback);
 	}
 
@@ -91,24 +92,77 @@ module.exports = function (Topics) {
 					return next();
 				}
 				db.sortedSetAdd('tags:topic:count', 0, tag, next);
-			}
+			},
 		], callback);
 	};
 
-	Topics.updateTag = function (tag, data, callback) {
-		db.setObject('tag:' + tag, data, callback);
+	Topics.updateTags = function (data, callback) {
+		async.eachSeries(data, function (tagData, next) {
+			db.setObject('tag:' + tagData.value, {
+				color: tagData.color,
+				bgColor: tagData.bgColor,
+			}, next);
+		}, callback);
 	};
+
+	Topics.renameTags = function (data, callback) {
+		async.eachSeries(data, function (tagData, next) {
+			renameTag(tagData.value, tagData.newName, next);
+		}, callback);
+	};
+
+	function renameTag(tag, newTagName, callback) {
+		if (!newTagName || tag === newTagName) {
+			return setImmediate(callback);
+		}
+		async.waterfall([
+			function (next) {
+				Topics.createEmptyTag(newTagName, next);
+			},
+			function (next) {
+				batch.processSortedSet('tag:' + tag + ':topics', function (tids, next) {
+					async.waterfall([
+						function (next) {
+							db.sortedSetScores('tag:' + tag + ':topics', tids, next);
+						},
+						function (scores, next) {
+							db.sortedSetAdd('tag:' + newTagName + ':topics', scores, tids, next);
+						},
+						function (next) {
+							var keys = tids.map(function (tid) {
+								return 'topic:' + tid + ':tags';
+							});
+
+							async.series([
+								async.apply(db.sortedSetRemove, 'tag:' + tag + ':topics', tids),
+								async.apply(db.setsRemove, keys, tag),
+								async.apply(db.setsAdd, keys, newTagName),
+							], next);
+						},
+					], next);
+				}, next);
+			},
+			function (next) {
+				Topics.deleteTag(tag, next);
+			},
+			function (next) {
+				updateTagCount(newTagName, next);
+			},
+		], callback);
+	}
 
 	function updateTagCount(tag, callback) {
 		callback = callback || function () {};
-		Topics.getTagTopicCount(tag, function (err, count) {
-			if (err) {
-				return callback(err);
-			}
-			count = count || 0;
+		async.waterfall([
+			function (next) {
+				Topics.getTagTopicCount(tag, next);
+			},
+			function (count, next) {
+				count = count || 0;
 
-			db.sortedSetAdd('tags:topic:count', count, tag, callback);
-		});
+				db.sortedSetAdd('tags:topic:count', count, tag, next);
+			},
+		], callback);
 	}
 
 	Topics.getTagTids = function (tag, start, stop, callback) {
@@ -136,8 +190,15 @@ module.exports = function (Topics) {
 			},
 			function (next) {
 				db.sortedSetRemove('tags:topic:count', tags, next);
-			}
-		], callback);
+			},
+			function (next) {
+				db.deleteAll(tags.map(function (tag) {
+					return 'tag:' + tag;
+				}), next);
+			},
+		], function (err) {
+			callback(err);
+		});
 	};
 
 	function removeTagsFromTopics(tags, callback) {
@@ -155,19 +216,19 @@ module.exports = function (Topics) {
 		}, callback);
 	}
 
-	Topics.deleteTag = function (tag) {
-		db.delete('tag:' + tag + ':topics');
-		db.sortedSetRemove('tags:topic:count', tag);
+	Topics.deleteTag = function (tag, callback) {
+		Topics.deleteTags([tag], callback);
 	};
 
 	Topics.getTags = function (start, stop, callback) {
-		db.getSortedSetRevRangeWithScores('tags:topic:count', start, stop, function (err, tags) {
-			if (err) {
-				return callback(err);
-			}
-
-			Topics.getTagData(tags, callback);
-		});
+		async.waterfall([
+			function (next) {
+				db.getSortedSetRevRangeWithScores('tags:topic:count', start, stop, next);
+			},
+			function (tags, next) {
+				Topics.getTagData(tags, next);
+			},
+		], callback);
 	};
 
 	Topics.getTagData = function (tags, callback) {
@@ -175,21 +236,30 @@ module.exports = function (Topics) {
 			return 'tag:' + tag.value;
 		});
 
-		db.getObjects(keys, function (err, tagData) {
-			if (err) {
-				return callback(err);
-			}
-
-			tags.forEach(function (tag, index) {
-				tag.color = tagData[index] ? tagData[index].color : '';
-				tag.bgColor = tagData[index] ? tagData[index].bgColor : '';
-			});
-			callback(null, tags);
-		});
+		async.waterfall([
+			function (next) {
+				db.getObjects(keys, next);
+			},
+			function (tagData, next) {
+				tags.forEach(function (tag, index) {
+					tag.valueEscaped = validator.escape(String(tag.value));
+					tag.color = tagData[index] ? tagData[index].color : '';
+					tag.bgColor = tagData[index] ? tagData[index].bgColor : '';
+				});
+				next(null, tags);
+			},
+		], callback);
 	};
 
 	Topics.getTopicTags = function (tid, callback) {
 		db.getSetMembers('topic:' + tid + ':tags', callback);
+	};
+
+	Topics.getTopicsTags = function (tids, callback) {
+		var keys = tids.map(function (tid) {
+			return 'topic:' + tid + ':tags';
+		});
+		db.getSetsMembers(keys, callback);
 	};
 
 	Topics.getTopicTagsObjects = function (tid, callback) {
@@ -213,7 +283,7 @@ module.exports = function (Topics) {
 				uniqueTopicTags = _.uniq(_.flatten(topicTags));
 
 				var tags = uniqueTopicTags.map(function (tag) {
-					return {value: tag};
+					return { value: tag };
 				});
 
 				async.parallel({
@@ -222,7 +292,7 @@ module.exports = function (Topics) {
 					},
 					counts: function (next) {
 						db.sortedSetScores('tags:topic:count', uniqueTopicTags, next);
-					}
+					},
 				}, next);
 			},
 			function (results, next) {
@@ -230,20 +300,23 @@ module.exports = function (Topics) {
 					tag.score = results.counts[index] ? results.counts[index] : 0;
 				});
 
-				var tagData = _.object(uniqueTopicTags, results.tagData);
+				var tagData = _.zipObject(uniqueTopicTags, results.tagData);
 
 				topicTags.forEach(function (tags, index) {
 					if (Array.isArray(tags)) {
-						topicTags[index] = tags.map(function (tag) {return tagData[tag];});
+						topicTags[index] = tags.map(function (tag) { return tagData[tag]; });
+						topicTags[index].sort(function (tag1, tag2) {
+							return tag2.score - tag1.score;
+						});
 					}
 				});
 
 				next(null, topicTags);
-			}
+			},
 		], callback);
 	};
 
-	Topics.updateTags = function (tid, tags, callback) {
+	Topics.updateTopicTags = function (tid, tags, callback) {
 		callback = callback || function () {};
 		async.waterfall([
 			function (next) {
@@ -254,7 +327,7 @@ module.exports = function (Topics) {
 			},
 			function (timestamp, next) {
 				Topics.createTags(tags, tid, timestamp, next);
-			}
+			},
 		], callback);
 	};
 
@@ -279,9 +352,9 @@ module.exports = function (Topics) {
 						async.each(tags, function (tag, next) {
 							updateTagCount(tag, next);
 						}, next);
-					}
+					},
 				], next);
-			}
+			},
 		], function (err) {
 			callback(err);
 		});
@@ -295,17 +368,17 @@ module.exports = function (Topics) {
 		async.waterfall([
 			function (next) {
 				if (plugins.hasListeners('filter:topics.searchTags')) {
-					plugins.fireHook('filter:topics.searchTags', {data: data}, next);
+					plugins.fireHook('filter:topics.searchTags', { data: data }, next);
 				} else {
 					findMatches(data.query, 0, next);
 				}
 			},
 			function (result, next) {
-				plugins.fireHook('filter:tags.search', {data: data, matches: result.matches}, next);
+				plugins.fireHook('filter:tags.search', { data: data, matches: result.matches }, next);
 			},
 			function (result, next) {
 				next(null, result.matches);
-			}
+			},
 		], callback);
 	};
 
@@ -317,14 +390,14 @@ module.exports = function (Topics) {
 		async.waterfall([
 			function (next) {
 				if (plugins.hasListeners('filter:topics.autocompleteTags')) {
-					plugins.fireHook('filter:topics.autocompleteTags', {data: data}, next);
+					plugins.fireHook('filter:topics.autocompleteTags', { data: data }, next);
 				} else {
 					findMatches(data.query, data.cid, next);
 				}
 			},
 			function (result, next) {
 				next(null, result.matches);
-			}
+			},
 		], callback);
 	};
 
@@ -348,7 +421,7 @@ module.exports = function (Topics) {
 				query = query.toLowerCase();
 
 				var matches = [];
-				for(var i = 0; i < tags.length; ++i) {
+				for (var i = 0; i < tags.length; i += 1) {
 					if (tags[i].toLowerCase().startsWith(query)) {
 						matches.push(tags[i]);
 						if (matches.length > 19) {
@@ -360,8 +433,8 @@ module.exports = function (Topics) {
 				matches = matches.sort(function (a, b) {
 					return a > b;
 				});
-				next(null, {matches: matches});
-			}
+				next(null, { matches: matches });
+			},
 		], callback);
 	}
 
@@ -369,7 +442,7 @@ module.exports = function (Topics) {
 		var searchResult = {
 			tags: [],
 			matchCount: 0,
-			pageCount: 1
+			pageCount: 1,
 		};
 
 		if (!data || !data.query || !data.query.length) {
@@ -386,11 +459,11 @@ module.exports = function (Topics) {
 					},
 					tagData: function (next) {
 						tags = tags.map(function (tag) {
-							return {value: tag};
+							return { value: tag };
 						});
 
 						Topics.getTagData(tags, next);
-					}
+					},
 				}, next);
 			},
 			function (results, next) {
@@ -404,13 +477,13 @@ module.exports = function (Topics) {
 				searchResult.matchCount = results.tagData.length;
 				searchResult.pageCount = 1;
 				next(null, searchResult);
-			}
+			},
 		], callback);
 	};
 
 	Topics.getRelatedTopics = function (topicData, uid, callback) {
 		if (plugins.hasListeners('filter:topic.getRelatedTopics')) {
-			return plugins.fireHook('filter:topic.getRelatedTopics', {topic: topicData, uid: uid}, callback);
+			return plugins.fireHook('filter:topic.getRelatedTopics', { topic: topicData, uid: uid }, callback);
 		}
 
 		var maximumTopics = parseInt(meta.config.maximumRelatedTopics, 10) || 0;
@@ -427,7 +500,7 @@ module.exports = function (Topics) {
 				}, next);
 			},
 			function (tids, next) {
-				tids = _.shuffle(_.unique(_.flatten(tids))).slice(0, maximumTopics);
+				tids = _.shuffle(_.uniq(_.flatten(tids))).slice(0, maximumTopics);
 				Topics.getTopics(tids, uid, next);
 			},
 			function (topics, next) {
@@ -435,7 +508,7 @@ module.exports = function (Topics) {
 					return topic && !topic.deleted && parseInt(topic.uid, 10) !== parseInt(uid, 10);
 				});
 				next(null, topics);
-			}
+			},
 		], callback);
 	};
 };

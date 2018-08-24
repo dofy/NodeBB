@@ -2,10 +2,11 @@
 'use strict';
 
 var async = require('async');
+var _ = require('lodash');
 var validator = require('validator');
-var S = require('string');
+
 var db = require('../database');
-var utils = require('../../public/src/utils');
+var utils = require('../utils');
 var plugins = require('../plugins');
 var analytics = require('../analytics');
 var user = require('../user');
@@ -15,7 +16,6 @@ var privileges = require('../privileges');
 var categories = require('../categories');
 
 module.exports = function (Topics) {
-
 	Topics.create = function (data, callback) {
 		// This is an internal method, consider using Topics.post instead
 		var timestamp = data.timestamp || Date.now();
@@ -30,26 +30,26 @@ module.exports = function (Topics) {
 			},
 			function (tid, next) {
 				topicData = {
-					'tid': tid,
-					'uid': data.uid,
-					'cid': data.cid,
-					'mainPid': 0,
-					'title': data.title,
-					'slug': tid + '/' + (utils.slugify(data.title) || 'topic'),
-					'timestamp': timestamp,
-					'lastposttime': 0,
-					'postcount': 0,
-					'viewcount': 0,
-					'locked': 0,
-					'deleted': 0,
-					'pinned': 0
+					tid: tid,
+					uid: data.uid,
+					cid: data.cid,
+					mainPid: 0,
+					title: data.title,
+					slug: tid + '/' + (utils.slugify(data.title) || 'topic'),
+					timestamp: timestamp,
+					lastposttime: 0,
+					postcount: 0,
+					viewcount: 0,
+					locked: 0,
+					deleted: 0,
+					pinned: 0,
 				};
 
 				if (data.thumb) {
 					topicData.thumb = data.thumb;
 				}
 
-				plugins.fireHook('filter:topic.create', {topic: topicData, data: data}, next);
+				plugins.fireHook('filter:topic.create', { topic: topicData, data: data }, next);
 			},
 			function (data, next) {
 				topicData = data.topic;
@@ -61,8 +61,11 @@ module.exports = function (Topics) {
 						db.sortedSetsAdd([
 							'topics:tid',
 							'cid:' + topicData.cid + ':tids',
-							'cid:' + topicData.cid + ':uid:' + topicData.uid + ':tids'
+							'cid:' + topicData.cid + ':uid:' + topicData.uid + ':tids',
 						], timestamp, topicData.tid, next);
+					},
+					function (next) {
+						db.sortedSetAdd('cid:' + topicData.cid + ':tids:votes', 0, topicData.tid, next);
 					},
 					function (next) {
 						categories.updateRecentTid(topicData.cid, topicData.tid, next);
@@ -78,13 +81,13 @@ module.exports = function (Topics) {
 					},
 					function (next) {
 						Topics.createTags(data.tags, topicData.tid, timestamp, next);
-					}
+					},
 				], next);
 			},
 			function (results, next) {
-				plugins.fireHook('action:topic.save', topicData);
+				plugins.fireHook('action:topic.save', { topic: _.clone(topicData) });
 				next(null, topicData.tid);
-			}
+			},
 		], callback);
 	};
 
@@ -102,23 +105,36 @@ module.exports = function (Topics) {
 			},
 			function (next) {
 				if (data.content) {
-					data.content = data.content.rtrim();
+					data.content = utils.rtrim(data.content);
 				}
+
 				check(data.content, meta.config.minimumPostLength, meta.config.maximumPostLength, 'content-too-short', 'content-too-long', next);
 			},
 			function (next) {
-				categories.exists(data.cid, next);
+				async.parallel({
+					categoryExists: function (next) {
+						categories.exists(data.cid, next);
+					},
+					canCreate: function (next) {
+						privileges.categories.can('topics:create', data.cid, data.uid, next);
+					},
+					canTag: function (next) {
+						if (!data.tags.length) {
+							return next(null, true);
+						}
+						privileges.categories.can('topics:tag', data.cid, data.uid, next);
+					},
+				}, next);
 			},
-			function (categoryExists, next) {
-				if (!categoryExists) {
+			function (results, next) {
+				if (!results.categoryExists) {
 					return next(new Error('[[error:no-category]]'));
 				}
-				privileges.categories.can('topics:create', data.cid, data.uid, next);
-			},
-			function (canCreate, next) {
-				if (!canCreate) {
+
+				if (!results.canCreate || !results.canTag) {
 					return next(new Error('[[error:no-privileges]]'));
 				}
+
 				guestHandleValid(data, next);
 			},
 			function (next) {
@@ -160,51 +176,49 @@ module.exports = function (Topics) {
 					},
 					topicData: function (next) {
 						Topics.getTopicsByTids([postData.tid], uid, next);
-					}
+					},
 				}, next);
 			},
-			function (data, next) {
-				if (!Array.isArray(data.topicData) || !data.topicData.length) {
+			function (result, next) {
+				if (!Array.isArray(result.topicData) || !result.topicData.length) {
 					return next(new Error('[[error:no-topic]]'));
 				}
 
-				data.topicData = data.topicData[0];
-				data.topicData.unreplied = 1;
-				data.topicData.mainPost = data.postData;
-				data.postData.index = 0;
+				result.topicData = result.topicData[0];
+				result.topicData.unreplied = 1;
+				result.topicData.mainPost = result.postData;
+				result.postData.index = 0;
 
-				analytics.increment(['topics', 'topics:byCid:' + data.topicData.cid]);
-				plugins.fireHook('action:topic.post', data.topicData);
+				analytics.increment(['topics', 'topics:byCid:' + result.topicData.cid]);
+				plugins.fireHook('action:topic.post', { topic: result.topicData, post: result.postData, data: data });
 
 				if (parseInt(uid, 10)) {
-					user.notifications.sendTopicNotificationToFollowers(uid, data.topicData, data.postData);
+					user.notifications.sendTopicNotificationToFollowers(uid, result.topicData, result.postData);
 				}
 
 				next(null, {
-					topicData: data.topicData,
-					postData: data.postData
+					topicData: result.topicData,
+					postData: result.postData,
 				});
-			}
+			},
 		], callback);
 	};
 
 	Topics.reply = function (data, callback) {
 		var tid = data.tid;
 		var uid = data.uid;
-		var content = data.content;
 		var postData;
-		var cid;
 
 		async.waterfall([
 			function (next) {
 				Topics.getTopicField(tid, 'cid', next);
 			},
-			function (_cid, next) {
-				cid = _cid;
+			function (cid, next) {
+				data.cid = cid;
 				async.parallel({
 					topicData: async.apply(Topics.getTopicData, tid),
 					canReply: async.apply(privileges.topics.can, 'topics:reply', tid, uid),
-					isAdminOrMod: async.apply(privileges.categories.isAdminOrMod, cid, uid),
+					isAdminOrMod: async.apply(privileges.categories.isAdminOrMod, data.cid, uid),
 				}, next);
 			},
 			function (results, next) {
@@ -227,29 +241,21 @@ module.exports = function (Topics) {
 				guestHandleValid(data, next);
 			},
 			function (next) {
-				user.isReadyToPost(uid, cid, next);
+				user.isReadyToPost(uid, data.cid, next);
 			},
 			function (next) {
 				plugins.fireHook('filter:topic.reply', data, next);
 			},
 			function (filteredData, next) {
-				content = filteredData.content || data.content;
-				if (content) {
-					content = content.rtrim();
+				if (data.content) {
+					data.content = utils.rtrim(data.content);
 				}
 
-				check(content, meta.config.minimumPostLength, meta.config.maximumPostLength, 'content-too-short', 'content-too-long', next);
+				check(data.content, meta.config.minimumPostLength, meta.config.maximumPostLength, 'content-too-short', 'content-too-long', next);
 			},
 			function (next) {
-				posts.create({
-					uid: uid,
-					tid: tid,
-					handle: data.handle,
-					content: content,
-					toPid: data.toPid,
-					timestamp: data.timestamp,
-					ip: data.req ? data.req.ip : null
-				}, next);
+				data.ip = data.req ? data.req.ip : null;
+				posts.create(data, next);
 			},
 			function (_postData, next) {
 				postData = _postData;
@@ -268,11 +274,11 @@ module.exports = function (Topics) {
 				}
 
 				Topics.notifyFollowers(postData, uid);
-				analytics.increment(['posts', 'posts:byCid:' + cid]);
-				plugins.fireHook('action:topic.reply', postData);
+				analytics.increment(['posts', 'posts:byCid:' + data.cid]);
+				plugins.fireHook('action:topic.reply', { post: _.clone(postData), data: data });
 
 				next(null, postData);
-			}
+			},
 		], callback);
 	};
 
@@ -299,7 +305,7 @@ module.exports = function (Topics) {
 					},
 					content: function (next) {
 						posts.parsePost(postData, next);
-					}
+					},
 				}, next);
 			},
 			function (results, next) {
@@ -320,20 +326,20 @@ module.exports = function (Topics) {
 				postData.display_move_tools = true;
 				postData.selfPost = false;
 				postData.timestampISO = utils.toISOString(postData.timestamp);
-				postData.topic.title = validator.escape(String(postData.topic.title));
+				postData.topic.title = String(postData.topic.title);
 
 				next(null, postData);
-			}
+			},
 		], callback);
 	}
 
 	function check(item, min, max, minError, maxError, callback) {
 		// Trim and remove HTML (latter for composers that send in HTML, like redactor)
 		if (typeof item === 'string') {
-			item = S(item.trim()).stripTags().s;
+			item = utils.stripHTMLTags(item).trim();
 		}
 
-		if (!item || item.length < parseInt(min, 10)) {
+		if (item === null || item === undefined || item.length < parseInt(min, 10)) {
 			return callback(new Error('[[error:' + minError + ', ' + min + ']]'));
 		} else if (item.length > parseInt(max, 10)) {
 			return callback(new Error('[[error:' + maxError + ', ' + max + ']]'));
@@ -356,5 +362,4 @@ module.exports = function (Topics) {
 		}
 		callback();
 	}
-
 };

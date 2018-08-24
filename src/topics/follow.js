@@ -2,21 +2,15 @@
 'use strict';
 
 var async = require('async');
-var nconf = require('nconf');
-var S = require('string');
-var winston = require('winston');
 
 var db = require('../database');
-var user = require('../user');
 var posts = require('../posts');
 var notifications = require('../notifications');
 var privileges = require('../privileges');
-var meta = require('../meta');
-var emailer = require('../emailer');
 var plugins = require('../plugins');
+var utils = require('../utils');
 
 module.exports = function (Topics) {
-
 	Topics.toggleFollow = function (tid, uid, callback) {
 		callback = callback || function () {};
 		var isFollowing;
@@ -40,7 +34,7 @@ module.exports = function (Topics) {
 			},
 			function (next) {
 				next(null, !isFollowing);
-			}
+			},
 		], callback);
 	};
 
@@ -75,9 +69,9 @@ module.exports = function (Topics) {
 				method2(tid, uid, next);
 			},
 			function (next) {
-				plugins.fireHook(hook, {uid: uid, tid: tid});
+				plugins.fireHook(hook, { uid: uid, tid: tid });
 				next();
-			}
+			},
 		], callback);
 	}
 
@@ -104,7 +98,7 @@ module.exports = function (Topics) {
 			},
 			function (next) {
 				db.sortedSetAdd(set2, Date.now(), tid, next);
-			}
+			},
 		], callback);
 	}
 
@@ -115,7 +109,7 @@ module.exports = function (Topics) {
 			},
 			function (next) {
 				db.sortedSetRemove(set2, tid, next);
-			}
+			},
 		], callback);
 	}
 
@@ -153,37 +147,41 @@ module.exports = function (Topics) {
 			function (next) {
 				db.isSetMembers('tid:' + tid + ':ignorers', uids, next);
 			},
-			function (isMembers, next) {
+			function (isIgnoring, next) {
 				var readingUids = uids.filter(function (uid, index) {
-					return uid && isMembers[index];
+					return uid && !isIgnoring[index];
 				});
 				next(null, readingUids);
-			}
+			},
 		], callback);
 	};
 
 	Topics.filterWatchedTids = function (tids, uid, callback) {
-		db.sortedSetScores('uid:' + uid + ':followed_tids', tids, function (err, scores) {
-			if (err) {
-				return callback(err);
-			}
-			tids = tids.filter(function (tid, index) {
-				return tid && !!scores[index];
-			});
-			callback(null, tids);
-		});
+		async.waterfall([
+			function (next) {
+				db.sortedSetScores('uid:' + uid + ':followed_tids', tids, next);
+			},
+			function (scores, next) {
+				tids = tids.filter(function (tid, index) {
+					return tid && !!scores[index];
+				});
+				next(null, tids);
+			},
+		], callback);
 	};
 
 	Topics.filterNotIgnoredTids = function (tids, uid, callback) {
-		db.sortedSetScores('uid:' + uid + ':ignored_tids', tids, function (err, scores) {
-			if (err) {
-				return callback(err);
-			}
-			tids = tids.filter(function (tid, index) {
-				return tid && !scores[index];
-			});
-			callback(null, tids);
-		});
+		async.waterfall([
+			function (next) {
+				db.sortedSetScores('uid:' + uid + ':ignored_tids', tids, next);
+			},
+			function (scores, next) {
+				tids = tids.filter(function (tid, index) {
+					return tid && !scores[index];
+				});
+				next(null, tids);
+			},
+		], callback);
 	};
 
 	Topics.notifyFollowers = function (postData, exceptUid, callback) {
@@ -197,15 +195,9 @@ module.exports = function (Topics) {
 				Topics.getFollowers(postData.topic.tid, next);
 			},
 			function (followers, next) {
-				if (!Array.isArray(followers) || !followers.length) {
-					return callback();
-				}
 				var index = followers.indexOf(exceptUid.toString());
 				if (index !== -1) {
 					followers.splice(index, 1);
-				}
-				if (!followers.length) {
-					return callback();
 				}
 
 				privileges.topics.filterUids('read', postData.topic.tid, followers, next);
@@ -218,13 +210,16 @@ module.exports = function (Topics) {
 				title = postData.topic.title;
 
 				if (title) {
-					title = S(title).decodeHTMLEntities().s;
+					title = utils.decodeHTMLEntities(title);
 					titleEscaped = title.replace(/%/g, '&#37;').replace(/,/g, '&#44;');
 				}
 
-				postData.content = posts.relativeToAbsolute(postData.content);
+				postData.content = posts.relativeToAbsolute(postData.content, posts.urlRegex);
+				postData.content = posts.relativeToAbsolute(postData.content, posts.imgRegex);
 
 				notifications.create({
+					type: 'new-reply',
+					subject: title,
 					bodyShort: '[[notifications:user_posted_to, ' + postData.user.username + ', ' + titleEscaped + ']]',
 					bodyLong: postData.content,
 					pid: postData.pid,
@@ -233,7 +228,7 @@ module.exports = function (Topics) {
 					tid: postData.topic.tid,
 					from: exceptUid,
 					mergeId: 'notifications:user_posted_to|' + postData.topic.tid,
-					topicTitle: title
+					topicTitle: title,
 				}, next);
 			},
 			function (notification, next) {
@@ -241,41 +236,8 @@ module.exports = function (Topics) {
 					notifications.push(notification, followers);
 				}
 
-				if (parseInt(meta.config.disableEmailSubscriptions, 10) === 1) {
-					return next();
-				}
-
-				async.eachLimit(followers, 3, function (toUid, next) {
-					async.parallel({
-						userData: async.apply(user.getUserFields, toUid, ['username', 'userslug']),
-						userSettings: async.apply(user.getSettings, toUid)
-					}, function (err, data) {
-						if (err) {
-							return next(err);
-						}
-
-						if (data.userSettings.sendPostNotifications) {
-							emailer.send('notif_post', toUid, {
-								pid: postData.pid,
-								subject: '[' + (meta.config.title || 'NodeBB') + '] ' + title,
-								intro: '[[notifications:user_posted_to, ' + postData.user.username + ', ' + titleEscaped + ']]',
-								postBody: postData.content.replace(/"\/\//g, '"https://'),
-								site_title: meta.config.title || 'NodeBB',
-								username: data.userData.username,
-								userslug: data.userData.userslug,
-								url: nconf.get('url') + '/topic/' + postData.topic.tid,
-								topicSlug: postData.topic.slug,
-								postCount: postData.topic.postcount,
-								base_url: nconf.get('url')
-							}, next);
-						} else {
-							winston.debug('[topics.notifyFollowers] uid ' + toUid + ' does not have post notifications enabled, skipping.');
-							next();
-						}
-					});
-				});
 				next();
-			}
+			},
 		], callback);
 	};
 };

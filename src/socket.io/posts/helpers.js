@@ -14,8 +14,12 @@ helpers.postCommand = function (socket, command, eventName, notification, data, 
 		return callback(new Error('[[error:not-logged-in]]'));
 	}
 
-	if (!data || !data.pid || !data.room_id) {
+	if (!data || !data.pid) {
 		return callback(new Error('[[error:invalid-data]]'));
+	}
+
+	if (!data.room_id) {
+		return callback(new Error('[[error:invalid-room-id, ' + data.room_id + ' ]]'));
 	}
 
 	async.waterfall([
@@ -26,7 +30,7 @@ helpers.postCommand = function (socket, command, eventName, notification, data, 
 				},
 				deleted: function (next) {
 					posts.getPostField(data.pid, 'deleted', next);
-				}
+				},
 			}, next);
 		},
 		function (results, next) {
@@ -46,11 +50,11 @@ helpers.postCommand = function (socket, command, eventName, notification, data, 
 				filter:post.bookmark
 				filter:post.unbookmark
 			 */
-			plugins.fireHook('filter:post.' + command, {data: data, uid: socket.uid}, next);
+			plugins.fireHook('filter:post.' + command, { data: data, uid: socket.uid }, next);
 		},
 		function (filteredData, next) {
 			executeCommand(socket, command, eventName, notification, filteredData.data, next);
-		}
+		},
 	], callback);
 };
 
@@ -65,12 +69,14 @@ function executeCommand(socket, command, eventName, notification, data, callback
 				websockets.in(data.room_id).emit('event:' + eventName, result);
 			}
 
-			if (result && notification) {
+			if (result && command === 'upvote') {
+				socketHelpers.upvote(result, notification);
+			} else if (result && notification) {
 				socketHelpers.sendNotificationToPostOwner(data.pid, socket.uid, command, notification);
 			} else if (result && command === 'unvote') {
 				socketHelpers.rescindUpvoteNotification(data.pid, socket.uid);
 			}
 			next(null, result);
-		}
+		},
 	], callback);
 }

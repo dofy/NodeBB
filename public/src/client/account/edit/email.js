@@ -1,6 +1,5 @@
 'use strict';
 
-/* globals define, ajaxify, socket, app  */
 
 define('forum/account/edit/email', ['forum/account/header'], function (header) {
 	var AccountEditEmail = {};
@@ -12,7 +11,7 @@ define('forum/account/edit/email', ['forum/account/header'], function (header) {
 			var userData = {
 				uid: $('#inputUID').val(),
 				email: $('#inputNewEmail').val(),
-				password: $('#inputCurrentPassword').val()
+				password: $('#inputCurrentPassword').val(),
 			};
 
 			if (!userData.email) {
@@ -32,7 +31,7 @@ define('forum/account/edit/email', ['forum/account/header'], function (header) {
 					return app.alertError(err.message);
 				}
 
-				ajaxify.go('user/' + ajaxify.data.userslug);
+				ajaxify.go('user/' + ajaxify.data.userslug + '/edit');
 			});
 
 			return false;

@@ -1,21 +1,21 @@
-"use strict";
-/*global define, app, templates*/
+'use strict';
 
-define('taskbar', function () {
+
+define('taskbar', ['benchpress'], function (Benchpress) {
 	var taskbar = {};
 
 	taskbar.init = function () {
 		var self = this;
 
-		templates.parse('modules/taskbar', {}, function (html) {
+		Benchpress.parse('modules/taskbar', {}, function (html) {
 			self.taskbar = $(html);
 			self.tasklist = self.taskbar.find('ul');
 			$(document.body).append(self.taskbar);
 
 			self.taskbar.on('click', 'li', function () {
-				var	$btn = $(this),
-					module = $btn.attr('data-module'),
-					uuid = $btn.attr('data-uuid');
+				var	$btn = $(this);
+				var module = $btn.attr('data-module');
+				var uuid = $btn.attr('data-uuid');
 
 				require([module], function (module) {
 					if (!$btn.hasClass('active')) {
@@ -39,7 +39,7 @@ define('taskbar', function () {
 	taskbar.discard = function (module, uuid) {
 		var btnEl = taskbar.tasklist.find('[data-module="' + module + '"][data-uuid="' + uuid + '"]');
 		btnEl.remove();
-		
+
 		update();
 	};
 
@@ -50,7 +50,7 @@ define('taskbar', function () {
 			module: module,
 			uuid: uuid,
 			options: options,
-			element: element
+			element: element,
 		};
 
 		$(window).trigger('filter:taskbar.push', data);
@@ -86,6 +86,9 @@ define('taskbar', function () {
 		var	tasks = taskbar.tasklist.find('li');
 		tasks.removeClass('active');
 		tasks.filter('[data-uuid="' + uuid + '"]').addClass('active');
+
+		$('[data-uuid]:not([data-module])').toggleClass('modal-unfocused', true);
+		$('[data-uuid="' + uuid + '"]:not([data-module])').toggleClass('modal-unfocused', false);
 	};
 
 	taskbar.isActive = function (uuid) {
@@ -115,11 +118,11 @@ define('taskbar', function () {
 			.html('<a href="#">' +
 				(data.options.icon ? '<i class="fa ' + data.options.icon + '"></i> ' : '') +
 				(data.options.image ? '<img src="' + data.options.image + '"/> ' : '') +
-				'<span>' + title + '</span>' +
+				'<span component="taskbar/title">' + title + '</span>' +
 				'</a>')
 			.attr({
 				'data-module': data.module,
-				'data-uuid': data.uuid
+				'data-uuid': data.uuid,
 			})
 			.addClass(data.options.state !== undefined ? data.options.state : 'active');
 
@@ -135,6 +138,10 @@ define('taskbar', function () {
 		taskbarEl.data(data);
 		$(window).trigger('action:taskbar.pushed', data);
 	}
+
+	taskbar.updateTitle = function (module, uuid, newTitle) {
+		taskbar.tasklist.find('[data-module="' + module + '"][data-uuid="' + uuid + '"] [component="taskbar/title"]').text(newTitle);
+	};
 
 	return taskbar;
 });

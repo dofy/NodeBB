@@ -1,5 +1,5 @@
 'use strict';
-/*global define, utils, ajaxify, bootbox*/
+
 
 define('forum/pagination', function () {
 	var pagination = {};
@@ -25,6 +25,14 @@ define('forum/pagination', function () {
 
 		var url = window.location.pathname + '?' + $.param(query);
 		ajaxify.go(url, callback);
+	};
+
+	pagination.nextPage = function (callback) {
+		pagination.loadPage(ajaxify.data.pagination.currentPage + 1, callback);
+	};
+
+	pagination.previousPage = function (callback) {
+		pagination.loadPage(ajaxify.data.pagination.currentPage - 1, callback);
 	};
 
 	return pagination;

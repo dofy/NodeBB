@@ -1,14 +1,14 @@
-"use strict";
-/* global define, app, ajaxify, socket, templates, bootbox */
+'use strict';
 
-define('admin/extend/rewards', function () {
+
+define('admin/extend/rewards', ['translator', 'benchpress'], function (translator, Benchpress) {
 	var rewards = {};
 
 
-	var available,
-		active,
-		conditions,
-		conditionals;
+	var available;
+	var active;
+	var conditions;
+	var conditionals;
 
 	rewards.init = function () {
 		available = ajaxify.data.rewards;
@@ -25,14 +25,14 @@ define('admin/extend/rewards', function () {
 				update($(this));
 			})
 			.on('click', '.delete', function () {
-				var parent = $(this).parents('[data-id]'),
-					id = parent.attr('data-id');
+				var parent = $(this).parents('[data-id]');
+				var id = parent.attr('data-id');
 
-				socket.emit('admin.rewards.delete', {id: id}, function (err) {
+				socket.emit('admin.rewards.delete', { id: id }, function (err) {
 					if (err) {
 						app.alertError(err.message);
 					} else {
-						app.alertSuccess('Successfully deleted reward');
+						app.alertSuccess('[[admin/extend/rewards:alert.delete-success]]');
 					}
 				});
 
@@ -40,11 +40,9 @@ define('admin/extend/rewards', function () {
 				return false;
 			})
 			.on('click', '.toggle', function () {
-				var btn = $(this),
-					disabled = btn.hasClass('btn-success'),
-					id = $(this).parents('[data-id]').attr('data-id');
-
-				btn.toggleClass('btn-warning').toggleClass('btn-success').html(disabled ? 'Disable' : 'Enable');
+				var btn = $(this);
+				var disabled = btn.hasClass('btn-success');
+				btn.toggleClass('btn-warning').toggleClass('btn-success').translateHtml('[[admin/extend/rewards:' + (disabled ? 'disable' : 'enable') + ']]');
 				// send disable api call
 				return false;
 			});
@@ -58,26 +56,26 @@ define('admin/extend/rewards', function () {
 	function select(el) {
 		el.val(el.attr('data-selected'));
 		switch (el.attr('name')) {
-			case 'rid':
-					selectReward(el);
-				break;
+		case 'rid':
+			selectReward(el);
+			break;
 		}
 	}
 
 	function update(el) {
 		el.attr('data-selected', el.val());
 		switch (el.attr('name')) {
-			case 'rid':
-					selectReward(el);
-				break;
+		case 'rid':
+			selectReward(el);
+			break;
 		}
 	}
 
 	function selectReward(el) {
-		var parent = el.parents('[data-rid]'),
-			div = parent.find('.inputs'),
-			inputs,
-			html = '';
+		var parent = el.parents('[data-rid]');
+		var div = parent.find('.inputs');
+		var inputs;
+		var html = '';
 
 		for (var reward in available) {
 			if (available.hasOwnProperty(reward)) {
@@ -90,21 +88,21 @@ define('admin/extend/rewards', function () {
 		}
 
 		if (!inputs) {
-			return app.alertError('Illegal reward - no inputs found! ' + el.attr('data-selected'));
+			return app.alertError('[[admin/extend/rewards:alert.no-inputs-found]] ' + el.attr('data-selected'));
 		}
 
 		inputs.forEach(function (input) {
 			html += '<label for="' + input.name + '">' + input.label + '<br />';
 			switch (input.type) {
-				case 'select':
-						html += '<select name="' + input.name + '">';
-						input.values.forEach(function (value) {
-							html += '<option value="' + value.value + '">' + value.name + '</option>';
-						});
-					break;
-				case 'text':
-						html += '<input type="text" name="' + input.name + '" />';
-					break;
+			case 'select':
+				html += '<select name="' + input.name + '">';
+				input.values.forEach(function (value) {
+					html += '<option value="' + value.value + '">' + value.name + '</option>';
+				});
+				break;
+			case 'text':
+				html += '<input type="text" name="' + input.name + '" />';
+				break;
 			}
 			html += '</label><br />';
 		});
@@ -114,8 +112,8 @@ define('admin/extend/rewards', function () {
 
 	function populateInputs() {
 		$('[data-rid]').each(function (i) {
-			var div = $(this).find('.inputs'),
-				rewards = active[i].rewards;
+			var div = $(this).find('.inputs');
+			var rewards = active[i].rewards;
 
 			for (var reward in rewards) {
 				if (rewards.hasOwnProperty(reward)) {
@@ -134,17 +132,19 @@ define('admin/extend/rewards', function () {
 				value: '',
 				claimable: 1,
 				rid: null,
-				id: null
+				id: null,
 			}],
 			conditions: conditions,
 			conditionals: conditionals,
 			rewards: available,
 		};
 
-		templates.parse('admin/extend/rewards', 'active', data, function (li) {
-			li = $(li);
-			ul.append(li);
-			li.find('select').val('');
+		Benchpress.parse('admin/extend/rewards', 'active', data, function (li) {
+			translator.translate(li, function (li) {
+				li = $(li);
+				ul.append(li);
+				li.find('select').val('');
+			});
 		});
 	}
 
@@ -152,9 +152,9 @@ define('admin/extend/rewards', function () {
 		var activeRewards = [];
 
 		$('#active li').each(function () {
-			var data = {rewards: {}},
-				main = $(this).find('form.main').serializeArray(),
-				rewards = $(this).find('form.rewards').serializeArray();
+			var data = { rewards: {} };
+			var main = $(this).find('form.main').serializeArray();
+			var rewards = $(this).find('form.rewards').serializeArray();
 
 			main.forEach(function (obj) {
 				data[obj.name] = obj.value;
@@ -174,7 +174,7 @@ define('admin/extend/rewards', function () {
 			if (err) {
 				app.alertError(err.message);
 			} else {
-				app.alertSuccess('Successfully saved rewards');
+				app.alertSuccess('[[admin/extend/rewards:alert.save-success]]');
 			}
 		});
 	}

@@ -1,19 +1,16 @@
-"use strict";
-/*global define, templates, socket, ajaxify, app, admin, bootbox, utils, config */
+'use strict';
 
-define('admin/manage/groups', [
-	'translator',
-	'components'
-], function (translator, components) {
+
+define('admin/manage/groups', ['translator', 'benchpress'], function (translator, Benchpress) {
 	var	Groups = {};
 
 	var intervalId = 0;
 
 	Groups.init = function () {
-		var	createModal = $('#create-modal'),
-			createGroupName = $('#create-group-name'),
-			createModalGo = $('#create-modal-go'),
-			createModalError = $('#create-modal-error');
+		var	createModal = $('#create-modal');
+		var createGroupName = $('#create-group-name');
+		var createModalGo = $('#create-modal-go');
+		var createModalError = $('#create-modal-error');
 
 		handleSearch();
 
@@ -32,20 +29,16 @@ define('admin/manage/groups', [
 
 		createModalGo.on('click', function () {
 			var submitObj = {
-					name: createGroupName.val(),
-					description: $('#create-group-desc').val()
-				},
-				errorText;
+				name: createGroupName.val(),
+				description: $('#create-group-desc').val(),
+			};
 
 			socket.emit('admin.groups.create', submitObj, function (err) {
 				if (err) {
 					if (err.hasOwnProperty('message') && utils.hasLanguageKey(err.message)) {
-						translator.translate(err.message, config.defaultLang, function (translated) {
-							createModalError.html(translated).removeClass('hide');
-						});
-					} else {
-						createModalError.html('<strong>Uh-Oh</strong><p>There was a problem creating your group. Please try again later!</p>').removeClass('hide');
+						err = '[[admin/manage/groups:alerts.create-failure]]';
 					}
+					createModalError.translateHtml(err).removeClass('hide');
 				} else {
 					createModalError.addClass('hide');
 					createGroupName.val('');
@@ -58,18 +51,18 @@ define('admin/manage/groups', [
 		});
 
 		$('.groups-list').on('click', 'button[data-action]', function () {
-			var el = $(this),
-				action = el.attr('data-action'),
-				groupName = el.parents('tr[data-groupname]').attr('data-groupname');
+			var el = $(this);
+			var action = el.attr('data-action');
+			var groupName = el.parents('tr[data-groupname]').attr('data-groupname');
 
 			switch (action) {
 			case 'delete':
-				bootbox.confirm('Are you sure you wish to delete this group?', function (confirm) {
+				bootbox.confirm('[[admin/manage/groups:alerts.confirm-delete]]', function (confirm) {
 					if (confirm) {
 						socket.emit('groups.delete', {
-							groupName: groupName
-						}, function (err, data) {
-							if(err) {
+							groupName: groupName,
+						}, function (err) {
+							if (err) {
 								return app.alertError(err.message);
 							}
 
@@ -83,6 +76,8 @@ define('admin/manage/groups', [
 	};
 
 	function handleSearch() {
+		var queryEl = $('#group-search');
+
 		function doSearch() {
 			if (!queryEl.val()) {
 				return ajaxify.refresh();
@@ -92,23 +87,23 @@ define('admin/manage/groups', [
 			socket.emit('groups.search', {
 				query: queryEl.val(),
 				options: {
-					sort: 'date'
-				}
+					sort: 'date',
+				},
 			}, function (err, groups) {
 				if (err) {
 					return app.alertError(err.message);
 				}
 
-				templates.parse('admin/manage/groups', 'groups', {
-					groups: groups
+				Benchpress.parse('admin/manage/groups', 'groups', {
+					groups: groups,
 				}, function (html) {
-					groupsEl.find('[data-groupname]').remove();
-					groupsEl.find('tr').after(html);
+					translator.translate(html, function (html) {
+						groupsEl.find('[data-groupname]').remove();
+						groupsEl.find('tr').after(html);
+					});
 				});
 			});
 		}
-
-		var queryEl = $('#group-search');
 
 		queryEl.on('keyup', function () {
 			if (intervalId) {

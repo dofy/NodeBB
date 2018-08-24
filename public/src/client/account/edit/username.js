@@ -1,6 +1,5 @@
 'use strict';
 
-/* globals define, ajaxify, socket, app, utils, config  */
 
 define('forum/account/edit/username', ['forum/account/header'], function (header) {
 	var AccountEditUsername = {};
@@ -12,7 +11,7 @@ define('forum/account/edit/username', ['forum/account/header'], function (header
 			var userData = {
 				uid: $('#inputUID').val(),
 				username: $('#inputNewUsername').val(),
-				password: $('#inputCurrentPassword').val()
+				password: $('#inputCurrentPassword').val(),
 			};
 
 			if (!userData.username) {
@@ -34,11 +33,13 @@ define('forum/account/edit/username', ['forum/account/header'], function (header
 				var userslug = utils.slugify(userData.username);
 				if (userData.username && userslug && parseInt(userData.uid, 10) === parseInt(app.user.uid, 10)) {
 					$('[component="header/profilelink"]').attr('href', config.relative_path + '/user/' + userslug);
+					$('[component="header/profilelink/edit"]').attr('href', config.relative_path + '/user/' + userslug + '/edit');
+					$('[component="header/profilelink/settings"]').attr('href', config.relative_path + '/user/' + userslug + '/settings');
 					$('[component="header/username"]').text(userData.username);
 					$('[component="header/usericon"]').css('background-color', data['icon:bgColor']).text(data['icon:text']);
 				}
 
-				ajaxify.go('user/' + userslug);
+				ajaxify.go('user/' + userslug + '/edit');
 			});
 
 			return false;

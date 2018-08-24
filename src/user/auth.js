@@ -2,14 +2,20 @@
 
 var async = require('async');
 var winston = require('winston');
+var validator = require('validator');
 var db = require('../database');
 var meta = require('../meta');
 var events = require('../events');
+var batch = require('../batch');
+var utils = require('../utils');
 
 module.exports = function (User) {
 	User.auth = {};
 
 	User.auth.logAttempt = function (uid, ip, callback) {
+		if (!parseInt(uid, 10)) {
+			return setImmediate(callback);
+		}
 		async.waterfall([
 			function (next) {
 				db.exists('lockout:' + uid, next);
@@ -36,10 +42,33 @@ module.exports = function (User) {
 				events.log({
 					type: 'account-locked',
 					uid: uid,
-					ip: ip
+					ip: ip,
 				});
 				next(new Error('[[error:account-locked]]'));
-			}
+			},
+		], callback);
+	};
+
+	User.auth.getFeedToken = function (uid, callback) {
+		if (!uid) {
+			return callback();
+		}
+		var token;
+		async.waterfall([
+			function (next) {
+				db.getObjectField('user:' + uid, 'rss_token', next);
+			},
+			function (_token, next) {
+				token = _token || utils.generateUUID();
+				if (!_token) {
+					User.setUserField(uid, 'rss_token', token, next);
+				} else {
+					next();
+				}
+			},
+			function (next) {
+				next(null, token);
+			},
 		], callback);
 	};
 
@@ -50,7 +79,7 @@ module.exports = function (User) {
 	User.auth.resetLockout = function (uid, callback) {
 		async.parallel([
 			async.apply(db.delete, 'loginAttempts:' + uid),
-			async.apply(db.delete, 'lockout:' + uid)
+			async.apply(db.delete, 'lockout:' + uid),
 		], callback);
 	};
 
@@ -64,7 +93,7 @@ module.exports = function (User) {
 		}
 
 		async.waterfall([
-			async.apply(db.getSortedSetRevRange, 'uid:' + uid + ':sessions', 0, -1),
+			async.apply(db.getSortedSetRevRange, 'uid:' + uid + ':sessions', 0, 19),
 			function (sids, next) {
 				_sids = sids;
 				async.map(sids, db.sessionStore.get.bind(db.sessionStore), next);
@@ -77,8 +106,8 @@ module.exports = function (User) {
 				});
 
 				// Revoke any sessions that have expired, return filtered list
-				var expiredSids = [],
-					expired;
+				var expiredSids = [];
+				var expired;
 
 				sessions = sessions.filter(function (sessionObj, idx) {
 					expired = !sessionObj || !sessionObj.hasOwnProperty('passport') ||
@@ -97,13 +126,18 @@ module.exports = function (User) {
 				}, function (err) {
 					next(err, sessions);
 				});
-			}
-		], function (err, sessions) {
-			callback(err, sessions ? sessions.map(function (sessObj) {
-				sessObj.meta.datetimeISO = new Date(sessObj.meta.datetime).toISOString();
-				return sessObj.meta;
-			}) : undefined);
-		});
+			},
+			function (sessions, next) {
+				sessions = sessions.map(function (sessObj) {
+					if (sessObj.meta) {
+						sessObj.meta.datetimeISO = new Date(sessObj.meta.datetime).toISOString();
+						sessObj.meta.ip = validator.escape(String(sessObj.meta.ip));
+					}
+					return sessObj.meta;
+				}).filter(Boolean);
+				next(null, sessions);
+			},
+		], callback);
 	};
 
 	User.auth.addSession = function (uid, sessionId, callback) {
@@ -114,22 +148,28 @@ module.exports = function (User) {
 	User.auth.revokeSession = function (sessionId, uid, callback) {
 		winston.verbose('[user.auth] Revoking session ' + sessionId + ' for user ' + uid);
 
-		db.sessionStore.get(sessionId, function (err, sessionObj) {
-			if (err) {
-				return callback(err);
-			}
-			async.parallel([
-				function (next) {
-					if (sessionObj && sessionObj.meta && sessionObj.meta.uuid) {
-						db.deleteObjectField('uid:' + uid + ':sessionUUID:sessionId', sessionObj.meta.uuid, next);
-					} else {
-						next();
-					}
-				},
-				async.apply(db.sortedSetRemove, 'uid:' + uid + ':sessions', sessionId),
-				async.apply(db.sessionStore.destroy.bind(db.sessionStore), sessionId)
-			], callback);
-		});
+		async.waterfall([
+			function (next) {
+				db.sessionStore.get(sessionId, function (err, sessionObj) {
+					next(err, sessionObj || null);
+				});
+			},
+			function (sessionObj, next) {
+				async.parallel([
+					function (next) {
+						if (sessionObj && sessionObj.meta && sessionObj.meta.uuid) {
+							db.deleteObjectField('uid:' + uid + ':sessionUUID:sessionId', sessionObj.meta.uuid, next);
+						} else {
+							next();
+						}
+					},
+					async.apply(db.sortedSetRemove, 'uid:' + uid + ':sessions', sessionId),
+					async.apply(db.sessionStore.destroy.bind(db.sessionStore), sessionId),
+				], function (err) {
+					next(err);
+				});
+			},
+		], callback);
 	};
 
 	User.auth.revokeAllSessions = function (uid, callback) {
@@ -139,7 +179,38 @@ module.exports = function (User) {
 				async.each(sids, function (sid, next) {
 					User.auth.revokeSession(sid, uid, next);
 				}, next);
-			}
+			},
 		], callback);
+	};
+
+	User.auth.deleteAllSessions = function (callback) {
+		var _ = require('lodash');
+		batch.processSortedSet('users:joindate', function (uids, next) {
+			var sessionKeys = uids.map(function (uid) {
+				return 'uid:' + uid + ':sessions';
+			});
+
+			var sessionUUIDKeys = uids.map(function (uid) {
+				return 'uid:' + uid + ':sessionUUID:sessionId';
+			});
+
+			async.waterfall([
+				function (next) {
+					db.getSortedSetRange(sessionKeys, 0, -1, next);
+				},
+				function (sids, next) {
+					sids = _.flatten(sids);
+					async.parallel([
+						async.apply(db.deleteAll, sessionUUIDKeys),
+						async.apply(db.deleteAll, sessionKeys),
+						function (next) {
+							async.each(sids, function (sid, next) {
+								db.sessionStore.destroy(sid, next);
+							}, next);
+						},
+					], next);
+				},
+			], next);
+		}, { batch: 1000 }, callback);
 	};
 };

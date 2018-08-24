@@ -1,21 +1,30 @@
 <div class="languages">
 	<div class="row">
-		<div class="col-sm-2 col-xs-12 settings-header">Language Settings</div>
+		<div class="col-sm-2 col-xs-12 settings-header">[[admin/general/languages:language-settings]]</div>
 		<div class="col-sm-10 col-xs-12">
 			<p>
-				The default language determines the language settings for all users who
-				are visiting your forum. <br />
-				Individual users can override the default language on their account settings page.
+				[[admin/general/languages:description]]
 			</p>
 
 			<form class="row">
 				<div class="form-group col-sm-6">
-					<label for="defaultLang">Default Language</label>
+					<label for="defaultLang">[[admin/general/languages:default-language]]</label>
 					<select id="language" data-field="defaultLang" class="form-control">
 						<!-- BEGIN languages -->
 						<option value="{languages.code}" <!-- IF languages.selected -->selected<!-- ENDIF languages.selected -->>{languages.name} ({languages.code})</option>
 						<!-- END languages -->
 					</select>
+				</div>
+			</form>
+
+			<form class="row">
+				<div class="form-group col-sm-6">
+					<div class="checkbox">
+						<label class="mdl-switch mdl-js-switch mdl-js-ripple-effect">
+							<input class="mdl-switch__input" type="checkbox" data-field="autoDetectLang" <!-- IF autoDetectLang -->checked<!-- ENDIF autoDetectLang -->/>
+							<span class="mdl-switch__label">[[admin/general/languages:auto-detect]]</span>
+						</label>
+					</div>
 				</div>
 			</form>
 		</div>

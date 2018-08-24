@@ -1,9 +1,7 @@
 'use strict';
 
-/* globals define, app, ajaxify, socket */
 
 define('forum/topic/delete-posts', ['components', 'postSelect'], function (components, postSelect) {
-
 	var DeletePosts = {};
 	var modal;
 	var deleteBtn;
@@ -49,7 +47,7 @@ define('forum/topic/delete-posts', ['components', 'postSelect'], function (compo
 		btn.attr('disabled', true);
 		socket.emit(command, {
 			tid: ajaxify.data.tid,
-			pids: postSelect.pids
+			pids: postSelect.pids,
 		}, function (err) {
 			btn.removeAttr('disabled');
 			if (err) {
@@ -79,17 +77,11 @@ define('forum/topic/delete-posts', ['components', 'postSelect'], function (compo
 	}
 
 	function closeModal() {
-		postSelect.pids.forEach(function (pid) {
-			components.get('post', 'pid', pid).toggleClass('bg-success', false);
-		});
-
 		if (modal) {
 			modal.remove();
 			modal = null;
 		}
-
-		components.get('topic').off('click', '[data-pid]');
-		postSelect.enableClicksOnPosts();
+		postSelect.disable();
 	}
 
 	return DeletePosts;
