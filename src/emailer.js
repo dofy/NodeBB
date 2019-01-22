@@ -11,6 +11,7 @@ var url = require('url');
 var path = require('path');
 var fs = require('fs');
 var _ = require('lodash');
+var jwt = require('jsonwebtoken');
 
 var User = require('./user');
 var Plugins = require('./plugins');
@@ -110,7 +111,7 @@ Emailer.setupFallbackTransport = function (config) {
 				smtpOptions.ignoreTLS = false;
 			}
 		} else {
-			smtpOptions.service = config['email:smtpTransport:service'];
+			smtpOptions.service = String(config['email:smtpTransport:service']);
 		}
 
 		Emailer.transports.smtp = nodemailer.createTransport(smtpOptions);
@@ -210,6 +211,37 @@ Emailer.sendToEmail = function (template, email, language, params, callback) {
 
 	var lang = language || meta.config.defaultLang || 'en-GB';
 
+	// Add some default email headers based on local configuration
+	params.headers = Object.assign({
+		'List-Id': '<' + [template, params.uid, getHostname()].join('.') + '>',
+		'List-Unsubscribe': '<' + [nconf.get('url'), 'uid', params.uid, 'settings'].join('/') + '>',
+	}, params.headers);
+
+	// Digests and notifications can be one-click unsubbed
+	let payload = {
+		template: template,
+		uid: params.uid,
+	};
+
+	switch (template) {
+	case 'digest':
+		payload = jwt.sign(payload, nconf.get('secret'), {
+			expiresIn: '30d',
+		});
+		params.headers['List-Unsubscribe'] = '<' + [nconf.get('url'), 'email', 'unsubscribe', payload].join('/') + '>';
+		params.headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
+		break;
+
+	case 'notification':
+		payload.type = params.notification.type;
+		payload = jwt.sign(payload, nconf.get('secret'), {
+			expiresIn: '30d',
+		});
+		params.headers['List-Unsubscribe'] = '<' + [nconf.get('url'), 'email', 'unsubscribe', payload].join('/') + '>';
+		params.headers['List-Unsubscribe-Post'] = 'List-Unsubscribe=One-Click';
+		break;
+	}
+
 	async.waterfall([
 		function (next) {
 			Plugins.fireHook('filter:email.params', {
@@ -240,7 +272,7 @@ Emailer.sendToEmail = function (template, email, language, params, callback) {
 				to: email,
 				from: meta.config['email:from'] || 'no-reply@' + getHostname(),
 				from_name: meta.config['email:from_name'] || 'NodeBB',
-				subject: '[' + meta.config.title + '] ' + results.subject,
+				subject: '[' + meta.config.title + '] ' + _.unescape(results.subject),
 				html: results.html,
 				plaintext: htmlToText.fromString(results.html, {
 					ignoreImage: true,
@@ -249,6 +281,7 @@ Emailer.sendToEmail = function (template, email, language, params, callback) {
 				uid: params.uid,
 				pid: params.pid,
 				fromUid: params.fromUid,
+				headers: params.headers,
 			};
 			Plugins.fireHook('filter:email.modify', data, next);
 		},

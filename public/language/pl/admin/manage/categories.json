@@ -19,6 +19,7 @@
 	"parent-category-none": "(Żadna)",
 	"copy-settings": "Skopiuj ustawienia z",
 	"optional-clone-settings": "(Opcjonalnie) Skopiowanie ustawień z kategorii",
+	"clone-children": "Sklonuj podrzędne kategorie i ustawienia",
 	"purge": "Usuń kategorię",
 
 	"enable": "Włącz",
@@ -28,7 +29,8 @@
 	"select-category": "Wybierz kategorię",
 	"set-parent-category": "Ustaw nadrzędną kategorie",
 
-	"privileges.description": "W tej sekcji możesz skonfigurować uprawnienia dostępu dla tej kategorii. Uprawnienia mogą być przyznawane konkretnym użytkownikom lub poszczególnym grupom. Możesz dodać nowego użytkownika do tej tabeli, wyszukując go w formularzu poniżej.",
+	"privileges.description": "W tej sekcji możesz skonfigurować uprawnienia kontroli dla tej kategorii. Uprawnienia mogą być przyznawane dla poszczególnych użytkowników lub grup. Wybierz domenę efektu z poniższego menu.",
+	"privileges.category-selector": "Konfigurowanie uprawnień dla",
 	"privileges.warning": "<strong>Uwaga</strong>: Uprawnienia zapisują się natychmiastowo. Nie ma potrzeby zapisywania kategorii po zmianie ustawień.",
 	"privileges.section-viewing": "Lista uprawnień",
 	"privileges.section-posting": "Uprawnienia pisania",
@@ -67,5 +69,6 @@
 	"alert.find-group": "Znajdź grupę",
 	"alert.group-search": "Wyszukaj grupę tutaj...",
 	"collapse-all": "Zwiń wszystko",
-	"expand-all": "Rozwiń wszystko"
+	"expand-all": "Rozwiń wszystko",
+	"disable-on-create": "Wyłącz przy tworzeniu"
 }

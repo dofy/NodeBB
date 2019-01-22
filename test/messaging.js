@@ -20,7 +20,6 @@ describe('Messaging Library', function () {
 	var roomId;
 
 	before(function (done) {
-		Groups.resetCache();
 		// Create 3 users: 1 admin, 2 regular
 		async.series([
 			async.apply(User.create, { username: 'foo', password: 'barbar' }),	// admin
@@ -274,6 +273,13 @@ describe('Messaging Library', function () {
 						done();
 					});
 				});
+			});
+		});
+
+		it('should fail to send chat if content is empty', function (done) {
+			socketModules.chats.send({ uid: fooUid }, { roomId: roomId, message: ' ' }, function (err) {
+				assert.equal(err.message, '[[error:invalid-chat-message]]');
+				done();
 			});
 		});
 
@@ -552,6 +558,13 @@ describe('Messaging Library', function () {
 						done();
 					});
 				});
+			});
+		});
+
+		it('should fail to edit message if new content is empty string', function (done) {
+			socketModules.chats.edit({ uid: fooUid }, { mid: 5, roomId: roomId, message: ' ' }, function (err) {
+				assert.equal(err.message, '[[error:invalid-chat-message]]');
+				done();
 			});
 		});
 

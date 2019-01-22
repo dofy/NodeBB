@@ -231,7 +231,7 @@ SELECT COUNT(*) c
 
 	module.sortedSetsCard = function (keys, callback) {
 		if (!Array.isArray(keys) || !keys.length) {
-			return callback();
+			return callback(null, []);
 		}
 
 		query({
@@ -348,7 +348,7 @@ SELECT z."score" s
 
 	module.sortedSetsScore = function (keys, value, callback) {
 		if (!Array.isArray(keys) || !keys.length) {
-			return callback();
+			return callback(null, []);
 		}
 
 		value = helpers.valueToString(value);
@@ -382,9 +382,11 @@ SELECT o."_key" k,
 
 	module.sortedSetScores = function (key, values, callback) {
 		if (!key) {
-			return callback(null, null);
+			return setImmediate(callback, null, null);
 		}
-
+		if (!values.length) {
+			return setImmediate(callback, null, []);
+		}
 		values = values.map(helpers.valueToString);
 
 		query({
@@ -473,8 +475,8 @@ SELECT z."value" v
 	};
 
 	module.isMemberOfSortedSets = function (keys, value, callback) {
-		if (!Array.isArray(keys)) {
-			return callback();
+		if (!Array.isArray(keys) || !keys.length) {
+			return setImmediate(callback, null, []);
 		}
 
 		value = helpers.valueToString(value);
@@ -697,7 +699,7 @@ DELETE FROM "legacy_zset" z
 
 			var batchSize = (options || {}).batch || 100;
 			var query = client.query(new Cursor(`
-SELECT z."value" v
+SELECT z."value", z."score"
   FROM "legacy_object_live" o
  INNER JOIN "legacy_zset" z
          ON o."_key" = z."_key"
@@ -716,7 +718,7 @@ SELECT z."value" v
 					}
 
 					rows = rows.map(function (row) {
-						return row.v;
+						return options.withScores ? row : row.value;
 					});
 
 					process(rows, function (err) {

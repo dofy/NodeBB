@@ -30,13 +30,23 @@ module.exports = function (Messaging) {
 		if (!content) {
 			return callback(new Error('[[error:invalid-chat-message]]'));
 		}
-		content = String(content);
 
-		var maximumChatMessageLength = (meta.config.maximumChatMessageLength || 1000);
-		if (content.length > maximumChatMessageLength) {
-			return callback(new Error('[[error:chat-message-too-long, ' + maximumChatMessageLength + ']]'));
-		}
-		callback();
+		plugins.fireHook('filter:messaging.checkContent', { content: content }, function (err, data) {
+			if (err) {
+				return callback(err);
+			}
+
+			content = String(data.content).trim();
+			if (!content) {
+				return callback(new Error('[[error:invalid-chat-message]]'));
+			}
+
+			var maximumChatMessageLength = (meta.config.maximumChatMessageLength || 1000);
+			if (content.length > maximumChatMessageLength) {
+				return callback(new Error('[[error:chat-message-too-long, ' + maximumChatMessageLength + ']]'));
+			}
+			callback();
+		});
 	};
 
 	Messaging.addMessage = function (data, callback) {
@@ -109,9 +119,7 @@ module.exports = function (Messaging) {
 		if (!uids.length) {
 			return callback();
 		}
-		var keys = uids.map(function (uid) {
-			return 'uid:' + uid + ':chat:rooms';
-		});
+		const keys = uids.map(uid => 'uid:' + uid + ':chat:rooms');
 		db.sortedSetsAdd(keys, timestamp, roomId, callback);
 	};
 
@@ -119,9 +127,7 @@ module.exports = function (Messaging) {
 		if (!uids.length) {
 			return callback();
 		}
-		var keys = uids.map(function (uid) {
-			return 'uid:' + uid + ':chat:room:' + roomId + ':mids';
-		});
+		const keys = uids.map(uid => 'uid:' + uid + ':chat:room:' + roomId + ':mids');
 		db.sortedSetsAdd(keys, timestamp, mid, callback);
 	};
 };

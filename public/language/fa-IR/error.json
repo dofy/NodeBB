@@ -78,6 +78,7 @@
     "still-uploading": "خواهشمندیم تا پایان بارگذاری‌ها شکیبا باشید.",
     "file-too-big": "حداکثر مجاز حجم فایل %1 کیلوبایت می باشد - لطفا فایلی با حجم کمتر بارگذاری کنید",
     "guest-upload-disabled": "بارگذاری برای مهمانان غیر فعال شده است",
+    "cors-error": "Unable to upload image due to misconfigured CORS",
     "already-bookmarked": "شما قبلا این پست را نشانک کرده‌اید",
     "already-unbookmarked": "شما قبلا این پست را از نشانک در آوردید",
     "cant-ban-other-admins": "شما نمی‌توانید دیگر مدیران را محروم کنید!",
@@ -87,6 +88,7 @@
     "invalid-image-type": "نوع تصویر نامعتبر است. نوعهای قابل قبول اینها هستند: %1",
     "invalid-image-extension": "پسوند عکس نامعتبر است",
     "invalid-file-type": "نوع پرونده نامعتبر است. نوعهای قابل قبول اینها هستند: %1",
+    "invalid-image-dimensions": "Image dimensions are too big",
     "group-name-too-short": "نام گروه خیلی کوتاه است.",
     "group-name-too-long": "نام گروه بسیار طولانی است.",
     "group-already-exists": "این گروه از پیش وجود دارد.",
@@ -118,7 +120,7 @@
     "chat-edit-duration-expired": "شما قادر هستید پیام های چت را فقط بعد از %1 ثانیه ویرایش کنید",
     "chat-delete-duration-expired": "شما قادر هستید پیام های چت را فقط بعد از %1 ثانیه پاک کنید",
     "chat-deleted-already": "این پیام قبلا حذف شده است",
-    "chat-restored'already": "این پیام قبلا بازگردانده شده است",
+    "chat-restored-already": "This chat message has already been restored.",
     "already-voting-for-this-post": "شما قبلا به این پست رای داده اید.",
     "reputation-system-disabled": "سیستم اعتبار غیر فعال شده است",
     "downvoting-disabled": "رأی منفی غیر فعال شده است",
@@ -151,5 +153,8 @@
     "cant-move-to-same-topic": "نمی توان پست یک تاپیک را به همان تاپیک انتقال داد !",
     "cannot-block-self": "شما نمی توانید خودتان را بلاک کنید!",
     "cannot-block-privileged": "شما نمی توانید ادمین ها یا مدیر ها را بلاک کنید",
+    "cannot-block-guest": "Guest are not able to block other users",
+    "already-blocked": "This user is already blocked",
+    "already-unblocked": "This user is already unblocked",
     "no-connection": "به نظر می رسد اینترنت شما مشکل دارد"
 }

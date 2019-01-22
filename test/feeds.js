@@ -20,7 +20,6 @@ describe('feeds', function () {
 	var fooUid;
 	var cid;
 	before(function (done) {
-		groups.resetCache();
 		meta.config['feeds:disableRSS'] = 1;
 		async.series({
 			category: function (next) {
@@ -98,7 +97,7 @@ describe('feeds', function () {
 				assert.ifError(err);
 				assert.equal(res.statusCode, 200);
 				assert(body);
-				assert(body.indexOf('Login to your account') !== -1);
+				assert(body.includes('Login to your account'));
 				privileges.categories.give(['topics:read'], cid, 'guests', done);
 			});
 		});
@@ -119,7 +118,7 @@ describe('feeds', function () {
 				assert.ifError(err);
 				assert.equal(res.statusCode, 200);
 				assert(body);
-				assert(body.indexOf('Login to your account') !== -1);
+				assert(body.includes('Login to your account'));
 				privileges.categories.give(['read'], cid, 'guests', done);
 			});
 		});
@@ -160,8 +159,8 @@ describe('feeds', function () {
 					assert.ifError(err);
 					assert.equal(results.test1[0].statusCode, 200);
 					assert.equal(results.test2[0].statusCode, 200);
-					assert(results.test1[0].body.indexOf('Login to your account') !== -1);
-					assert(results.test2[0].body.indexOf('Login to your account') !== -1);
+					assert(results.test1[0].body.includes('Login to your account'));
+					assert(results.test2[0].body.includes('Login to your account'));
 					done();
 				});
 			});
@@ -171,7 +170,7 @@ describe('feeds', function () {
 			request(nconf.get('url') + '/category/' + cid + '.rss?uid=' + fooUid + '&token=sometoken', { }, function (err, res, body) {
 				assert.ifError(err);
 				assert.equal(res.statusCode, 200);
-				assert(body.indexOf('Login to your account') !== -1);
+				assert(body.includes('Login to your account'));
 				done();
 			});
 		});
@@ -195,7 +194,7 @@ describe('feeds', function () {
 				request(nconf.get('url') + '/category/' + cid + '.rss?uid=' + fooUid + '&token=' + rssToken, { }, function (err, res, body) {
 					assert.ifError(err);
 					assert.equal(res.statusCode, 200);
-					assert(body.indexOf('Login to your account') !== -1);
+					assert(body.includes('Login to your account'));
 					done();
 				});
 			});
