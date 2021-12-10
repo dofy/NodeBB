@@ -1,15 +1,14 @@
 'use strict';
 
-var winston = require('winston');
-var async = require('async');
-var nconf = require('nconf');
-var session = require('express-session');
-var _ = require('lodash');
-var semver = require('semver');
-var dbNamespace = require('continuation-local-storage').createNamespace('postgres');
+const winston = require('winston');
+const async = require('async');
+const nconf = require('nconf');
+const session = require('express-session');
+const semver = require('semver');
 
+const connection = require('./postgres/connection');
 
-var postgresModule = module.exports;
+const postgresModule = module.exports;
 
 postgresModule.questions = [
 	{
@@ -39,125 +38,33 @@ postgresModule.questions = [
 		description: 'PostgreSQL database name',
 		default: nconf.get('postgres:database') || 'nodebb',
 	},
+	{
+		name: 'postgres:ssl',
+		description: 'Enable SSL for PostgreSQL database access',
+		default: nconf.get('postgres:ssl') || false,
+	},
 ];
 
-postgresModule.helpers = postgresModule.helpers || {};
-postgresModule.helpers.postgres = require('./postgres/helpers');
-
-postgresModule.getConnectionOptions = function (postgres) {
-	postgres = postgres || nconf.get('postgres');
-	// Sensible defaults for PostgreSQL, if not set
-	if (!postgres.host) {
-		postgres.host = '127.0.0.1';
+postgresModule.init = async function () {
+	const { Pool } = require('pg');
+	const connOptions = connection.getConnectionOptions();
+	const pool = new Pool(connOptions);
+	postgresModule.pool = pool;
+	postgresModule.client = pool;
+	const client = await pool.connect();
+	try {
+		await checkUpgrade(client);
+	} catch (err) {
+		winston.error(`NodeBB could not connect to your PostgreSQL database. PostgreSQL returned the following error: ${err.message}`);
+		throw err;
+	} finally {
+		client.release();
 	}
-	if (!postgres.port) {
-		postgres.port = 5432;
-	}
-	const dbName = postgres.database;
-	if (dbName === undefined || dbName === '') {
-		winston.warn('You have no database name, using "nodebb"');
-		postgres.database = 'nodebb';
-	}
-
-	var connOptions = {
-		host: postgres.host,
-		port: postgres.port,
-		user: postgres.username,
-		password: postgres.password,
-		database: postgres.database,
-	};
-
-	return _.merge(connOptions, postgres.options || {});
 };
 
-postgresModule.init = function (callback) {
-	callback = callback || function () { };
 
-	var Pool = require('pg').Pool;
-
-	var connOptions = postgresModule.getConnectionOptions();
-
-	const db = new Pool(connOptions);
-
-	db.on('connect', function (client) {
-		var realQuery = client.query;
-		client.query = function () {
-			var args = Array.prototype.slice.call(arguments, 0);
-			if (dbNamespace.active && typeof args[args.length - 1] === 'function') {
-				args[args.length - 1] = dbNamespace.bind(args[args.length - 1]);
-			}
-			return realQuery.apply(client, args);
-		};
-	});
-
-	db.connect(function (err, client, release) {
-		if (err) {
-			winston.error('NodeBB could not connect to your PostgreSQL database. PostgreSQL returned the following error: ' + err.message);
-			return callback(err);
-		}
-
-		postgresModule.pool = db;
-		Object.defineProperty(postgresModule, 'client', {
-			get: function () {
-				return (dbNamespace.active && dbNamespace.get('db')) || db;
-			},
-			configurable: true,
-		});
-
-		var wrappedDB = {
-			connect: function () {
-				return postgresModule.pool.connect.apply(postgresModule.pool, arguments);
-			},
-			query: function () {
-				return postgresModule.client.query.apply(postgresModule.client, arguments);
-			},
-		};
-
-		checkUpgrade(client, function (err) {
-			release();
-			if (err) {
-				return callback(err);
-			}
-
-			require('./postgres/main')(wrappedDB, postgresModule);
-			require('./postgres/hash')(wrappedDB, postgresModule);
-			require('./postgres/sets')(wrappedDB, postgresModule);
-			require('./postgres/sorted')(wrappedDB, postgresModule);
-			require('./postgres/list')(wrappedDB, postgresModule);
-			require('./postgres/transaction')(db, dbNamespace, postgresModule);
-
-			postgresModule.async = require('../promisify')(postgresModule, ['client', 'sessionStore', 'pool']);
-
-			callback();
-		});
-	});
-};
-
-postgresModule.connect = function (options, callback) {
-	var Pool = require('pg').Pool;
-
-	var connOptions = postgresModule.getConnectionOptions(options);
-
-	const db = new Pool(connOptions);
-
-	db.on('connect', function (client) {
-		var realQuery = client.query;
-		client.query = function () {
-			var args = Array.prototype.slice.call(arguments, 0);
-			if (dbNamespace.active && typeof args[args.length - 1] === 'function') {
-				args[args.length - 1] = dbNamespace.bind(args[args.length - 1]);
-			}
-			return realQuery.apply(client, args);
-		};
-	});
-
-	db.connect(function (err) {
-		callback(err, db);
-	});
-};
-
-function checkUpgrade(client, callback) {
-	client.query(`
+async function checkUpgrade(client) {
+	const res = await client.query(`
 SELECT EXISTS(SELECT *
                 FROM "information_schema"."columns"
                WHERE "table_schema" = 'public'
@@ -167,32 +74,32 @@ SELECT EXISTS(SELECT *
                 FROM "information_schema"."columns"
                WHERE "table_schema" = 'public'
                  AND "table_name" = 'legacy_hash'
-                 AND "column_name" = '_key') b`, function (err, res) {
-		if (err) {
-			return callback(err);
-		}
+                 AND "column_name" = '_key') b,
+       EXISTS(SELECT *
+                FROM "information_schema"."routines"
+               WHERE "routine_schema" = 'public'
+                 AND "routine_name" = 'nodebb_get_sorted_set_members') c`);
 
-		if (res.rows[0].b) {
-			return callback(null);
-		}
+	if (res.rows[0].a && res.rows[0].b && res.rows[0].c) {
+		return;
+	}
 
-		var query = client.query.bind(client);
-
-		async.series([
-			async.apply(query, `BEGIN`),
-			async.apply(query, `
+	await client.query(`BEGIN`);
+	try {
+		if (!res.rows[0].b) {
+			await client.query(`
 CREATE TYPE LEGACY_OBJECT_TYPE AS ENUM (
 	'hash', 'zset', 'set', 'list', 'string'
-)`),
-			async.apply(query, `
+)`);
+			await client.query(`
 CREATE TABLE "legacy_object" (
 	"_key" TEXT NOT NULL
 		PRIMARY KEY,
 	"type" LEGACY_OBJECT_TYPE NOT NULL,
 	"expireAt" TIMESTAMPTZ DEFAULT NULL,
 	UNIQUE ( "_key", "type" )
-)`),
-			async.apply(query, `
+)`);
+			await client.query(`
 CREATE TABLE "legacy_hash" (
 	"_key" TEXT NOT NULL
 		PRIMARY KEY,
@@ -205,8 +112,8 @@ CREATE TABLE "legacy_hash" (
 		REFERENCES "legacy_object"("_key", "type")
 		ON UPDATE CASCADE
 		ON DELETE CASCADE
-)`),
-			async.apply(query, `
+)`);
+			await client.query(`
 CREATE TABLE "legacy_zset" (
 	"_key" TEXT NOT NULL,
 	"value" TEXT NOT NULL,
@@ -220,8 +127,8 @@ CREATE TABLE "legacy_zset" (
 		REFERENCES "legacy_object"("_key", "type")
 		ON UPDATE CASCADE
 		ON DELETE CASCADE
-)`),
-			async.apply(query, `
+)`);
+			await client.query(`
 CREATE TABLE "legacy_set" (
 	"_key" TEXT NOT NULL,
 	"member" TEXT NOT NULL,
@@ -234,8 +141,8 @@ CREATE TABLE "legacy_set" (
 		REFERENCES "legacy_object"("_key", "type")
 		ON UPDATE CASCADE
 		ON DELETE CASCADE
-)`),
-			async.apply(query, `
+)`);
+			await client.query(`
 CREATE TABLE "legacy_list" (
 	"_key" TEXT NOT NULL
 		PRIMARY KEY,
@@ -248,8 +155,8 @@ CREATE TABLE "legacy_list" (
 		REFERENCES "legacy_object"("_key", "type")
 		ON UPDATE CASCADE
 		ON DELETE CASCADE
-)`),
-			async.apply(query, `
+)`);
+			await client.query(`
 CREATE TABLE "legacy_string" (
 	"_key" TEXT NOT NULL
 		PRIMARY KEY,
@@ -262,13 +169,10 @@ CREATE TABLE "legacy_string" (
 		REFERENCES "legacy_object"("_key", "type")
 		ON UPDATE CASCADE
 		ON DELETE CASCADE
-)`),
-			function (next) {
-				if (!res.rows[0].a) {
-					return next();
-				}
-				async.series([
-					async.apply(query, `
+)`);
+
+			if (res.rows[0].a) {
+				await client.query(`
 INSERT INTO "legacy_object" ("_key", "type", "expireAt")
 SELECT DISTINCT "data"->>'_key',
                 CASE WHEN (SELECT COUNT(*)
@@ -295,8 +199,8 @@ SELECT DISTINCT "data"->>'_key',
                      THEN to_timestamp(("data"->>'expireAt')::double precision / 1000)
                      ELSE NULL
                 END
-  FROM "objects"`),
-					async.apply(query, `
+  FROM "objects"`);
+				await client.query(`
 INSERT INTO "legacy_hash" ("_key", "data")
 SELECT "data"->>'_key',
        "data" - '_key' - 'expireAt'
@@ -312,8 +216,8 @@ SELECT "data"->>'_key',
             THEN NOT (("data" ? 'value')
                   AND ("data" ? 'score'))
             ELSE TRUE
-       END`),
-					async.apply(query, `
+       END`);
+				await client.query(`
 INSERT INTO "legacy_zset" ("_key", "value", "score")
 SELECT "data"->>'_key',
        "data"->>'value',
@@ -322,16 +226,16 @@ SELECT "data"->>'_key',
  WHERE (SELECT COUNT(*)
           FROM jsonb_object_keys("data" - 'expireAt')) = 3
    AND ("data" ? 'value')
-   AND ("data" ? 'score')`),
-					async.apply(query, `
+   AND ("data" ? 'score')`);
+				await client.query(`
 INSERT INTO "legacy_set" ("_key", "member")
 SELECT "data"->>'_key',
        jsonb_array_elements_text("data"->'members')
   FROM "objects"
  WHERE (SELECT COUNT(*)
           FROM jsonb_object_keys("data" - 'expireAt')) = 2
-   AND ("data" ? 'members')`),
-					async.apply(query, `
+   AND ("data" ? 'members')`);
+				await client.query(`
 INSERT INTO "legacy_list" ("_key", "array")
 SELECT "data"->>'_key',
        ARRAY(SELECT t
@@ -340,8 +244,8 @@ SELECT "data"->>'_key',
   FROM "objects"
  WHERE (SELECT COUNT(*)
           FROM jsonb_object_keys("data" - 'expireAt')) = 2
-   AND ("data" ? 'array')`),
-					async.apply(query, `
+   AND ("data" ? 'array')`);
+				await client.query(`
 INSERT INTO "legacy_string" ("_key", "data")
 SELECT "data"->>'_key',
        CASE WHEN "data" ? 'value'
@@ -352,46 +256,58 @@ SELECT "data"->>'_key',
  WHERE (SELECT COUNT(*)
           FROM jsonb_object_keys("data" - 'expireAt')) = 2
    AND (("data" ? 'value')
-     OR ("data" ? 'data'))`),
-					async.apply(query, `DROP TABLE "objects" CASCADE`),
-					async.apply(query, `DROP FUNCTION "fun__objects__expireAt"() CASCADE`),
-				], next);
-			},
-			async.apply(query, `
+     OR ("data" ? 'data'))`);
+				await client.query(`DROP TABLE "objects" CASCADE`);
+				await client.query(`DROP FUNCTION "fun__objects__expireAt"() CASCADE`);
+			}
+			await client.query(`
 CREATE VIEW "legacy_object_live" AS
 SELECT "_key", "type"
   FROM "legacy_object"
  WHERE "expireAt" IS NULL
-    OR "expireAt" > CURRENT_TIMESTAMP`),
-		], function (err) {
-			query(err ? `ROLLBACK` : `COMMIT`, function (err1) {
-				callback(err1 || err);
-			});
-		});
-	});
+    OR "expireAt" > CURRENT_TIMESTAMP`);
+		}
+
+		if (!res.rows[0].c) {
+			await client.query(`
+CREATE FUNCTION "nodebb_get_sorted_set_members"(TEXT) RETURNS TEXT[] AS $$
+    SELECT array_agg(z."value" ORDER BY z."score" ASC)
+      FROM "legacy_object_live" o
+     INNER JOIN "legacy_zset" z
+             ON o."_key" = z."_key"
+            AND o."type" = z."type"
+          WHERE o."_key" = $1
+$$ LANGUAGE sql
+STABLE
+STRICT
+PARALLEL SAFE`);
+		}
+	} catch (ex) {
+		await client.query(`ROLLBACK`);
+		throw ex;
+	}
+	await client.query(`COMMIT`);
 }
 
-postgresModule.createSessionStore = function (options, callback) {
-	var meta = require('../meta');
+postgresModule.createSessionStore = async function (options) {
+	const meta = require('../meta');
 
 	function done(db) {
 		const sessionStore = require('connect-pg-simple')(session);
-		const store = new sessionStore({
+		return new sessionStore({
 			pool: db,
 			ttl: meta.getSessionTTLSeconds(),
-			pruneSessionInterval: nconf.get('isPrimary') === 'true' ? 60 : false,
+			pruneSessionInterval: nconf.get('isPrimary') ? 60 : false,
 		});
-		callback(null, store);
 	}
 
-	postgresModule.connect(options, function (err, db) {
-		if (err) {
-			return callback(err);
-		}
-		if (nconf.get('isPrimary') !== 'true') {
-			return done(db);
-		}
-		db.query(`
+	const db = await connection.connect(options);
+
+	if (!nconf.get('isPrimary')) {
+		return done(db);
+	}
+
+	await db.query(`
 CREATE TABLE IF NOT EXISTS "session" (
 	"sid" CHAR(32) NOT NULL
 		COLLATE "C"
@@ -404,14 +320,9 @@ CREATE INDEX IF NOT EXISTS "session_expire_idx" ON "session"("expire");
 
 ALTER TABLE "session"
 	ALTER "sid" SET STORAGE MAIN,
-	CLUSTER ON "session_expire_idx";`, function (err) {
-			if (err) {
-				return callback(err);
-			}
+	CLUSTER ON "session_expire_idx";`);
 
-			done(db);
-		});
-	});
+	return done(db);
 };
 
 postgresModule.createIndices = function (callback) {
@@ -420,15 +331,15 @@ postgresModule.createIndices = function (callback) {
 		return callback();
 	}
 
-	var query = postgresModule.pool.query.bind(postgresModule.pool);
+	const query = postgresModule.pool.query.bind(postgresModule.pool);
 
 	winston.info('[database] Checking database indices.');
 	async.series([
 		async.apply(query, `CREATE INDEX IF NOT EXISTS "idx__legacy_zset__key__score" ON "legacy_zset"("_key" ASC, "score" DESC)`),
 		async.apply(query, `CREATE INDEX IF NOT EXISTS "idx__legacy_object__expireAt" ON "legacy_object"("expireAt" ASC)`),
-	], function (err) {
+	], (err) => {
 		if (err) {
-			winston.error('Error creating index ' + err.message);
+			winston.error(`Error creating index ${err.message}`);
 			return callback(err);
 		}
 		winston.info('[database] Checking database indices done!');
@@ -437,7 +348,7 @@ postgresModule.createIndices = function (callback) {
 };
 
 postgresModule.checkCompatibility = function (callback) {
-	var postgresPkg = require('pg/package.json');
+	const postgresPkg = require('pg/package.json');
 	postgresModule.checkCompatibilityVersion(postgresPkg.version, callback);
 };
 
@@ -449,37 +360,31 @@ postgresModule.checkCompatibilityVersion = function (version, callback) {
 	callback();
 };
 
-postgresModule.info = function (db, callback) {
-	async.waterfall([
-		function (next) {
-			if (db) {
-				setImmediate(next, null, db);
-			} else {
-				postgresModule.connect(nconf.get('postgres'), next);
-			}
-		},
-		function (db, next) {
-			postgresModule.pool = postgresModule.pool || db;
-
-			db.query(`
-			SELECT true "postgres",
-				   current_setting('server_version') "version",
-				   EXTRACT(EPOCH FROM NOW() - pg_postmaster_start_time()) * 1000 "uptime"`, next);
-		},
-		function (res, next) {
-			next(null, res.rows[0]);
-		},
-	], callback);
+postgresModule.info = async function (db) {
+	if (!db) {
+		db = await connection.connect(nconf.get('postgres'));
+	}
+	postgresModule.pool = postgresModule.pool || db;
+	const res = await db.query(`
+		SELECT true "postgres",
+		   current_setting('server_version') "version",
+			 EXTRACT(EPOCH FROM NOW() - pg_postmaster_start_time()) * 1000 "uptime"
+	`);
+	return {
+		...res.rows[0],
+		raw: JSON.stringify(res.rows[0], null, 4),
+	};
 };
 
-postgresModule.close = function (callback) {
-	callback = callback || function () {};
-	postgresModule.pool.end(callback);
+postgresModule.close = async function () {
+	await postgresModule.pool.end();
 };
 
-postgresModule.socketAdapter = function () {
-	var postgresAdapter = require('socket.io-adapter-postgres');
-	return postgresAdapter(postgresModule.getConnectionOptions(), {
-		pubClient: postgresModule.pool,
-	});
-};
+require('./postgres/main')(postgresModule);
+require('./postgres/hash')(postgresModule);
+require('./postgres/sets')(postgresModule);
+require('./postgres/sorted')(postgresModule);
+require('./postgres/list')(postgresModule);
+require('./postgres/transaction')(postgresModule);
+
+require('../promisify')(postgresModule, ['client', 'sessionStore', 'pool', 'transaction']);

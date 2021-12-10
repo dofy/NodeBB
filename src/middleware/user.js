@@ -1,229 +1,191 @@
 'use strict';
 
-var async = require('async');
-var nconf = require('nconf');
+const winston = require('winston');
+const passport = require('passport');
+const util = require('util');
 
-var meta = require('../meta');
-var user = require('../user');
-var privileges = require('../privileges');
-var plugins = require('../plugins');
+const user = require('../user');
+const privileges = require('../privileges');
+const plugins = require('../plugins');
+const helpers = require('./helpers');
+const auth = require('../routes/authentication');
+const writeRouter = require('../routes/write');
 
-var auth = require('../routes/authentication');
-
-var controllers = {
+const controllers = {
 	helpers: require('../controllers/helpers'),
+	authentication: require('../controllers/authentication'),
+};
+
+const passportAuthenticateAsync = function (req, res) {
+	return new Promise((resolve, reject) => {
+		passport.authenticate('core.api', (err, user) => {
+			if (err) {
+				reject(err);
+			} else {
+				resolve(user);
+				res.on('finish', writeRouter.cleanup.bind(null, req));
+			}
+		})(req, res);
+	});
 };
 
 module.exports = function (middleware) {
-	function authenticate(req, res, next, callback) {
+	async function authenticate(req, res) {
+		async function finishLogin(req, user) {
+			const loginAsync = util.promisify(req.login).bind(req);
+			await loginAsync(user);
+			await controllers.authentication.onSuccessfulLogin(req, user.uid);
+			req.uid = user.uid;
+			req.loggedIn = req.uid > 0;
+			return true;
+		}
+
 		if (req.loggedIn) {
-			return next();
+			// If authenticated via cookie (express-session), protect routes with CSRF checking
+			if (res.locals.isAPI) {
+				await middleware.applyCSRFasync(req, res);
+			}
+
+			return true;
+		} else if (req.headers.hasOwnProperty('authorization')) {
+			const user = await passportAuthenticateAsync(req, res);
+			if (!user) { return true; }
+
+			if (user.hasOwnProperty('uid')) {
+				return await finishLogin(req, user);
+			} else if (user.hasOwnProperty('master') && user.master === true) {
+				// If the token received was a master token, a _uid must also be present for all calls
+				if (req.body.hasOwnProperty('_uid') || req.query.hasOwnProperty('_uid')) {
+					user.uid = req.body._uid || req.query._uid;
+					delete user.master;
+					return await finishLogin(req, user);
+				}
+
+				throw new Error('[[error:api.master-token-no-uid]]');
+			} else {
+				winston.warn('[api/authenticate] Unable to find user after verifying token');
+				return true;
+			}
 		}
 
-		if (plugins.hasListeners('action:middleware.authenticate')) {
-			return plugins.fireHook('action:middleware.authenticate', {
-				req: req,
-				res: res,
-				next: function (err) {
-					if (err) {
-						return next(err);
-					}
+		await plugins.hooks.fire('response:middleware.authenticate', {
+			req: req,
+			res: res,
+			next: function () {}, // no-op for backwards compatibility
+		});
 
-					auth.setAuthVars(req, res, function () {
-						if (req.loggedIn && req.user && req.user.uid) {
-							return next();
-						}
-
-						callback();
-					});
-				},
-			});
+		if (!res.headersSent) {
+			auth.setAuthVars(req);
 		}
-
-		callback();
+		return !res.headersSent;
 	}
 
-	middleware.authenticate = function middlewareAuthenticate(req, res, next) {
-		authenticate(req, res, next, function () {
-			controllers.helpers.notAllowed(req, res, next);
-		});
-	};
+	middleware.authenticateRequest = helpers.try(async (req, res, next) => {
+		if (!await authenticate(req, res)) {
+			return;
+		}
+		next();
+	});
 
-	middleware.authenticateOrGuest = function authenticateOrGuest(req, res, next) {
-		authenticate(req, res, next, next);
-	};
+	middleware.ensureSelfOrGlobalPrivilege = helpers.try(async (req, res, next) => {
+		await ensureSelfOrMethod(user.isAdminOrGlobalMod, req, res, next);
+	});
 
-	middleware.ensureSelfOrGlobalPrivilege = function ensureSelfOrGlobalPrivilege(req, res, next) {
-		ensureSelfOrMethod(user.isAdminOrGlobalMod, req, res, next);
-	};
+	middleware.ensureSelfOrPrivileged = helpers.try(async (req, res, next) => {
+		await ensureSelfOrMethod(user.isPrivileged, req, res, next);
+	});
 
-	middleware.ensureSelfOrPrivileged = function ensureSelfOrPrivileged(req, res, next) {
-		ensureSelfOrMethod(user.isPrivileged, req, res, next);
-	};
-
-	function ensureSelfOrMethod(method, req, res, next) {
+	async function ensureSelfOrMethod(method, req, res, next) {
 		/*
 			The "self" part of this middleware hinges on you having used
 			middleware.exposeUid prior to invoking this middleware.
 		*/
-		async.waterfall([
-			function (next) {
-				if (!req.loggedIn) {
-					return setImmediate(next, null, false);
-				}
-
-				if (req.uid === parseInt(res.locals.uid, 10)) {
-					return setImmediate(next, null, true);
-				}
-
-				method(req.uid, next);
-			},
-			function (allowed, next) {
-				if (!allowed) {
-					return controllers.helpers.notAllowed(req, res);
-				}
-				next();
-			},
-		], next);
-	}
-
-	middleware.checkGlobalPrivacySettings = function checkGlobalPrivacySettings(req, res, next) {
-		if (!req.loggedIn && meta.config.privateUserInfo) {
-			return middleware.authenticate(req, res, next);
+		if (!req.loggedIn) {
+			return controllers.helpers.notAllowed(req, res);
+		}
+		if (req.uid === parseInt(res.locals.uid, 10)) {
+			return next();
+		}
+		const allowed = await method(req.uid);
+		if (!allowed) {
+			return controllers.helpers.notAllowed(req, res);
 		}
 
-		next();
-	};
+		return next();
+	}
 
-	middleware.checkAccountPermissions = function checkAccountPermissions(req, res, next) {
+	middleware.canViewUsers = helpers.try(async (req, res, next) => {
+		if (parseInt(res.locals.uid, 10) === req.uid) {
+			return next();
+		}
+		const canView = await privileges.global.can('view:users', req.uid);
+		if (canView) {
+			return next();
+		}
+		controllers.helpers.notAllowed(req, res);
+	});
+
+	middleware.canViewGroups = helpers.try(async (req, res, next) => {
+		const canView = await privileges.global.can('view:groups', req.uid);
+		if (canView) {
+			return next();
+		}
+		controllers.helpers.notAllowed(req, res);
+	});
+
+	middleware.checkAccountPermissions = helpers.try(async (req, res, next) => {
 		// This middleware ensures that only the requested user and admins can pass
-		async.waterfall([
-			function (next) {
-				middleware.authenticate(req, res, next);
-			},
-			function (next) {
-				user.getUidByUserslug(req.params.userslug, next);
-			},
-			function (uid, next) {
-				privileges.users.canEdit(req.uid, uid, next);
-			},
-			function (allowed, next) {
-				if (allowed) {
-					return next(null, allowed);
-				}
 
-				// For the account/info page only, allow plain moderators through
-				if (/user\/.+\/info$/.test(req.path)) {
-					user.isModeratorOfAnyCategory(req.uid, next);
-				} else {
-					next(null, false);
-				}
-			},
-			function (allowed) {
-				if (allowed) {
-					return next();
-				}
-				controllers.helpers.notAllowed(req, res);
-			},
-		], next);
-	};
+		// This check if left behind for legacy purposes. Older plugins may call this middleware without ensureLoggedIn
+		if (!req.loggedIn) {
+			return controllers.helpers.notAllowed(req, res);
+		}
 
-	middleware.redirectToAccountIfLoggedIn = function redirectToAccountIfLoggedIn(req, res, next) {
+		const uid = await user.getUidByUserslug(req.params.userslug);
+		let allowed = await privileges.users.canEdit(req.uid, uid);
+		if (allowed) {
+			return next();
+		}
+
+		if (/user\/.+\/info$/.test(req.path)) {
+			allowed = await privileges.global.can('view:users:info', req.uid);
+		}
+		if (allowed) {
+			return next();
+		}
+		controllers.helpers.notAllowed(req, res);
+	});
+
+	middleware.redirectToAccountIfLoggedIn = helpers.try(async (req, res, next) => {
 		if (req.session.forceLogin || req.uid <= 0) {
 			return next();
 		}
+		const userslug = await user.getUserField(req.uid, 'userslug');
+		controllers.helpers.redirect(res, `/user/${userslug}`);
+	});
 
-		async.waterfall([
-			function (next) {
-				user.getUserField(req.uid, 'userslug', next);
-			},
-			function (userslug) {
-				controllers.helpers.redirect(res, '/user/' + userslug);
-			},
-		], next);
-	};
-
-	middleware.redirectUidToUserslug = function redirectUidToUserslug(req, res, next) {
-		var uid = parseInt(req.params.uid, 10);
+	middleware.redirectUidToUserslug = helpers.try(async (req, res, next) => {
+		const uid = parseInt(req.params.uid, 10);
 		if (uid <= 0) {
 			return next();
 		}
-		async.waterfall([
-			function (next) {
-				user.getUserField(uid, 'userslug', next);
-			},
-			function (userslug) {
-				if (!userslug) {
-					return next();
-				}
-				var path = req.path.replace(/^\/api/, '')
-					.replace('uid', 'user')
-					.replace(uid, function () { return userslug; });
-				controllers.helpers.redirect(res, path);
-			},
-		], next);
-	};
+		const userslug = await user.getUserField(uid, 'userslug');
+		if (!userslug) {
+			return next();
+		}
+		const path = req.url.replace(/^\/api/, '')
+			.replace(`/uid/${uid}`, () => `/user/${userslug}`);
+		controllers.helpers.redirect(res, path);
+	});
 
-	middleware.redirectMeToUserslug = function redirectMeToUserslug(req, res, next) {
-		var uid = req.uid;
-		async.waterfall([
-			function (next) {
-				user.getUserField(uid, 'userslug', next);
-			},
-			function (userslug) {
-				if (!userslug) {
-					return controllers.helpers.notAllowed(req, res);
-				}
-				var path = req.path.replace(/^(\/api)?\/me/, '/user/' + userslug);
-				controllers.helpers.redirect(res, path);
-			},
-		], next);
-	};
-
-	middleware.isAdmin = function isAdmin(req, res, next) {
-		async.waterfall([
-			function (next) {
-				user.isAdministrator(req.uid, next);
-			},
-			function (isAdmin, next) {
-				if (!isAdmin) {
-					return controllers.helpers.notAllowed(req, res);
-				}
-				user.hasPassword(req.uid, next);
-			},
-			function (hasPassword, next) {
-				if (!hasPassword) {
-					return next();
-				}
-
-				var loginTime = req.session.meta ? req.session.meta.datetime : 0;
-				var adminReloginDuration = meta.config.adminReloginDuration * 60000;
-				var disabled = meta.config.adminReloginDuration === 0;
-				if (disabled || (loginTime && parseInt(loginTime, 10) > Date.now() - adminReloginDuration)) {
-					var timeLeft = parseInt(loginTime, 10) - (Date.now() - adminReloginDuration);
-					if (req.session.meta && timeLeft < Math.min(300000, adminReloginDuration)) {
-						req.session.meta.datetime += Math.min(300000, adminReloginDuration);
-					}
-
-					return next();
-				}
-
-				var returnTo = req.path;
-				if (nconf.get('relative_path')) {
-					returnTo = req.path.replace(new RegExp('^' + nconf.get('relative_path')), '');
-				}
-				returnTo = returnTo.replace(/^\/api/, '');
-
-				req.session.returnTo = nconf.get('relative_path') + returnTo;
-				req.session.forceLogin = 1;
-				if (res.locals.isAPI) {
-					res.status(401).json({});
-				} else {
-					res.redirect(nconf.get('relative_path') + '/login');
-				}
-			},
-		], next);
-	};
+	middleware.redirectMeToUserslug = helpers.try(async (req, res) => {
+		const userslug = await user.getUserField(req.uid, 'userslug');
+		if (!userslug) {
+			return controllers.helpers.notAllowed(req, res);
+		}
+		const path = req.url.replace(/^(\/api)?\/me/, () => `/user/${userslug}`);
+		controllers.helpers.redirect(res, path);
+	});
 
 	middleware.requireUser = function (req, res, next) {
 		if (req.loggedIn) {
@@ -233,14 +195,19 @@ module.exports = function (middleware) {
 		res.status(403).render('403', { title: '[[global:403.title]]' });
 	};
 
-	middleware.registrationComplete = function registrationComplete(req, res, next) {
+	middleware.registrationComplete = async function registrationComplete(req, res, next) {
 		// If the user's session contains registration data, redirect the user to complete registration
 		if (!req.session.hasOwnProperty('registration')) {
 			return setImmediate(next);
 		}
-		if (!req.path.endsWith('/register/complete')) {
+
+		const path = req.path.startsWith('/api/') ? req.path.replace('/api', '') : req.path;
+		const { allowed } = await plugins.hooks.fire('filter:middleware.registrationComplete', {
+			allowed: ['/register/complete'],
+		});
+		if (!allowed.includes(path)) {
 			// Append user data if present
-			req.session.registration.uid = req.uid;
+			req.session.registration.uid = req.session.registration.uid || req.uid;
 
 			controllers.helpers.redirect(res, '/register/complete');
 		} else {

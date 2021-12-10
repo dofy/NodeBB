@@ -3,5 +3,5 @@
 	"welcome-notification": "Hoş Geldin Bildirimi",
 	"welcome-notification-link": "Hoş Geldin Bildirimi Bağlantısı",
 	"welcome-notification-uid": "Kullanıcı Hoş Geldiniz Bildirimi  (UID)",
-	"notification-alert-timeout": "Bildirim Uyarısı Zaman Aşımı"
+	"post-queue-notification-uid": "İletisi kuyruğa alınan kullanıcı (UID)"
 }

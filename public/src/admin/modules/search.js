@@ -1,18 +1,18 @@
 'use strict';
 
-define('admin/modules/search', ['mousetrap'], function (mousetrap) {
-	var search = {};
+define('admin/modules/search', ['mousetrap', 'alerts'], function (mousetrap, alerts) {
+	const search = {};
 
 	function find(dict, term) {
-		var html = dict.filter(function (elem) {
+		const html = dict.filter(function (elem) {
 			return elem.translations.toLowerCase().includes(term);
 		}).map(function (params) {
-			var namespace = params.namespace;
-			var translations = params.translations;
-			var title = params.title;
-			var escaped = utils.escapeRegexChars(term);
+			const namespace = params.namespace;
+			const translations = params.translations;
+			let title = params.title;
+			const escaped = utils.escapeRegexChars(term);
 
-			var results = translations
+			const results = translations
 				// remove all lines without a match
 				.replace(new RegExp('^(?:(?!' + escaped + ').)*$', 'gmi'), '')
 				// remove lines that only match the title
@@ -46,9 +46,13 @@ define('admin/modules/search', ['mousetrap'], function (mousetrap) {
 	}
 
 	search.init = function () {
+		if (!app.user.privileges['admin:settings']) {
+			return;
+		}
+
 		socket.emit('admin.getSearchDict', {}, function (err, dict) {
 			if (err) {
-				app.alertError(err);
+				alerts.error(err);
 				throw err;
 			}
 			setupACPSearch(dict);
@@ -56,9 +60,9 @@ define('admin/modules/search', ['mousetrap'], function (mousetrap) {
 	};
 
 	function setupACPSearch(dict) {
-		var dropdown = $('#acp-search .dropdown');
-		var menu = $('#acp-search .dropdown-menu');
-		var input = $('#acp-search input');
+		const dropdown = $('#acp-search .dropdown');
+		const menu = $('#acp-search .dropdown-menu');
+		const input = $('#acp-search input');
 
 		if (!config.searchEnabled) {
 			menu.addClass('search-disabled');
@@ -69,11 +73,11 @@ define('admin/modules/search', ['mousetrap'], function (mousetrap) {
 		});
 
 		$('#acp-search').parents('form').on('submit', function (ev) {
-			var selected = menu.find('li.result > a.focus').attr('href');
+			let selected = menu.find('li.result > a.focus').attr('href');
 			if (!selected.length) {
 				selected = menu.find('li.result > a').first().attr('href');
 			}
-			var href = selected || config.relative_path + '/search?in=titlesposts&term=' + escape(input.val());
+			const href = selected || config.relative_path + '/search?in=titlesposts&term=' + escape(input.val());
 
 			ajaxify.go(href.replace(/^\//, ''));
 
@@ -86,8 +90,13 @@ define('admin/modules/search', ['mousetrap'], function (mousetrap) {
 			return false;
 		});
 
+		mousetrap.bind('/', function (ev) {
+			input.select();
+			ev.preventDefault();
+		});
+
 		mousetrap(input[0]).bind(['up', 'down'], function (ev, key) {
-			var next;
+			let next;
 			if (key === 'up') {
 				next = menu.find('li.result > a.focus').removeClass('focus').parent().prev('.result')
 					.children();
@@ -113,10 +122,10 @@ define('admin/modules/search', ['mousetrap'], function (mousetrap) {
 			ev.preventDefault();
 		});
 
-		var prevValue;
+		let prevValue;
 
 		input.on('keyup focus', function () {
-			var value = input.val().toLowerCase();
+			const value = input.val().toLowerCase();
 
 			if (value === prevValue) {
 				return;
@@ -125,8 +134,8 @@ define('admin/modules/search', ['mousetrap'], function (mousetrap) {
 
 			menu.children('.result').remove();
 
-			var len = /\W/.test(value) ? 3 : value.length;
-			var results;
+			const len = /\W/.test(value) ? 3 : value.length;
+			let results;
 
 			menu.toggleClass('state-start-typing', len === 0);
 			menu.toggleClass('state-keep-typing', len > 0 && len < 3);

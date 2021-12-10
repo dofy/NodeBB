@@ -2,33 +2,27 @@
 
 (function (factory) {
 	if (typeof module === 'object' && module.exports) {
-		var winston = require('winston');
+		const winston = require('winston');
 
-
-		module.exports = factory(require('xregexp'));
-		module.exports.walk = function (dir, done) {
-			// DEPRECATED
-			var file = require('../../src/file');
-			winston.warn('[deprecated] `utils.walk` is deprecated. Use `file.walk` instead.');
-			file.walk(dir, done);
-		};
+		module.exports = factory(require('xregexp'), winston);
 
 		process.profile = function (operation, start) {
 			console.log('%s took %d milliseconds', operation, process.elapsedTimeSince(start));
 		};
 
 		process.elapsedTimeSince = function (start) {
-			var diff = process.hrtime(start);
+			const diff = process.hrtime(start);
 			return (diff[0] * 1e3) + (diff[1] / 1e6);
 		};
 	} else {
-		window.utils = factory(window.XRegExp);
+		window.utils = factory(window.XRegExp, console);
 	}
-}(function (XRegExp) {
-	var freeze = Object.freeze || function (obj) { return obj; };
+	// eslint-disable-next-line
+}(function (XRegExp, console) {
+	const freeze = Object.freeze || function (obj) { return obj; };
 
 	// add default escape function for escaping HTML entities
-	var escapeCharMap = freeze({
+	const escapeCharMap = freeze({
 		'&': '&amp;',
 		'<': '&lt;',
 		'>': '&gt;',
@@ -40,9 +34,9 @@
 	function replaceChar(c) {
 		return escapeCharMap[c];
 	}
-	var escapeChars = /[&<>"'`=]/g;
+	const escapeChars = /[&<>"'`=]/g;
 
-	var HTMLEntities = freeze({
+	const HTMLEntities = freeze({
 		amp: '&',
 		gt: '>',
 		lt: '<',
@@ -298,13 +292,15 @@
 		'diams;': 9830,
 	});
 
-	var utils = {
+	const utils = {
 		generateUUID: function () {
+			/* eslint-disable no-bitwise */
 			return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
-				var r = Math.random() * 16 | 0;
-				var v = c === 'x' ? r : ((r & 0x3) | 0x8);
+				const r = Math.random() * 16 | 0;
+				const v = c === 'x' ? r : ((r & 0x3) | 0x8);
 				return v.toString(16);
 			});
+			/* eslint-enable no-bitwise */
 		},
 		// https://github.com/substack/node-ent/blob/master/index.js
 		decodeHTMLEntities: function (html) {
@@ -316,8 +312,8 @@
 					return String.fromCharCode(parseInt(hex, 16));
 				})
 				.replace(/&([^;\W]+;?)/g, function (m, e) {
-					var ee = e.replace(/;$/, '');
-					var target = HTMLEntities[e] || (e.match(/;$/) && HTMLEntities[ee]);
+					const ee = e.replace(/;$/, '');
+					const target = HTMLEntities[e] || (e.match(/;$/) && HTMLEntities[ee]);
 
 					if (typeof target === 'number') {
 						return String.fromCharCode(target);
@@ -330,39 +326,8 @@
 		},
 		// https://github.com/jprichardson/string.js/blob/master/lib/string.js
 		stripHTMLTags: function (str, tags) {
-			var pattern = (tags || ['']).map(function (tag) {
-				return utils.escapeRegexChars(tag);
-			}).join('|');
+			const pattern = (tags || ['']).join('|');
 			return String(str).replace(new RegExp('<(\\/)?(' + (pattern || '[^\\s>]+') + ')(\\s+[^<>]*?)?\\s*(\\/)?>', 'gi'), '');
-		},
-
-		invalidUnicodeChars: XRegExp('[^\\p{L}\\s\\d\\-_]', 'g'),
-		invalidLatinChars: /[^\w\s\d\-_]/g,
-		trimRegex: /^\s+|\s+$/g,
-		collapseWhitespace: /\s+/g,
-		collapseDash: /-+/g,
-		trimTrailingDash: /-$/g,
-		trimLeadingDash: /^-/g,
-		isLatin: /^[\w\d\s.,\-@]+$/,
-		languageKeyRegex: /\[\[[\w]+:.+\]\]/,
-
-		// http://dense13.com/blog/2009/05/03/converting-string-to-slug-javascript/
-		slugify: function (str, preserveCase) {
-			if (!str) {
-				return '';
-			}
-			str = str.replace(utils.trimRegex, '');
-			if (utils.isLatin.test(str)) {
-				str = str.replace(utils.invalidLatinChars, '-');
-			} else {
-				str = XRegExp.replace(str, utils.invalidUnicodeChars, '-');
-			}
-			str = !preserveCase ? str.toLocaleLowerCase() : str;
-			str = str.replace(utils.collapseWhitespace, '-');
-			str = str.replace(utils.collapseDash, '-');
-			str = str.replace(utils.trimTrailingDash, '');
-			str = str.replace(utils.trimLeadingDash, '');
-			return str;
 		},
 
 		cleanUpTag: function (tag, maxLength) {
@@ -375,7 +340,7 @@
 			tag = tag.replace(/\u202E/gi, '');
 			tag = tag.replace(/[,/#!$%^*;:{}=_`<>'"~()?|]/g, '');
 			tag = tag.substr(0, maxLength || 15).trim();
-			var matches = tag.match(/^[.-]*(.+?)[.-]*$/);
+			const matches = tag.match(/^[.-]*(.+?)[.-]*$/);
 			if (matches && matches.length > 1) {
 				tag = matches[1];
 			}
@@ -391,7 +356,7 @@
 		},
 
 		isUserNameValid: function (name) {
-			return (name && name !== '' && (/^['"\s\-+.*[\]0-9\u00BF-\u1FFF\u2C00-\uD7FF\w]+$/.test(name)));
+			return (name && name !== '' && (/^['" \-+.*[\]0-9\u00BF-\u1FFF\u2C00-\uD7FF\w]+$/.test(name)));
 		},
 
 		isPasswordValid: function (password) {
@@ -403,11 +368,12 @@
 			return !isNaN(parseFloat(n)) && isFinite(n);
 		},
 
+		languageKeyRegex: /\[\[[\w]+:.+\]\]/,
 		hasLanguageKey: function (input) {
 			return utils.languageKeyRegex.test(input);
 		},
 		userLangToTimeagoCode: function (userLang) {
-			var mapping = {
+			const mapping = {
 				'en-GB': 'en',
 				'en-US': 'en',
 				'fa-IR': 'fa',
@@ -418,13 +384,13 @@
 		},
 		// shallow objects merge
 		merge: function () {
-			var result = {};
-			var obj;
-			var keys;
-			for (var i = 0; i < arguments.length; i += 1) {
+			const result = {};
+			let obj;
+			let keys;
+			for (let i = 0; i < arguments.length; i += 1) {
 				obj = arguments[i] || {};
 				keys = Object.keys(obj);
-				for (var j = 0; j < keys.length; j += 1) {
+				for (let j = 0; j < keys.length; j += 1) {
 					result[keys[j]] = obj[keys[j]];
 				}
 			}
@@ -469,19 +435,48 @@
 			return utils.extensionMimeTypeMap[extension] || '*';
 		},
 
+		isPromise: function (object) {
+			// https://stackoverflow.com/questions/27746304/how-do-i-tell-if-an-object-is-a-promise#comment97339131_27746324
+			return object && typeof object.then === 'function';
+		},
+
+		promiseParallel: function (obj) {
+			const keys = Object.keys(obj);
+			return Promise.all(
+				keys.map(function (k) { return obj[k]; })
+			).then(function (results) {
+				const data = {};
+				keys.forEach(function (k, i) {
+					data[k] = results[i];
+				});
+				return data;
+			});
+		},
+
+		// https://github.com/sindresorhus/is-absolute-url
+		isAbsoluteUrlRE: /^[a-zA-Z][a-zA-Z\d+\-.]*:/,
+		isWinPathRE: /^[a-zA-Z]:\\/,
+		isAbsoluteUrl: function (url) {
+			if (utils.isWinPathRE.test(url)) {
+				return false;
+			}
+			return utils.isAbsoluteUrlRE.test(url);
+		},
+
 		isRelativeUrl: function (url) {
-			var firstChar = String(url || '').charAt(0);
-			return (firstChar === '.' || firstChar === '/');
+			return !utils.isAbsoluteUrl(url);
 		},
 
 		makeNumbersHumanReadable: function (elements) {
 			elements.each(function () {
-				$(this).html(utils.makeNumberHumanReadable($(this).attr('title')));
+				$(this)
+					.html(utils.makeNumberHumanReadable($(this).attr('title')))
+					.removeClass('hidden');
 			});
 		},
 
 		makeNumberHumanReadable: function (num) {
-			var n = parseInt(num, 10);
+			const n = parseInt(num, 10);
 			if (!n) {
 				return num;
 			}
@@ -495,7 +490,9 @@
 
 		addCommasToNumbers: function (elements) {
 			elements.each(function (index, element) {
-				$(element).html(utils.addCommas($(element).html()));
+				$(element)
+					.html(utils.addCommas($(element).html()))
+					.removeClass('hidden');
 			});
 		},
 
@@ -527,7 +524,7 @@
 			'map', 'mark', 'menu', 'meta', 'meter', 'nav', 'noframes', 'noscript', 'object', 'ol', 'optgroup', 'option',
 			'output', 'p', 'param', 'pre', 'progress', 'q', 'rp', 'rt', 'ruby', 's', 'samp', 'script', 'section', 'select',
 			'small', 'source', 'span', 'strike', 'strong', 'style', 'sub', 'summary', 'sup', 'table', 'tbody', 'td', 'textarea', 'tfoot',
-			'th', 'thead', 'time', 'title', 'tr', 'track', 'tt', 'u', 'ul', 'var', 'video', 'wbr'],
+			'th', 'thead', 'time', 'title', 'tr', 'track', 'tt', 'u', 'ul', 'const', 'video', 'wbr'],
 
 		stripTags: ['abbr', 'acronym', 'address', 'applet', 'area', 'article', 'aside', 'audio', 'base', 'basefont',
 			'bdi', 'bdo', 'big', 'blink', 'body', 'button', 'canvas', 'caption', 'center', 'cite', 'code', 'col', 'colgroup',
@@ -537,7 +534,7 @@
 			'map', 'mark', 'marquee', 'menu', 'meta', 'meter', 'nav', 'noframes', 'noscript', 'object', 'ol', 'optgroup', 'option',
 			'output', 'param', 'pre', 'progress', 'q', 'rp', 'rt', 'ruby', 's', 'samp', 'script', 'section', 'select',
 			'source', 'span', 'strike', 'style', 'sub', 'summary', 'sup', 'table', 'tbody', 'td', 'textarea', 'tfoot',
-			'th', 'thead', 'time', 'title', 'tr', 'track', 'tt', 'u', 'ul', 'var', 'video', 'wbr'],
+			'th', 'thead', 'time', 'title', 'tr', 'track', 'tt', 'u', 'ul', 'const', 'video', 'wbr'],
 
 		escapeRegexChars: function (text) {
 			return text.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&');
@@ -556,7 +553,7 @@
 
 		isAndroidBrowser: function () {
 			// http://stackoverflow.com/questions/9286355/how-to-detect-only-the-native-android-browser
-			var nua = navigator.userAgent;
+			const nua = navigator.userAgent;
 			return ((nua.indexOf('Mozilla/5.0') > -1 && nua.indexOf('Android ') > -1 && nua.indexOf('AppleWebKit') > -1) && !(nua.indexOf('Chrome') > -1));
 		},
 
@@ -566,13 +563,13 @@
 
 		findBootstrapEnvironment: function () {
 			// http://stackoverflow.com/questions/14441456/how-to-detect-which-device-view-youre-on-using-twitter-bootstrap-api
-			var envs = ['xs', 'sm', 'md', 'lg'];
-			var $el = $('<div>');
+			const envs = ['xs', 'sm', 'md', 'lg'];
+			const $el = $('<div>');
 
 			$el.appendTo($('body'));
 
-			for (var i = envs.length - 1; i >= 0; i -= 1) {
-				var env = envs[i];
+			for (let i = envs.length - 1; i >= 0; i -= 1) {
+				const env = envs[i];
 
 				$el.addClass('hidden-' + env);
 				if ($el.is(':hidden')) {
@@ -583,18 +580,18 @@
 		},
 
 		isMobile: function () {
-			var env = utils.findBootstrapEnvironment();
+			const env = utils.findBootstrapEnvironment();
 			return ['xs', 'sm'].some(function (targetEnv) {
 				return targetEnv === env;
 			});
 		},
 
 		getHoursArray: function () {
-			var currentHour = new Date().getHours();
-			var labels = [];
+			const currentHour = new Date().getHours();
+			const labels = [];
 
-			for (var i = currentHour, ii = currentHour - 24; i > ii; i -= 1) {
-				var hour = i < 0 ? 24 + i : i;
+			for (let i = currentHour, ii = currentHour - 24; i > ii; i -= 1) {
+				const hour = i < 0 ? 24 + i : i;
 				labels.push(hour + ':00');
 			}
 
@@ -602,12 +599,12 @@
 		},
 
 		getDaysArray: function (from, amount) {
-			var currentDay = new Date(from || Date.now()).getTime();
-			var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-			var labels = [];
-			var tmpDate;
+			const currentDay = new Date(parseInt(from, 10) || Date.now()).getTime();
+			const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+			const labels = [];
+			let tmpDate;
 
-			for (var x = (amount || 30) - 1; x >= 0; x -= 1) {
+			for (let x = (amount || 30) - 1; x >= 0; x -= 1) {
 				tmpDate = new Date(currentDay - (1000 * 60 * 60 * 24 * x));
 				labels.push(months[tmpDate.getMonth()] + ' ' + tmpDate.getDate());
 			}
@@ -622,7 +619,7 @@
 				el = el[0];
 			}
 
-			var rect = el.getBoundingClientRect();
+			const rect = el.getBoundingClientRect();
 
 			return (
 				rect.top >= 0 &&
@@ -634,22 +631,29 @@
 
 		// get all the url params in a single key/value hash
 		params: function (options) {
-			var a;
-			var hash = {};
-			var params;
+			const hash = {};
 
 			options = options || {};
 			options.skipToType = options.skipToType || {};
 
-			if (options.url) {
-				a = utils.urlToLocation(options.url);
+			let searchStr = window.location.search;
+			if (options.hasOwnProperty('url')) {
+				if (options.url) {
+					const a = utils.urlToLocation(options.url);
+					searchStr = a ? a.search : '';
+				} else {
+					searchStr = '';
+				}
 			}
-			params = (a ? a.search : window.location.search).substring(1).split('&');
+			const params = searchStr.substring(1).split('&');
 
 			params.forEach(function (param) {
-				var val = param.split('=');
-				var key = decodeURI(val[0]);
-				var value = options.skipToType[key] ? decodeURI(val[1]) : utils.toType(decodeURI(val[1]));
+				const val = param.split('=');
+				let key = decodeURI(val[0]);
+				const value = (
+					options.disableToType ||
+					options.skipToType[key] ? decodeURI(val[1]) : utils.toType(decodeURI(val[1]))
+				);
 
 				if (key) {
 					if (key.substr(-2, 2) === '[]') {
@@ -658,7 +662,7 @@
 					if (!hash[key]) {
 						hash[key] = value;
 					} else {
-						if (!$.isArray(hash[key])) {
+						if (!Array.isArray(hash[key])) {
 							hash[key] = [hash[key]];
 						}
 						hash[key].push(value);
@@ -673,17 +677,19 @@
 		},
 
 		urlToLocation: function (url) {
-			return $('<a href="' + url + '" />')[0];
+			const a = document.createElement('a');
+			a.href = url;
+			return a;
 		},
 
 		// return boolean if string 'true' or string 'false', or if a parsable string which is a number
 		// also supports JSON object and/or arrays parsing
 		toType: function (str) {
-			var type = typeof str;
+			const type = typeof str;
 			if (type !== 'string') {
 				return str;
 			}
-			var nb = parseFloat(str);
+			const nb = parseFloat(str);
 			if (!isNaN(nb) && isFinite(str)) {
 				return nb;
 			}
@@ -713,15 +719,15 @@
 			if (props == null) {
 				return undefined;
 			}
-			var i = props.indexOf('.');
+			const i = props.indexOf('.');
 			if (i === -1) {
 				if (value !== undefined) {
 					obj[props] = value;
 				}
 				return obj[props];
 			}
-			var prop = props.slice(0, i);
-			var newProps = props.slice(i + 1);
+			const prop = props.slice(0, i);
+			const newProps = props.slice(i + 1);
 
 			if (props !== undefined && !(obj[prop] instanceof Object)) {
 				obj[prop] = {};
@@ -731,10 +737,13 @@
 		},
 
 		isInternalURI: function (targetLocation, referenceLocation, relative_path) {
-			return targetLocation.host === '' ||	// Relative paths are always internal links
+			return targetLocation.host === '' || // Relative paths are always internal links
 				(
-					targetLocation.host === referenceLocation.host && targetLocation.protocol === referenceLocation.protocol &&	// Otherwise need to check if protocol and host match
-					(relative_path.length > 0 ? targetLocation.pathname.indexOf(relative_path) === 0 : true)	// Subfolder installs need this additional check
+					targetLocation.host === referenceLocation.host &&
+					// Otherwise need to check if protocol and host match
+					targetLocation.protocol === referenceLocation.protocol &&
+					// Subfolder installs need this additional check
+					(relative_path.length > 0 ? targetLocation.pathname.indexOf(relative_path) === 0 : true)
 				);
 		},
 
@@ -744,17 +753,17 @@
 
 		debounce: function (func, wait, immediate) {
 			// modified from https://davidwalsh.name/javascript-debounce-function
-			var timeout;
+			let timeout;
 			return function () {
-				var context = this;
-				var args = arguments;
-				var later = function () {
+				const context = this;
+				const args = arguments;
+				const later = function () {
 					timeout = null;
 					if (!immediate) {
 						func.apply(context, args);
 					}
 				};
-				var callNow = immediate && !timeout;
+				const callNow = immediate && !timeout;
 				clearTimeout(timeout);
 				timeout = setTimeout(later, wait);
 				if (callNow) {
@@ -762,29 +771,27 @@
 				}
 			};
 		},
+		throttle: function (func, wait, immediate) {
+			let timeout;
+			return function () {
+				const context = this;
+				const args = arguments;
+				const later = function () {
+					timeout = null;
+					if (!immediate) {
+						func.apply(context, args);
+					}
+				};
+				const callNow = immediate && !timeout;
+				if (!timeout) {
+					timeout = setTimeout(later, wait);
+				}
+				if (callNow) {
+					func.apply(context, args);
+				}
+			};
+		},
 	};
-
-	/* eslint "no-extend-native": "off" */
-	if (typeof String.prototype.startsWith !== 'function') {
-		String.prototype.startsWith = function (prefix) {
-			if (this.length < prefix.length) {
-				return false;
-			}
-			return this.slice(0, prefix.length) === prefix;
-		};
-	}
-
-	if (typeof String.prototype.endsWith !== 'function') {
-		String.prototype.endsWith = function (suffix) {
-			if (this.length < suffix.length) {
-				return false;
-			}
-			if (suffix.length === 0) {
-				return true;
-			}
-			return this.slice(-suffix.length) === suffix;
-		};
-	}
 
 	return utils;
 }));

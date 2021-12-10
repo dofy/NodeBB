@@ -1,56 +1,43 @@
 'use strict';
 
 
-define('forum/users', ['translator', 'benchpress'], function (translator, Benchpress) {
-	var	Users = {};
+define('forum/users', [
+	'translator', 'benchpress', 'api', 'alerts', 'accounts/invite',
+], function (translator, Benchpress, api, alerts, AccountInvite) {
+	const Users = {};
 
-	var searchTimeoutID = 0;
-
-	$(window).on('action:ajaxify.start', function () {
-		if (searchTimeoutID) {
-			clearTimeout(searchTimeoutID);
-			searchTimeoutID = 0;
-		}
-	});
+	let searchResultCount = 0;
 
 	Users.init = function () {
 		app.enterRoom('user_list');
 
-		var section = utils.params().section ? ('?section=' + utils.params().section) : '';
+		const section = utils.params().section ? ('?section=' + utils.params().section) : '';
 		$('.nav-pills li').removeClass('active').find('a[href="' + window.location.pathname + section + '"]').parent()
 			.addClass('active');
 
-		handleSearch();
+		Users.handleSearch();
 
-		handleInvite();
+		AccountInvite.handle();
 
 		socket.removeListener('event:user_status_change', onUserStatusChange);
 		socket.on('event:user_status_change', onUserStatusChange);
 	};
 
-	function handleSearch() {
-		searchTimeoutID = 0;
-
-		$('#search-user').on('keyup', function () {
-			if (searchTimeoutID) {
-				clearTimeout(searchTimeoutID);
-				searchTimeoutID = 0;
-			}
-
-			searchTimeoutID = setTimeout(doSearch, 150);
-		});
-
-		$('.search select, .search input[type="checkbox"]').on('change', function () {
-			doSearch();
-		});
-	}
+	Users.handleSearch = function (params) {
+		searchResultCount = params && params.resultCount;
+		$('#search-user').on('keyup', utils.debounce(doSearch, 250));
+		$('.search select, .search input[type="checkbox"]').on('change', doSearch);
+	};
 
 	function doSearch() {
+		if (!ajaxify.data.template.users) {
+			return;
+		}
 		$('[component="user/search/icon"]').removeClass('fa-search').addClass('fa-spinner fa-spin');
-		var username = $('#search-user').val();
-		var activeSection = getActiveSection();
+		const username = $('#search-user').val();
+		const activeSection = getActiveSection();
 
-		var query = {
+		const query = {
 			section: activeSection,
 			page: 1,
 		};
@@ -59,25 +46,28 @@ define('forum/users', ['translator', 'benchpress'], function (translator, Benchp
 			return loadPage(query);
 		}
 
-		query.term = username;
+		query.query = username;
 		query.sortBy = getSortBy();
-
+		const filters = [];
 		if ($('.search .online-only').is(':checked') || (activeSection === 'online')) {
-			query.onlineOnly = true;
+			filters.push('online');
 		}
 		if (activeSection === 'banned') {
-			query.bannedOnly = true;
+			filters.push('banned');
 		}
 		if (activeSection === 'flagged') {
-			query.flaggedOnly = true;
+			filters.push('flagged');
+		}
+		if (filters.length) {
+			query.filters = filters;
 		}
 
 		loadPage(query);
 	}
 
 	function getSortBy() {
-		var sortBy;
-		var activeSection = getActiveSection();
+		let sortBy;
+		const activeSection = getActiveSection();
 		if (activeSection === 'sort-posts') {
 			sortBy = 'postcount';
 		} else if (activeSection === 'sort-reputation') {
@@ -90,31 +80,30 @@ define('forum/users', ['translator', 'benchpress'], function (translator, Benchp
 
 
 	function loadPage(query) {
-		var qs = decodeURIComponent($.param(query));
-		$.get(config.relative_path + '/api/users?' + qs, renderSearchResults).fail(function (xhrErr) {
-			if (xhrErr && xhrErr.responseJSON && xhrErr.responseJSON.error) {
-				app.alertError(xhrErr.responseJSON.error);
-			}
-		});
+		api.get('/api/users', query)
+			.then(renderSearchResults)
+			.catch(alerts.error);
 	}
 
 	function renderSearchResults(data) {
-		Benchpress.parse('partials/paginator', { pagination: data.pagination }, function (html) {
+		Benchpress.render('partials/paginator', { pagination: data.pagination }).then(function (html) {
 			$('.pagination-container').replaceWith(html);
 		});
 
-		Benchpress.parse('users', 'users', data, function (html) {
-			translator.translate(html, function (translated) {
-				translated = $(translated);
-				$('#users-container').html(translated);
-				translated.find('span.timeago').timeago();
-				$('[component="user/search/icon"]').addClass('fa-search').removeClass('fa-spinner fa-spin');
-			});
+		if (searchResultCount) {
+			data.users = data.users.slice(0, searchResultCount);
+		}
+
+		data.isAdminOrGlobalMod = app.user.isAdmin || app.user.isGlobalMod;
+		app.parseAndTranslate('users', 'users', data, function (html) {
+			$('#users-container').html(html);
+			html.find('span.timeago').timeago();
+			$('[component="user/search/icon"]').addClass('fa-search').removeClass('fa-spinner fa-spin');
 		});
 	}
 
 	function onUserStatusChange(data) {
-		var section = getActiveSection();
+		const section = getActiveSection();
 
 		if ((section.startsWith('online') || section.startsWith('users'))) {
 			updateUser(data);
@@ -127,23 +116,6 @@ define('forum/users', ['translator', 'benchpress'], function (translator, Benchp
 
 	function getActiveSection() {
 		return utils.params().section || '';
-	}
-
-	function handleInvite() {
-		$('[component="user/invite"]').on('click', function () {
-			bootbox.prompt('[[users:prompt-email]]', function (email) {
-				if (!email) {
-					return;
-				}
-
-				socket.emit('user.invite', email, function (err) {
-					if (err) {
-						return app.alertError(err.message);
-					}
-					app.alertSuccess('[[users:invitation-email-sent, ' + email + ']]');
-				});
-			});
-		});
 	}
 
 	return Users;

@@ -1,5 +1,6 @@
 'use strict';
 
+/* global zxcvbn, slugify */
 
 $('document').ready(function () {
 	setupInputs();
@@ -24,12 +25,12 @@ $('document').ready(function () {
 
 	function setupInputs() {
 		$('form').on('focus', '.form-control', function () {
-			var parent = $(this).parents('.input-row');
+			const parent = $(this).parents('.input-row');
 
 			$('.input-row.active').removeClass('active');
 			parent.addClass('active').removeClass('error');
 
-			var help = parent.find('.help-text');
+			const help = parent.find('.help-text');
 			help.html(help.attr('data-help'));
 		});
 
@@ -55,12 +56,12 @@ $('document').ready(function () {
 	}
 
 	function activate(type, el) {
-		var field = el.val();
-		var parent = el.parents('.input-row');
-		var help = parent.children('.help-text');
+		const field = el.val();
+		const parent = el.parents('.input-row');
+		const help = parent.children('.help-text');
 
 		function validateUsername(field) {
-			if (!utils.isUserNameValid(field) || !utils.slugify(field)) {
+			if (!utils.isUserNameValid(field) || !slugify(field)) {
 				parent.addClass('error');
 				help.html('Invalid Username.');
 			} else {
@@ -75,6 +76,9 @@ $('document').ready(function () {
 			} else if (field.length < $('[name="admin:password"]').attr('data-minimum-length')) {
 				parent.addClass('error');
 				help.html('Password is too short.');
+			} else if (zxcvbn(field).score < parseInt($('[name="admin:password"]').attr('data-minimum-strength'), 10)) {
+				parent.addClass('error');
+				help.html('Password is too weak.');
 			} else {
 				parent.removeClass('error');
 			}
@@ -103,24 +107,24 @@ $('document').ready(function () {
 		}
 
 		switch (type) {
-		case 'admin:username':
-			return validateUsername(field);
-		case 'admin:password':
-			return validatePassword(field);
-		case 'admin:passwordConfirm':
-			return validateConfirmPassword(field);
-		case 'admin:email':
-			return validateEmail(field);
-		case 'database':
-			return switchDatabase(field);
+			case 'admin:username':
+				return validateUsername(field);
+			case 'admin:password':
+				return validatePassword(field);
+			case 'admin:passwordConfirm':
+				return validateConfirmPassword(field);
+			case 'admin:email':
+				return validateEmail(field);
+			case 'database':
+				return switchDatabase(field);
 		}
 	}
 
 	function launchForum() {
 		$('#launch .working').removeClass('hide');
 		$.post('/launch', function () {
-			var successCount = 0;
-			var url = $('#launch').attr('data-url');
+			let successCount = 0;
+			const url = $('#launch').attr('data-url');
 			setInterval(function () {
 				$.get(url + '/admin').done(function () {
 					if (successCount >= 5) {

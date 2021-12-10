@@ -1,26 +1,42 @@
 'use strict';
 
 (function () {
-	var logoutTimer = 0;
+	let logoutTimer = 0;
+	let logoutMessage;
 	function startLogoutTimer() {
+		if (app.config.adminReloginDuration <= 0) {
+			return;
+		}
 		if (logoutTimer) {
 			clearTimeout(logoutTimer);
 		}
+		// pre-translate language string gh#9046
+		if (!logoutMessage) {
+			require(['translator'], function (translator) {
+				translator.translate('[[login:logged-out-due-to-inactivity]]', function (translated) {
+					logoutMessage = translated;
+				});
+			});
+		}
 
 		logoutTimer = setTimeout(function () {
-			bootbox.alert({
-				closeButton: false,
-				message: '[[login:logged-out-due-to-inactivity]]',
-				callback: function () {
-					window.location.reload();
-				},
+			require(['bootbox'], function (bootbox) {
+				bootbox.alert({
+					closeButton: false,
+					message: logoutMessage,
+					callback: function () {
+						window.location.reload();
+					},
+				});
 			});
 		}, 3600000);
 	}
 
-	$(window).on('action:ajaxify.end', function () {
-		showCorrectNavTab();
-		startLogoutTimer();
+	require(['hooks'], (hooks) => {
+		hooks.on('action:ajaxify.end', () => {
+			showCorrectNavTab();
+			startLogoutTimer();
+		});
 	});
 
 	function showCorrectNavTab() {
@@ -37,7 +53,12 @@
 			});
 		}
 
-		$('[component="logout"]').on('click', app.logout);
+		$('[component="logout"]').on('click', function () {
+			require(['logout'], function (logout) {
+				logout();
+			});
+			return false;
+		});
 
 		configureSlidemenu();
 		setupNProgress();
@@ -51,12 +72,14 @@
 	});
 
 	function setupNProgress() {
-		$(window).on('action:ajaxify.start', function () {
-			NProgress.set(0.7);
-		});
+		require(['nprogress', 'hooks'], function (NProgress, hooks) {
+			$(window).on('action:ajaxify.start', function () {
+				NProgress.set(0.7);
+			});
 
-		$(window).on('action:ajaxify.end', function () {
-			NProgress.done();
+			hooks.on('action:ajaxify.end', function () {
+				NProgress.done();
+			});
 		});
 	}
 
@@ -69,15 +92,15 @@
 
 			// If index is requested, load the dashboard
 			if (url === 'admin') {
-				url = 'admin/general/dashboard';
+				url = 'admin/dashboard';
 			}
 
 			url = [config.relative_path, url].join('/');
-			var fallback;
+			let fallback;
 
 			$('#main-menu li').removeClass('active');
 			$('#main-menu a').removeClass('active').filter('[href="' + url + '"]').each(function () {
-				var menu = $(this);
+				const menu = $(this);
 				if (menu.parent().attr('data-link')) {
 					return;
 				}
@@ -88,22 +111,24 @@
 				fallback = menu.text();
 			});
 
-			var mainTitle;
-			var pageTitle;
-			if (/admin\/general\/dashboard$/.test(url)) {
-				pageTitle = '[[admin/menu:general/dashboard]]';
-				mainTitle = pageTitle;
-			} else if (/admin\/plugins\//.test(url)) {
+			let mainTitle;
+			let pageTitle;
+			if (/admin\/plugins\//.test(url)) {
 				mainTitle = fallback;
 				pageTitle = '[[admin/menu:section-plugins]] > ' + mainTitle;
 			} else {
-				var matches = url.match(/admin\/(.+?)\/(.+?)$/);
-				mainTitle = '[[admin/menu:' + matches[1] + '/' + matches[2] + ']]';
-				pageTitle = '[[admin/menu:section-' +
-					(matches[1] === 'development' ? 'advanced' : matches[1]) +
-					']]' + (matches[2] ? (' > ' + mainTitle) : '');
-				if (matches[2] === 'settings') {
-					mainTitle = translator.compile('admin/menu:settings.page-title', mainTitle);
+				const matches = url.match(/admin\/(.+?)\/(.+?)$/);
+				if (matches) {
+					mainTitle = '[[admin/menu:' + matches[1] + '/' + matches[2] + ']]';
+					pageTitle = '[[admin/menu:section-' +
+						(matches[1] === 'development' ? 'advanced' : matches[1]) +
+						']]' + (matches[2] ? (' > ' + mainTitle) : '');
+					if (matches[2] === 'settings') {
+						mainTitle = translator.compile('admin/menu:settings.page-title', mainTitle);
+					}
+				} else {
+					mainTitle = '[[admin/menu:section-dashboard]]';
+					pageTitle = '[[admin/menu:section-dashboard]]';
 				}
 			}
 
@@ -120,79 +145,85 @@
 
 	function setupRestartLinks() {
 		$('.rebuild-and-restart').off('click').on('click', function () {
-			bootbox.confirm('[[admin/admin:alert.confirm-rebuild-and-restart]]', function (confirm) {
-				if (confirm) {
-					require(['admin/modules/instance'], function (instance) {
-						instance.rebuildAndRestart();
-					});
-				}
+			require(['bootbox'], function (bootbox) {
+				bootbox.confirm('[[admin/admin:alert.confirm-rebuild-and-restart]]', function (confirm) {
+					if (confirm) {
+						require(['admin/modules/instance'], function (instance) {
+							instance.rebuildAndRestart();
+						});
+					}
+				});
 			});
 		});
 
 		$('.restart').off('click').on('click', function () {
-			bootbox.confirm('[[admin/admin:alert.confirm-restart]]', function (confirm) {
-				if (confirm) {
-					require(['admin/modules/instance'], function (instance) {
-						instance.restart();
-					});
-				}
+			require(['bootbox'], function (bootbox) {
+				bootbox.confirm('[[admin/admin:alert.confirm-restart]]', function (confirm) {
+					if (confirm) {
+						require(['admin/modules/instance'], function (instance) {
+							instance.restart();
+						});
+					}
+				});
 			});
 		});
 	}
 
 	function configureSlidemenu() {
-		var env = utils.findBootstrapEnvironment();
+		require(['slideout'], function (Slideout) {
+			let env = utils.findBootstrapEnvironment();
 
-		var slideout = new Slideout({
-			panel: document.getElementById('panel'),
-			menu: document.getElementById('menu'),
-			padding: 256,
-			tolerance: 70,
-		});
-
-		if (env === 'md' || env === 'lg') {
-			slideout.disableTouch();
-		}
-
-		$('#mobile-menu').on('click', function () {
-			slideout.toggle();
-		});
-
-		$('#menu a').on('click', function () {
-			slideout.close();
-		});
-
-		$(window).on('resize', function () {
-			slideout.close();
-
-			env = utils.findBootstrapEnvironment();
+			const slideout = new Slideout({
+				panel: document.getElementById('panel'),
+				menu: document.getElementById('menu'),
+				padding: 256,
+				tolerance: 70,
+			});
 
 			if (env === 'md' || env === 'lg') {
 				slideout.disableTouch();
+			}
+
+			$('#mobile-menu').on('click', function () {
+				slideout.toggle();
+			});
+
+			$('#menu a').on('click', function () {
+				slideout.close();
+			});
+
+			$(window).on('resize', function () {
+				slideout.close();
+
+				env = utils.findBootstrapEnvironment();
+
+				if (env === 'md' || env === 'lg') {
+					slideout.disableTouch();
+					$('#header').css({
+						position: 'relative',
+					});
+				} else {
+					slideout.enableTouch();
+					$('#header').css({
+						position: 'fixed',
+					});
+				}
+			});
+
+			function onOpeningMenu() {
 				$('#header').css({
-					position: 'relative',
-				});
-			} else {
-				slideout.enableTouch();
-				$('#header').css({
-					position: 'fixed',
+					top: ($('#panel').position().top * -1) + 'px',
+					position: 'absolute',
 				});
 			}
-		});
 
-		function onOpeningMenu() {
-			$('#header').css({
-				top: ($('#panel').position().top * -1) + 'px',
-				position: 'absolute',
-			});
-		}
+			slideout.on('open', onOpeningMenu);
 
-		slideout.on('open', onOpeningMenu);
-
-		slideout.on('close', function () {
-			$('#header').css({
-				top: '0px',
-				position: 'fixed',
+			slideout.on('close', function () {
+				$('#header').css({
+					top: '0px',
+					position: 'fixed',
+				});
 			});
 		});
 	}

@@ -1,55 +1,56 @@
 'use strict';
 
 
-define('admin/settings', ['uploader'], function (uploader) {
-	var Settings = {};
-
-	Settings.init = function () {
-		console.warn('[deprecation] require(\'admin/settings\').init() has been deprecated, please call require(\'admin/settings\').prepare() directly instead.');
-		Settings.prepare();
-	};
+define('admin/settings', ['uploader', 'mousetrap', 'hooks', 'alerts'], function (uploader, mousetrap, hooks, alerts) {
+	const Settings = {};
 
 	Settings.populateTOC = function () {
-		$('.settings-header').each(function () {
-			var header = $(this).text();
-			var anchor = header.toLowerCase().replace(/ /g, '-').trim();
+		const headers = $('.settings-header');
 
-			$(this).prepend('<a name="' + anchor + '"></a>');
-			$('.section-content ul').append('<li><a href="#' + anchor + '">' + header + '</a></li>');
-		});
+		if (headers.length > 1) {
+			headers.each(function () {
+				const header = $(this).text();
+				const anchor = header.toLowerCase().replace(/ /g, '-').trim();
 
-		var scrollTo = $('a[name="' + window.location.hash.replace('#', '') + '"]');
-		if (scrollTo.length) {
-			$('html, body').animate({
-				scrollTop: (scrollTo.offset().top) + 'px',
-			}, 400);
+				$(this).prepend('<a name="' + anchor + '"></a>');
+				$('.section-content ul').append('<li><a href="#' + anchor + '">' + header + '</a></li>');
+			});
+
+			const scrollTo = $('a[name="' + window.location.hash.replace('#', '') + '"]');
+			if (scrollTo.length) {
+				$('html, body').animate({
+					scrollTop: (scrollTo.offset().top) + 'px',
+				}, 400);
+			}
+		} else {
+			$('.content-header').parents('.row').remove();
 		}
 	};
 
 	Settings.prepare = function (callback) {
 		// Populate the fields on the page from the config
-		var fields = $('#content [data-field]');
-		var	numFields = fields.length;
-		var	saveBtn = $('#save');
-		var	revertBtn = $('#revert');
-		var	x;
-		var key;
-		var inputType;
-		var field;
+		const fields = $('#content [data-field]');
+		const numFields = fields.length;
+		const saveBtn = $('#save');
+		const revertBtn = $('#revert');
+		let x;
+		let key;
+		let inputType;
+		let field;
 
 		// Handle unsaved changes
-		$(fields).on('change', function () {
+		fields.on('change', function () {
 			app.flags = app.flags || {};
 			app.flags._unsaved = true;
 		});
-		var defaultInputs = ['text', 'hidden', 'password', 'textarea', 'number'];
+		const defaultInputs = ['text', 'hidden', 'password', 'textarea', 'number'];
 		for (x = 0; x < numFields; x += 1) {
 			field = fields.eq(x);
 			key = field.attr('data-field');
 			inputType = field.attr('type');
 			if (app.config.hasOwnProperty(key)) {
 				if (field.is('input') && inputType === 'checkbox') {
-					var checked = parseInt(app.config[key], 10) === 1;
+					const checked = parseInt(app.config[key], 10) === 1;
 					field.prop('checked', checked);
 					field.parents('.mdl-switch').toggleClass('is-checked', checked);
 				} else if (field.is('textarea') || field.is('select') || (field.is('input') && defaultInputs.indexOf(inputType) !== -1)) {
@@ -67,27 +68,32 @@ define('admin/settings', ['uploader'], function (uploader) {
 
 			saveFields(fields, function onFieldsSaved(err) {
 				if (err) {
-					return app.alert({
+					return alerts.alert({
 						alert_id: 'config_status',
 						timeout: 2500,
-						title: 'Changes Not Saved',
-						message: 'NodeBB encountered a problem saving your changes. (' + err.message + ')',
+						title: '[[admin/admin:changes-not-saved]]',
+						message: `[[admin/admin:changes-not-saved-message, ${err.message}]]`,
 						type: 'danger',
 					});
 				}
 
 				app.flags._unsaved = false;
 
-				app.alert({
+				alerts.alert({
 					alert_id: 'config_status',
 					timeout: 2500,
-					title: 'Changes Saved',
-					message: 'Your changes to the NodeBB configuration have been saved.',
+					title: '[[admin/admin:changes-saved]]',
+					message: '[[admin/admin:changes-saved-message]]',
 					type: 'success',
 				});
 
-				$(window).trigger('action:admin.settingsSaved');
+				hooks.fire('action:admin.settingsSaved');
 			});
+		});
+
+		mousetrap.bind('ctrl+s', function (ev) {
+			saveBtn.click();
+			ev.preventDefault();
 		});
 
 		handleUploads();
@@ -95,7 +101,7 @@ define('admin/settings', ['uploader'], function (uploader) {
 
 		$('#clear-sitemap-cache').off('click').on('click', function () {
 			socket.emit('admin.settings.clearSitemapCache', function () {
-				app.alertSuccess('Sitemap Cache Cleared!');
+				alerts.success('Sitemap Cache Cleared!');
 			});
 			return false;
 		});
@@ -105,13 +111,13 @@ define('admin/settings', ['uploader'], function (uploader) {
 		}
 
 		setTimeout(function () {
-			$(window).trigger('action:admin.settingsLoaded');
+			hooks.fire('action:admin.settingsLoaded');
 		}, 0);
 	};
 
 	function handleUploads() {
 		$('#content input[data-action="upload"]').each(function () {
-			var uploadBtn = $(this);
+			const uploadBtn = $(this);
 			uploadBtn.on('click', function () {
 				uploader.show({
 					title: uploadBtn.attr('data-title'),
@@ -121,12 +127,7 @@ define('admin/settings', ['uploader'], function (uploader) {
 					showHelp: uploadBtn.attr('data-help') ? uploadBtn.attr('data-help') === 1 : undefined,
 					accept: uploadBtn.attr('data-accept'),
 				}, function (image) {
-					// need to move these into template, ex data-callback
-					if (ajaxify.currentPage === 'admin/general/sounds') {
-						ajaxify.refresh();
-					} else {
-						$('#' + uploadBtn.attr('data-target')).val(image);
-					}
+					$('#' + uploadBtn.attr('data-target')).val(image);
 				});
 			});
 		});
@@ -145,28 +146,28 @@ define('admin/settings', ['uploader'], function (uploader) {
 	};
 
 	function saveFields(fields, callback) {
-		var data = {};
+		const data = {};
 
 		fields.each(function () {
-			var field = $(this);
-			var key = field.attr('data-field');
-			var value;
-			var inputType;
+			const field = $(this);
+			const key = field.attr('data-field');
+			let value;
+			let inputType;
 
 			if (field.is('input')) {
 				inputType = field.attr('type');
 				switch (inputType) {
-				case 'text':
-				case 'password':
-				case 'hidden':
-				case 'textarea':
-				case 'number':
-					value = field.val();
-					break;
+					case 'text':
+					case 'password':
+					case 'hidden':
+					case 'textarea':
+					case 'number':
+						value = field.val();
+						break;
 
-				case 'checkbox':
-					value = field.prop('checked') ? '1' : '0';
-					break;
+					case 'checkbox':
+						value = field.prop('checked') ? '1' : '0';
+						break;
 				}
 			} else if (field.is('textarea') || field.is('select')) {
 				value = field.val();
@@ -180,7 +181,7 @@ define('admin/settings', ['uploader'], function (uploader) {
 				return callback(err);
 			}
 
-			for (var field in data) {
+			for (const field in data) {
 				if (data.hasOwnProperty(field)) {
 					app.config[field] = data[field];
 				}

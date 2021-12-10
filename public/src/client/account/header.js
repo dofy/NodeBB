@@ -7,9 +7,13 @@ define('forum/account/header', [
 	'components',
 	'translator',
 	'benchpress',
-], function (coverPhoto, pictureCropper, components, translator, Benchpress) {
-	var AccountHeader = {};
-	var isAdminOrSelfOrGlobalMod;
+	'accounts/delete',
+	'api',
+	'bootbox',
+	'alerts',
+], function (coverPhoto, pictureCropper, components, translator, Benchpress, AccountsDelete, api, bootbox, alerts) {
+	const AccountHeader = {};
+	let isAdminOrSelfOrGlobalMod;
 
 	AccountHeader.init = function () {
 		isAdminOrSelfOrGlobalMod = ajaxify.data.isAdmin || ajaxify.data.isSelf || ajaxify.data.isGlobalModerator;
@@ -29,32 +33,41 @@ define('forum/account/header', [
 			toggleFollow('unfollow');
 		});
 
-		components.get('account/chat').on('click', function () {
-			socket.emit('modules.chats.hasPrivateChat', ajaxify.data.uid, function (err, roomId) {
-				if (err) {
-					return app.alertError(err.message);
-				}
-				if (roomId) {
-					app.openChat(roomId);
-				} else {
-					app.newChat(ajaxify.data.uid);
-				}
-			});
+		components.get('account/chat').on('click', async function () {
+			const roomId = await socket.emit('modules.chats.hasPrivateChat', ajaxify.data.uid);
+			const chat = await app.require('chat');
+			if (roomId) {
+				chat.openChat(roomId);
+			} else {
+				chat.newChat(ajaxify.data.uid);
+			}
 		});
 
-		components.get('account/new-chat').on('click', function () {
-			app.newChat(ajaxify.data.uid, function () {
+		components.get('account/new-chat').on('click', async function () {
+			const chat = await app.require('chat');
+			chat.newChat(ajaxify.data.uid, function () {
 				components.get('account/chat').parent().removeClass('hidden');
 			});
 		});
 
 
-		components.get('account/ban').on('click', banAccount);
+		components.get('account/ban').on('click', function () {
+			banAccount(ajaxify.data.theirid);
+		});
 		components.get('account/unban').on('click', unbanAccount);
-		components.get('account/delete').on('click', deleteAccount);
+		components.get('account/delete-account').on('click', handleDeleteEvent.bind(null, 'account'));
+		components.get('account/delete-content').on('click', handleDeleteEvent.bind(null, 'content'));
+		components.get('account/delete-all').on('click', handleDeleteEvent.bind(null, 'purge'));
 		components.get('account/flag').on('click', flagAccount);
 		components.get('account/block').on('click', toggleBlockAccount);
 	};
+
+	function handleDeleteEvent(type) {
+		AccountsDelete[type](ajaxify.data.theirid);
+	}
+
+	// TODO: This exported method is used in forum/flags/detail -- refactor??
+	AccountHeader.banAccount = banAccount;
 
 	function hidePrivateLinks() {
 		if (!app.user.uid || app.user.uid !== parseInt(ajaxify.data.theirid, 10)) {
@@ -64,7 +77,7 @@ define('forum/account/header', [
 
 	function selectActivePill() {
 		$('.account-sub-links li').removeClass('active').each(function () {
-			var href = $(this).find('a').attr('href');
+			const href = $(this).find('a').attr('href');
 
 			if (decodeURIComponent(href) === decodeURIComponent(window.location.pathname)) {
 				$(this).addClass('active');
@@ -103,22 +116,22 @@ define('forum/account/header', [
 	}
 
 	function toggleFollow(type) {
-		socket.emit('user.' + type, {
-			uid: ajaxify.data.uid,
-		}, function (err) {
+		api[type === 'follow' ? 'put' : 'del']('/users/' + ajaxify.data.uid + '/follow', undefined, function (err) {
 			if (err) {
-				return app.alertError(err.message);
+				return alerts.error(err);
 			}
-
 			components.get('account/follow').toggleClass('hide', type === 'follow');
 			components.get('account/unfollow').toggleClass('hide', type === 'unfollow');
-			app.alertSuccess('[[global:alert.' + type + ', ' + ajaxify.data.username + ']]');
+			alerts.success('[[global:alert.' + type + ', ' + ajaxify.data.username + ']]');
 		});
+
 		return false;
 	}
 
-	function banAccount() {
-		Benchpress.parse('admin/partials/temporary-ban', {}, function (html) {
+	function banAccount(theirid, onSuccess) {
+		theirid = theirid || ajaxify.data.theirid;
+
+		Benchpress.render('admin/partials/temporary-ban', {}).then(function (html) {
 			bootbox.dialog({
 				className: 'ban-modal',
 				title: '[[user:ban_account]]',
@@ -132,23 +145,25 @@ define('forum/account/header', [
 					submit: {
 						label: '[[user:ban_account]]',
 						callback: function () {
-							var formData = $('.ban-modal form').serializeArray().reduce(function (data, cur) {
+							const formData = $('.ban-modal form').serializeArray().reduce(function (data, cur) {
 								data[cur.name] = cur.value;
 								return data;
 							}, {});
 
-							var until = formData.length > 0 ? (Date.now() + (formData.length * 1000 * 60 * 60 * (parseInt(formData.unit, 10) ? 24 : 1))) : 0;
+							const until = formData.length > 0 ? (
+								Date.now() + (formData.length * 1000 * 60 * 60 * (parseInt(formData.unit, 10) ? 24 : 1))
+							) : 0;
 
-							socket.emit('user.banUsers', {
-								uids: [ajaxify.data.theirid],
+							api.put('/users/' + theirid + '/ban', {
 								until: until,
 								reason: formData.reason || '',
-							}, function (err) {
-								if (err) {
-									return app.alertError(err.message);
+							}).then(() => {
+								if (typeof onSuccess === 'function') {
+									return onSuccess();
 								}
+
 								ajaxify.refresh();
-							});
+							}).catch(alerts.error);
 						},
 					},
 				},
@@ -157,30 +172,9 @@ define('forum/account/header', [
 	}
 
 	function unbanAccount() {
-		socket.emit('user.unbanUsers', [ajaxify.data.theirid], function (err) {
-			if (err) {
-				return app.alertError(err.message);
-			}
+		api.del('/users/' + ajaxify.data.theirid + '/ban').then(() => {
 			ajaxify.refresh();
-		});
-	}
-
-	function deleteAccount() {
-		translator.translate('[[user:delete_this_account_confirm]]', function (translated) {
-			bootbox.confirm(translated, function (confirm) {
-				if (!confirm) {
-					return;
-				}
-
-				socket.emit('admin.user.deleteUsersAndContent', [ajaxify.data.theirid], function (err) {
-					if (err) {
-						return app.alertError(err.message);
-					}
-					app.alertSuccess('[[user:account-deleted]]');
-					history.back();
-				});
-			});
-		});
+		}).catch(alerts.error);
 	}
 
 	function flagAccount() {
@@ -193,13 +187,13 @@ define('forum/account/header', [
 	}
 
 	function toggleBlockAccount() {
-		var targetEl = this;
+		const targetEl = this;
 		socket.emit('user.toggleBlock', {
 			blockeeUid: ajaxify.data.uid,
 			blockerUid: app.user.uid,
 		}, function (err, blocked) {
 			if (err) {
-				return app.alertError(err.message);
+				return alerts.error(err);
 			}
 
 			translator.translate('[[user:' + (blocked ? 'unblock' : 'block') + '_user]]', function (label) {
@@ -224,7 +218,7 @@ define('forum/account/header', [
 					if (!err) {
 						ajaxify.refresh();
 					} else {
-						app.alertError(err.message);
+						alerts.error(err);
 					}
 				});
 			});

@@ -3,5 +3,5 @@
 	"welcome-notification": "Ειδοποίηση καλωσορίσματος",
 	"welcome-notification-link": "Welcome Notification Link",
 	"welcome-notification-uid": "Welcome Notification User (UID)",
-	"notification-alert-timeout": "Notification Alert Timeout"
+	"post-queue-notification-uid": "Post Queue User (UID)"
 }

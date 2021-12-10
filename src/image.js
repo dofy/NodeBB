@@ -1,18 +1,19 @@
 'use strict';
 
-var os = require('os');
-var fs = require('fs');
-var path = require('path');
-var crypto = require('crypto');
-var async = require('async');
+const os = require('os');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const winston = require('winston');
 
-var file = require('./file');
-var plugins = require('./plugins');
+const file = require('./file');
+const plugins = require('./plugins');
+const meta = require('./meta');
 
-var image = module.exports;
+const image = module.exports;
 
 function requireSharp() {
-	var sharp = require('sharp');
+	const sharp = require('sharp');
 	if (os.platform() === 'win32') {
 		// https://github.com/lovell/sharp/issues/1259
 		sharp.cache(false);
@@ -20,95 +21,112 @@ function requireSharp() {
 	return sharp;
 }
 
-image.resizeImage = function (data, callback) {
-	if (plugins.hasListeners('filter:image.resize')) {
-		plugins.fireHook('filter:image.resize', {
+image.isFileTypeAllowed = async function (path) {
+	const plugins = require('./plugins');
+	if (plugins.hooks.hasListeners('filter:image.isFileTypeAllowed')) {
+		return await plugins.hooks.fire('filter:image.isFileTypeAllowed', path);
+	}
+	const sharp = require('sharp');
+	await sharp(path, {
+		failOnError: true,
+	}).metadata();
+};
+
+image.resizeImage = async function (data) {
+	if (plugins.hooks.hasListeners('filter:image.resize')) {
+		await plugins.hooks.fire('filter:image.resize', {
 			path: data.path,
 			target: data.target,
 			width: data.width,
 			height: data.height,
 			quality: data.quality,
-		}, function (err) {
-			callback(err);
 		});
 	} else {
-		var sharpImage;
-		async.waterfall([
-			function (next) {
-				fs.readFile(data.path, next);
-			},
-			function (buffer, next) {
-				var sharp = requireSharp();
-				sharpImage = sharp(buffer, {
-					failOnError: true,
-				});
-				sharpImage.metadata(next);
-			},
-			function (metadata, next) {
-				sharpImage.rotate(); // auto-orients based on exif data
-				sharpImage.resize(data.hasOwnProperty('width') ? data.width : null, data.hasOwnProperty('height') ? data.height : null);
+		const sharp = requireSharp();
+		const buffer = await fs.promises.readFile(data.path);
+		const sharpImage = sharp(buffer, {
+			failOnError: true,
+		});
+		const metadata = await sharpImage.metadata();
 
-				if (data.quality && metadata.format === 'jpeg') {
-					sharpImage.jpeg({ quality: data.quality });
+		sharpImage.rotate(); // auto-orients based on exif data
+		sharpImage.resize(data.hasOwnProperty('width') ? data.width : null, data.hasOwnProperty('height') ? data.height : null);
+
+		if (data.quality) {
+			switch (metadata.format) {
+				case 'jpeg': {
+					sharpImage.jpeg({
+						quality: data.quality,
+						mozjpeg: true,
+					});
+					break;
 				}
 
-				sharpImage.toFile(data.target || data.path, next);
-			},
-		], function (err) {
-			callback(err);
-		});
+				case 'png': {
+					sharpImage.png({
+						quality: data.quality,
+						compressionLevel: 9,
+					});
+					break;
+				}
+			}
+		}
+
+		await sharpImage.toFile(data.target || data.path);
 	}
 };
 
-image.normalise = function (path, extension, callback) {
-	if (plugins.hasListeners('filter:image.normalise')) {
-		plugins.fireHook('filter:image.normalise', {
+image.normalise = async function (path) {
+	if (plugins.hooks.hasListeners('filter:image.normalise')) {
+		await plugins.hooks.fire('filter:image.normalise', {
 			path: path,
-		}, function (err) {
-			callback(err, path + '.png');
 		});
 	} else {
-		var sharp = requireSharp();
-		sharp(path, { failOnError: true }).png().toFile(path + '.png', function (err) {
-			callback(err, path + '.png');
-		});
+		const sharp = requireSharp();
+		await sharp(path, { failOnError: true }).png().toFile(`${path}.png`);
 	}
+	return `${path}.png`;
 };
 
-image.size = function (path, callback) {
-	if (plugins.hasListeners('filter:image.size')) {
-		plugins.fireHook('filter:image.size', {
+image.size = async function (path) {
+	let imageData;
+	if (plugins.hooks.hasListeners('filter:image.size')) {
+		imageData = await plugins.hooks.fire('filter:image.size', {
 			path: path,
-		}, function (err, image) {
-			callback(err, image ? { width: image.width, height: image.height } : undefined);
 		});
 	} else {
-		var sharp = requireSharp();
-		sharp(path, { failOnError: true }).metadata(function (err, metadata) {
-			callback(err, metadata ? { width: metadata.width, height: metadata.height } : undefined);
-		});
+		const sharp = requireSharp();
+		imageData = await sharp(path, { failOnError: true }).metadata();
+	}
+	return imageData ? { width: imageData.width, height: imageData.height } : undefined;
+};
+
+image.stripEXIF = async function (path) {
+	if (!meta.config.stripEXIFData || path.endsWith('.gif') || path.endsWith('.svg')) {
+		return;
+	}
+	try {
+		const buffer = await fs.promises.readFile(path);
+		const sharp = requireSharp();
+		await sharp(buffer, { failOnError: true }).rotate().toFile(path);
+	} catch (err) {
+		winston.error(err.stack);
 	}
 };
 
-image.checkDimensions = function (path, callback) {
+image.checkDimensions = async function (path) {
 	const meta = require('./meta');
-	image.size(path, function (err, result) {
-		if (err) {
-			return callback(err);
-		}
+	const result = await image.size(path);
 
-		const maxWidth = meta.config.rejectImageWidth;
-		const maxHeight = meta.config.rejectImageHeight;
-		if (result.width > maxWidth || result.height > maxHeight) {
-			return callback(new Error('[[error:invalid-image-dimensions]]'));
-		}
+	if (result.width > meta.config.rejectImageWidth || result.height > meta.config.rejectImageHeight) {
+		throw new Error('[[error:invalid-image-dimensions]]');
+	}
 
-		callback();
-	});
+	return result;
 };
 
-image.convertImageToBase64 = function (path, callback) {
-	fs.readFile(path, 'base64', callback);
+image.convertImageToBase64 = async function (path) {
+	return await fs.promises.readFile(path, 'base64');
 };
 
 image.mimeFromBase64 = function (imageData) {
@@ -119,48 +137,39 @@ image.extensionFromBase64 = function (imageData) {
 	return file.typeToExtension(image.mimeFromBase64(imageData));
 };
 
-image.writeImageDataToTempFile = function (imageData, callback) {
-	var filename = crypto.createHash('md5').update(imageData).digest('hex');
+image.writeImageDataToTempFile = async function (imageData) {
+	const filename = crypto.createHash('md5').update(imageData).digest('hex');
 
-	var type = image.mimeFromBase64(imageData);
-	var extension = file.typeToExtension(type);
+	const type = image.mimeFromBase64(imageData);
+	const extension = file.typeToExtension(type);
 
-	var filepath = path.join(os.tmpdir(), filename + extension);
+	const filepath = path.join(os.tmpdir(), filename + extension);
 
-	var buffer = Buffer.from(imageData.slice(imageData.indexOf('base64') + 7), 'base64');
+	const buffer = Buffer.from(imageData.slice(imageData.indexOf('base64') + 7), 'base64');
 
-	fs.writeFile(filepath, buffer, {
-		encoding: 'base64',
-	}, function (err) {
-		callback(err, filepath);
-	});
+	await fs.promises.writeFile(filepath, buffer, { encoding: 'base64' });
+	return filepath;
 };
 
 image.sizeFromBase64 = function (imageData) {
 	return Buffer.from(imageData.slice(imageData.indexOf('base64') + 7), 'base64').length;
 };
 
-image.uploadImage = function (filename, folder, image, callback) {
-	if (plugins.hasListeners('filter:uploadImage')) {
-		return plugins.fireHook('filter:uploadImage', {
-			image: image,
-			uid: image.uid,
-		}, callback);
+image.uploadImage = async function (filename, folder, imageData) {
+	if (plugins.hooks.hasListeners('filter:uploadImage')) {
+		return await plugins.hooks.fire('filter:uploadImage', {
+			image: imageData,
+			uid: imageData.uid,
+			folder: folder,
+		});
 	}
-
-	async.waterfall([
-		function (next) {
-			file.isFileTypeAllowed(image.path, next);
-		},
-		function (next) {
-			file.saveFileToLocal(filename, folder, image.path, next);
-		},
-		function (upload, next) {
-			next(null, {
-				url: upload.url,
-				path: upload.path,
-				name: image.name,
-			});
-		},
-	], callback);
+	await image.isFileTypeAllowed(imageData.path);
+	const upload = await file.saveFileToLocal(filename, folder, imageData.path);
+	return {
+		url: upload.url,
+		path: upload.path,
+		name: imageData.name,
+	};
 };
+
+require('./promisify')(image);

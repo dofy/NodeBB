@@ -1,8 +1,7 @@
 'use strict';
 
-
-define('admin/manage/uploads', ['uploader'], function (uploader) {
-	var Uploads = {};
+define('admin/manage/uploads', ['api', 'bootbox', 'alerts', 'uploader'], function (api, bootbox, alerts, uploader) {
+	const Uploads = {};
 
 	Uploads.init = function () {
 		$('#upload').on('click', function () {
@@ -16,17 +15,32 @@ define('admin/manage/uploads', ['uploader'], function (uploader) {
 		});
 
 		$('.delete').on('click', function () {
-			var file = $(this).parents('[data-path]');
+			const file = $(this).parents('[data-path]');
 			bootbox.confirm('[[admin/manage/uploads:confirm-delete]]', function (ok) {
 				if (!ok) {
 					return;
 				}
-				socket.emit('admin.uploads.delete', file.attr('data-path'), function (err) {
-					if (err) {
-						return app.alertError(err.message);
-					}
+
+				api.del('/files', {
+					path: file.attr('data-path'),
+				}).then(() => {
 					file.remove();
-				});
+				}).catch(alerts.error);
+			});
+		});
+
+		$('#new-folder').on('click', async function () {
+			bootbox.prompt('[[admin/manage/uploads:name-new-folder]]', (newFolderName) => {
+				if (!newFolderName || !newFolderName.trim()) {
+					return;
+				}
+
+				api.put('/files/folder', {
+					path: ajaxify.data.currentFolder,
+					folderName: newFolderName,
+				}).then(() => {
+					ajaxify.refresh();
+				}).catch(alerts.error);
 			});
 		});
 	};

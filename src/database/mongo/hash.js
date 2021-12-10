@@ -1,277 +1,255 @@
 'use strict';
 
-var async = require('async');
+module.exports = function (module) {
+	const helpers = require('./helpers');
 
-
-module.exports = function (db, module) {
-	var helpers = module.helpers.mongo;
-
-	var _ = require('lodash');
 	const cache = require('../cache').create('mongo');
 
 	module.objectCache = cache;
 
-	module.setObject = function (key, data, callback) {
-		callback = callback || helpers.noop;
-		if (!key || !data) {
-			return callback();
-		}
-
-		const writeData = helpers.serializeData(data);
-		db.collection('objects').updateOne({ _key: key }, { $set: writeData }, { upsert: true, w: 1 }, function (err) {
-			if (err) {
-				return callback(err);
-			}
-			cache.delObjectCache(key);
-			callback();
-		});
-	};
-
-	module.setObjectField = function (key, field, value, callback) {
-		callback = callback || helpers.noop;
-		if (!field) {
-			return callback();
-		}
-		var data = {};
-		data[field] = value;
-		module.setObject(key, data, callback);
-	};
-
-	module.getObject = function (key, callback) {
-		if (!key) {
-			return callback();
-		}
-
-		module.getObjects([key], function (err, data) {
-			if (err) {
-				return callback(err);
-			}
-			callback(null, data && data.length ? data[0] : null);
-		});
-	};
-
-	module.getObjects = function (keys, callback) {
-		var cachedData = {};
-		function getFromCache() {
-			process.nextTick(callback, null, keys.map(key => _.clone(cachedData[key])));
-		}
-
-		if (!Array.isArray(keys) || !keys.length) {
-			return callback(null, []);
-		}
-
-		const unCachedKeys = cache.getUnCachedKeys(keys, cachedData);
-
-		if (!unCachedKeys.length) {
-			return getFromCache();
-		}
-
-		var query = { _key: { $in: unCachedKeys } };
-		if (unCachedKeys.length === 1) {
-			query._key = unCachedKeys[0];
-		}
-		db.collection('objects').find(query, { projection: { _id: 0 } }).toArray(function (err, data) {
-			if (err) {
-				return callback(err);
-			}
-			data = data.map(helpers.deserializeData);
-			var map = helpers.toMap(data);
-			unCachedKeys.forEach(function (key) {
-				cachedData[key] = map[key] || null;
-				cache.set(key, cachedData[key]);
-			});
-
-			getFromCache();
-		});
-	};
-
-	module.getObjectField = function (key, field, callback) {
-		if (!key) {
-			return callback();
-		}
-		module.getObject(key, function (err, item) {
-			if (err || !item) {
-				return callback(err, null);
-			}
-			callback(null, item.hasOwnProperty(field) ? item[field] : null);
-		});
-	};
-
-	module.getObjectFields = function (key, fields, callback) {
-		if (!key) {
-			return callback();
-		}
-		module.getObjectsFields([key], fields, function (err, data) {
-			callback(err, data ? data[0] : null);
-		});
-	};
-
-	module.getObjectsFields = function (keys, fields, callback) {
-		if (!Array.isArray(keys) || !keys.length) {
-			return callback(null, []);
-		}
-		module.getObjects(keys, function (err, items) {
-			if (err) {
-				return callback(err);
-			}
-			if (items === null) {
-				items = [];
-			}
-
-			const returnData = items.map((item) => {
-				item = item || {};
-				const result = {};
-				fields.forEach((field) => {
-					result[field] = item[field] !== undefined ? item[field] : null;
-				});
-				return result;
-			});
-
-			callback(null, returnData);
-		});
-	};
-
-	module.getObjectKeys = function (key, callback) {
-		module.getObject(key, function (err, data) {
-			callback(err, data ? Object.keys(data) : []);
-		});
-	};
-
-	module.getObjectValues = function (key, callback) {
-		module.getObject(key, function (err, data) {
-			if (err) {
-				return callback(err);
-			}
-
-			var values = [];
-			for (var key in data) {
-				if (data && data.hasOwnProperty(key)) {
-					values.push(data[key]);
-				}
-			}
-			callback(null, values);
-		});
-	};
-
-	module.isObjectField = function (key, field, callback) {
-		if (!key) {
-			return callback();
-		}
-		var data = {};
-		field = helpers.fieldToString(field);
-		data[field] = 1;
-		db.collection('objects').findOne({ _key: key }, { projection: data }, function (err, item) {
-			callback(err, !!item && item[field] !== undefined && item[field] !== null);
-		});
-	};
-
-	module.isObjectFields = function (key, fields, callback) {
-		if (!key) {
-			return callback();
-		}
-
-		var data = {};
-		fields.forEach(function (field) {
-			field = helpers.fieldToString(field);
-			data[field] = 1;
-		});
-
-		db.collection('objects').findOne({ _key: key }, { projection: data }, function (err, item) {
-			if (err) {
-				return callback(err);
-			}
-			var results = [];
-
-			fields.forEach(function (field, index) {
-				results[index] = !!item && item[field] !== undefined && item[field] !== null;
-			});
-
-			callback(null, results);
-		});
-	};
-
-	module.deleteObjectField = function (key, field, callback) {
-		module.deleteObjectFields(key, [field], callback);
-	};
-
-	module.deleteObjectFields = function (key, fields, callback) {
-		callback = callback || helpers.noop;
-		if (!key || !Array.isArray(fields) || !fields.length) {
-			return callback();
-		}
-		fields = fields.filter(Boolean);
-		if (!fields.length) {
-			return callback();
-		}
-
-		var data = {};
-		fields.forEach(function (field) {
-			field = helpers.fieldToString(field);
-			data[field] = '';
-		});
-
-		db.collection('objects').updateOne({ _key: key }, { $unset: data }, function (err) {
-			if (err) {
-				return callback(err);
-			}
-			cache.delObjectCache(key);
-			callback();
-		});
-	};
-
-	module.incrObjectField = function (key, field, callback) {
-		module.incrObjectFieldBy(key, field, 1, callback);
-	};
-
-	module.decrObjectField = function (key, field, callback) {
-		module.incrObjectFieldBy(key, field, -1, callback);
-	};
-
-	module.incrObjectFieldBy = function (key, field, value, callback) {
-		callback = callback || helpers.noop;
-		value = parseInt(value, 10);
-		if (!key || isNaN(value)) {
-			return callback(null, null);
-		}
-
-		var data = {};
-		field = helpers.fieldToString(field);
-		data[field] = value;
-
-		if (Array.isArray(key)) {
-			var bulk = db.collection('objects').initializeUnorderedBulkOp();
-			key.forEach(function (key) {
-				bulk.find({ _key: key }).upsert().update({ $inc: data });
-			});
-
-			async.waterfall([
-				function (next) {
-					bulk.execute(function (err) {
-						next(err);
-					});
-				},
-				function (next) {
-					cache.delObjectCache(key);
-
-					module.getObjectsFields(key, [field], next);
-				},
-				function (data, next) {
-					data = data.map(function (data) {
-						return data && data[field];
-					});
-					next(null, data);
-				},
-			], callback);
+	module.setObject = async function (key, data) {
+		const isArray = Array.isArray(key);
+		if (!key || !data || (isArray && !key.length)) {
 			return;
 		}
 
-
-		db.collection('objects').findOneAndUpdate({ _key: key }, { $inc: data }, { returnOriginal: false, upsert: true }, function (err, result) {
-			if (err) {
-				return callback(err);
+		const writeData = helpers.serializeData(data);
+		if (!Object.keys(writeData).length) {
+			return;
+		}
+		try {
+			if (isArray) {
+				const bulk = module.client.collection('objects').initializeUnorderedBulkOp();
+				key.forEach(key => bulk.find({ _key: key }).upsert().updateOne({ $set: writeData }));
+				await bulk.execute();
+			} else {
+				await module.client.collection('objects').updateOne({ _key: key }, { $set: writeData }, { upsert: true });
 			}
-			cache.delObjectCache(key);
-			callback(null, result && result.value ? result.value[field] : null);
+		} catch (err) {
+			if (err && err.message.startsWith('E11000 duplicate key error')) {
+				return await module.setObject(key, data);
+			}
+			throw err;
+		}
+
+		cache.del(key);
+	};
+
+	module.setObjectBulk = async function (...args) {
+		let data = args[0];
+		if (!Array.isArray(data) || !data.length) {
+			return;
+		}
+		if (Array.isArray(args[1])) {
+			console.warn('[deprecated] db.setObjectBulk(keys, data) usage is deprecated, please use db.setObjectBulk(data)');
+			// conver old format to new format for backwards compatibility
+			data = args[0].map((key, i) => [key, args[1][i]]);
+		}
+
+		try {
+			let bulk;
+			data.forEach((item) => {
+				const writeData = helpers.serializeData(item[1]);
+				if (Object.keys(writeData).length) {
+					if (!bulk) {
+						bulk = module.client.collection('objects').initializeUnorderedBulkOp();
+					}
+					bulk.find({ _key: item[0] }).upsert().updateOne({ $set: writeData });
+				}
+			});
+			if (bulk) {
+				await bulk.execute();
+			}
+		} catch (err) {
+			if (err && err.message.startsWith('E11000 duplicate key error')) {
+				return await module.setObjectBulk(data);
+			}
+			throw err;
+		}
+
+		cache.del(data.map(item => item[0]));
+	};
+
+	module.setObjectField = async function (key, field, value) {
+		if (!field) {
+			return;
+		}
+		const data = {};
+		data[field] = value;
+		await module.setObject(key, data);
+	};
+
+	module.getObject = async function (key, fields = []) {
+		if (!key) {
+			return null;
+		}
+
+		const data = await module.getObjects([key], fields);
+		return data && data.length ? data[0] : null;
+	};
+
+	module.getObjects = async function (keys, fields = []) {
+		return await module.getObjectsFields(keys, fields);
+	};
+
+	module.getObjectField = async function (key, field) {
+		if (!key) {
+			return null;
+		}
+		const cachedData = {};
+		cache.getUnCachedKeys([key], cachedData);
+		if (cachedData[key]) {
+			return cachedData[key].hasOwnProperty(field) ? cachedData[key][field] : null;
+		}
+		field = helpers.fieldToString(field);
+		const item = await module.client.collection('objects').findOne({ _key: key }, { projection: { _id: 0, [field]: 1 } });
+		if (!item) {
+			return null;
+		}
+		return item.hasOwnProperty(field) ? item[field] : null;
+	};
+
+	module.getObjectFields = async function (key, fields) {
+		if (!key) {
+			return null;
+		}
+		const data = await module.getObjectsFields([key], fields);
+		return data ? data[0] : null;
+	};
+
+	module.getObjectsFields = async function (keys, fields) {
+		if (!Array.isArray(keys) || !keys.length) {
+			return [];
+		}
+		const cachedData = {};
+		const unCachedKeys = cache.getUnCachedKeys(keys, cachedData);
+		let data = [];
+		if (unCachedKeys.length >= 1) {
+			data = await module.client.collection('objects').find(
+				{ _key: unCachedKeys.length === 1 ? unCachedKeys[0] : { $in: unCachedKeys } },
+				{ projection: { _id: 0 } }
+			).toArray();
+			data = data.map(helpers.deserializeData);
+		}
+
+		const map = helpers.toMap(data);
+		unCachedKeys.forEach((key) => {
+			cachedData[key] = map[key] || null;
+			cache.set(key, cachedData[key]);
 		});
+
+		if (!Array.isArray(fields) || !fields.length) {
+			return keys.map(key => (cachedData[key] ? { ...cachedData[key] } : null));
+		}
+		return keys.map((key) => {
+			const item = cachedData[key] || {};
+			const result = {};
+			fields.forEach((field) => {
+				result[field] = item[field] !== undefined ? item[field] : null;
+			});
+			return result;
+		});
+	};
+
+	module.getObjectKeys = async function (key) {
+		const data = await module.getObject(key);
+		return data ? Object.keys(data) : [];
+	};
+
+	module.getObjectValues = async function (key) {
+		const data = await module.getObject(key);
+		return data ? Object.values(data) : [];
+	};
+
+	module.isObjectField = async function (key, field) {
+		const data = await module.isObjectFields(key, [field]);
+		return Array.isArray(data) && data.length ? data[0] : false;
+	};
+
+	module.isObjectFields = async function (key, fields) {
+		if (!key) {
+			return;
+		}
+
+		const data = {};
+		fields.forEach((field) => {
+			field = helpers.fieldToString(field);
+			if (field) {
+				data[field] = 1;
+			}
+		});
+
+		const item = await module.client.collection('objects').findOne({ _key: key }, { projection: data });
+		const results = fields.map(f => !!item && item[f] !== undefined && item[f] !== null);
+		return results;
+	};
+
+	module.deleteObjectField = async function (key, field) {
+		await module.deleteObjectFields(key, [field]);
+	};
+
+	module.deleteObjectFields = async function (key, fields) {
+		if (!key || (Array.isArray(key) && !key.length) || !Array.isArray(fields) || !fields.length) {
+			return;
+		}
+		fields = fields.filter(Boolean);
+		if (!fields.length) {
+			return;
+		}
+
+		const data = {};
+		fields.forEach((field) => {
+			field = helpers.fieldToString(field);
+			data[field] = '';
+		});
+		if (Array.isArray(key)) {
+			await module.client.collection('objects').updateMany({ _key: { $in: key } }, { $unset: data });
+		} else {
+			await module.client.collection('objects').updateOne({ _key: key }, { $unset: data });
+		}
+
+		cache.del(key);
+	};
+
+	module.incrObjectField = async function (key, field) {
+		return await module.incrObjectFieldBy(key, field, 1);
+	};
+
+	module.decrObjectField = async function (key, field) {
+		return await module.incrObjectFieldBy(key, field, -1);
+	};
+
+	module.incrObjectFieldBy = async function (key, field, value) {
+		value = parseInt(value, 10);
+		if (!key || isNaN(value)) {
+			return null;
+		}
+
+		const increment = {};
+		field = helpers.fieldToString(field);
+		increment[field] = value;
+
+		if (Array.isArray(key)) {
+			const bulk = module.client.collection('objects').initializeUnorderedBulkOp();
+			key.forEach((key) => {
+				bulk.find({ _key: key }).upsert().update({ $inc: increment });
+			});
+			await bulk.execute();
+			cache.del(key);
+			const result = await module.getObjectsFields(key, [field]);
+			return result.map(data => data && data[field]);
+		}
+
+		const result = await module.client.collection('objects').findOneAndUpdate({
+			_key: key,
+		}, {
+			$inc: increment,
+		}, {
+			returnDocument: 'after',
+			upsert: true,
+		});
+
+		cache.del(key);
+		return result && result.value ? result.value[field] : null;
 	};
 };

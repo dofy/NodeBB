@@ -1,12 +1,18 @@
 'use strict';
 
 
-define('admin/extend/plugins', ['jqueryui', 'translator', 'benchpress'], function (jqueryui, translator, Benchpress) {
-	var Plugins = {};
+define('admin/extend/plugins', [
+	'translator',
+	'benchpress',
+	'bootbox',
+	'alerts',
+	'jquery-ui/widgets/sortable',
+], function (translator, Benchpress, bootbox, alerts) {
+	const Plugins = {};
 	Plugins.init = function () {
-		var pluginsList = $('.plugins');
-		var numPlugins = pluginsList[0].querySelectorAll('li').length;
-		var pluginID;
+		const pluginsList = $('.plugins');
+		const numPlugins = pluginsList[0].querySelectorAll('li').length;
+		let pluginID;
 
 		if (!numPlugins) {
 			translator.translate('<li><p><i>[[admin/extend/plugins:none-found]]</i></p></li>', function (html) {
@@ -15,19 +21,20 @@ define('admin/extend/plugins', ['jqueryui', 'translator', 'benchpress'], functio
 			return;
 		}
 
-		$('#plugin-search').val('');
+		const searchInputEl = document.querySelector('#plugin-search');
+		searchInputEl.value = '';
 
 		pluginsList.on('click', 'button[data-action="toggleActive"]', function () {
-			var pluginEl = $(this).parents('li');
+			const pluginEl = $(this).parents('li');
 			pluginID = pluginEl.attr('data-plugin-id');
-			var btn = $('[id="' + pluginID + '"] [data-action="toggleActive"]');
+			const btn = $('[id="' + pluginID + '"] [data-action="toggleActive"]');
 
-			var pluginData = ajaxify.data.installed[pluginEl.attr('data-plugin-index')];
+			const pluginData = ajaxify.data.installed[pluginEl.attr('data-plugin-index')];
 
 			function toggleActivate() {
 				socket.emit('admin.plugins.toggleActive', pluginID, function (err, status) {
 					if (err) {
-						return app.alertError(err);
+						return alerts.error(err);
 					}
 					translator.translate('<i class="fa fa-power-off"></i> [[admin/extend/plugins:plugin-item.' + (status.active ? 'deactivate' : 'activate') + ']]', function (buttonText) {
 						btn.html(buttonText);
@@ -41,7 +48,7 @@ define('admin/extend/plugins', ['jqueryui', 'translator', 'benchpress'], functio
 						// Toggle active state in template data
 						pluginData.active = !pluginData.active;
 
-						app.alert({
+						alerts.alert({
 							alert_id: 'plugin_toggled',
 							title: '[[admin/extend/plugins:alert.' + (status.active ? 'enabled' : 'disabled') + ']]',
 							message: '[[admin/extend/plugins:alert.' + (status.active ? 'activate-success' : 'deactivate-success') + ']]',
@@ -58,7 +65,7 @@ define('admin/extend/plugins', ['jqueryui', 'translator', 'benchpress'], functio
 			}
 
 			if (pluginData.license && pluginData.active !== true) {
-				Benchpress.parse('admin/partials/plugins/license', pluginData, function (html) {
+				Benchpress.render('admin/partials/plugins/license', pluginData).then(function (html) {
 					bootbox.dialog({
 						title: '[[admin/extend/plugins:license.title]]',
 						message: html,
@@ -74,6 +81,12 @@ define('admin/extend/plugins', ['jqueryui', 'translator', 'benchpress'], functio
 								callback: toggleActivate,
 							},
 						},
+						onShown: function () {
+							const saveEl = this.querySelector('button.btn-primary');
+							if (saveEl) {
+								saveEl.focus();
+							}
+						},
 					});
 				});
 			} else {
@@ -82,7 +95,7 @@ define('admin/extend/plugins', ['jqueryui', 'translator', 'benchpress'], functio
 		});
 
 		pluginsList.on('click', 'button[data-action="toggleInstall"]', function () {
-			var btn = $(this);
+			const btn = $(this);
 			btn.attr('disabled', true);
 			pluginID = $(this).parents('li').attr('data-plugin-id');
 
@@ -119,8 +132,8 @@ define('admin/extend/plugins', ['jqueryui', 'translator', 'benchpress'], functio
 		});
 
 		pluginsList.on('click', 'button[data-action="upgrade"]', function () {
-			var btn = $(this);
-			var parent = btn.parents('li');
+			const btn = $(this);
+			const parent = btn.parents('li');
 			pluginID = parent.attr('data-plugin-id');
 
 			Plugins.suggest(pluginID, function (err, payload) {
@@ -128,8 +141,9 @@ define('admin/extend/plugins', ['jqueryui', 'translator', 'benchpress'], functio
 					return bootbox.alert('[[admin/extend/plugins:alert.package-manager-unreachable]]');
 				}
 
-				require(['semver'], function (semver) {
-					if (payload.version !== 'latest' && semver.gt(payload.version, parent.find('.currentVersion').text())) {
+				require(['compare-versions'], function (compareVersions) {
+					const currentVersion = parent.find('.currentVersion').text();
+					if (payload.version !== 'latest' && compareVersions.compare(payload.version, currentVersion, '>')) {
 						upgrade(pluginID, btn, payload.version);
 					} else if (payload.version === 'latest') {
 						confirmInstall(pluginID, function () {
@@ -142,11 +156,21 @@ define('admin/extend/plugins', ['jqueryui', 'translator', 'benchpress'], functio
 			});
 		});
 
-		$('#plugin-search').on('input propertychange', function () {
-			var term = $(this).val();
+		$(searchInputEl).on('input propertychange', function () {
+			const term = $(this).val();
 			$('.plugins li').each(function () {
-				var pluginId = $(this).attr('data-plugin-id');
+				const pluginId = $(this).attr('data-plugin-id');
 				$(this).toggleClass('hide', pluginId && pluginId.indexOf(term) === -1);
+			});
+		});
+
+		$('#plugin-submit-usage').on('click', function () {
+			socket.emit('admin.config.setMultiple', {
+				submitPluginUsage: $(this).prop('checked') ? '1' : '0',
+			}, function (err) {
+				if (err) {
+					return alerts.error(err);
+				}
 			});
 		});
 
@@ -154,11 +178,11 @@ define('admin/extend/plugins', ['jqueryui', 'translator', 'benchpress'], functio
 			$('#order-active-plugins-modal').modal('show');
 			socket.emit('admin.plugins.getActive', function (err, activePlugins) {
 				if (err) {
-					return app.alertError(err);
+					return alerts.error(err);
 				}
-				var html = '';
+				let html = '';
 				activePlugins.forEach(function (plugin) {
-					html += '<li class="">' + plugin + '</li>';
+					html += '<li class="">' + plugin + '<span class="pull-right"><i class="fa fa-chevron-up"></i><i class="fa fa-chevron-down"></i></span></li>';
 				});
 				if (!activePlugins.length) {
 					translator.translate('[[admin/extend/plugins:none-active]]', function (text) {
@@ -166,24 +190,35 @@ define('admin/extend/plugins', ['jqueryui', 'translator', 'benchpress'], functio
 					});
 					return;
 				}
-				$('#order-active-plugins-modal .plugin-list').html(html).sortable();
+				const list = $('#order-active-plugins-modal .plugin-list');
+				list.html(html).sortable();
+
+				list.find('.fa-chevron-up').on('click', function () {
+					const item = $(this).parents('li');
+					item.prev().before(item);
+				});
+
+				list.find('.fa-chevron-down').on('click', function () {
+					const item = $(this).parents('li');
+					item.next().after(item);
+				});
 			});
 		});
 
 		$('#save-plugin-order').on('click', function () {
-			var plugins = $('#order-active-plugins-modal .plugin-list').children();
-			var data = [];
+			const plugins = $('#order-active-plugins-modal .plugin-list').children();
+			const data = [];
 			plugins.each(function (index, el) {
 				data.push({ name: $(el).text(), order: index });
 			});
 
 			socket.emit('admin.plugins.orderActivePlugins', data, function (err) {
 				if (err) {
-					return app.alertError(err.message);
+					return alerts.error(err);
 				}
 				$('#order-active-plugins-modal').modal('hide');
 
-				app.alert({
+				alerts.alert({
 					alert_id: 'plugin_reordered',
 					title: '[[admin/extend/plugins:alert.reorder]]',
 					message: '[[admin/extend/plugins:alert.reorder-success]]',
@@ -200,6 +235,7 @@ define('admin/extend/plugins', ['jqueryui', 'translator', 'benchpress'], functio
 
 		populateUpgradeablePlugins();
 		populateActivePlugins();
+		searchInputEl.focus();
 	};
 
 	function confirmInstall(pluginID, callback) {
@@ -215,14 +251,14 @@ define('admin/extend/plugins', ['jqueryui', 'translator', 'benchpress'], functio
 			version: version,
 		}, function (err, isActive) {
 			if (err) {
-				return app.alertError(err.message);
+				return alerts.error(err);
 			}
-			var parent = btn.parents('li');
+			const parent = btn.parents('li');
 			parent.find('.fa-exclamation-triangle').remove();
 			parent.find('.currentVersion').text(version);
 			btn.remove();
 			if (isActive) {
-				app.alert({
+				alerts.alert({
 					alert_id: 'plugin_upgraded',
 					title: '[[admin/extend/plugins:alert.upgraded]]',
 					message: '[[admin/extend/plugins:alert.upgrade-success]]',
@@ -239,7 +275,7 @@ define('admin/extend/plugins', ['jqueryui', 'translator', 'benchpress'], functio
 	}
 
 	Plugins.toggleInstall = function (pluginID, version, callback) {
-		var btn = $('li[data-plugin-id="' + pluginID + '"] button[data-action="toggleInstall"]');
+		const btn = $('li[data-plugin-id="' + pluginID + '"] button[data-action="toggleInstall"]');
 		btn.find('i').attr('class', 'fa fa-refresh fa-spin');
 
 		socket.emit('admin.plugins.toggleInstall', {
@@ -248,12 +284,12 @@ define('admin/extend/plugins', ['jqueryui', 'translator', 'benchpress'], functio
 		}, function (err, pluginData) {
 			if (err) {
 				btn.removeAttr('disabled');
-				return app.alertError(err.message);
+				return alerts.error(err);
 			}
 
 			ajaxify.refresh();
 
-			app.alert({
+			alerts.alert({
 				alert_id: 'plugin_toggled',
 				title: '[[admin/extend/plugins:alert.' + (pluginData.installed ? 'installed' : 'uninstalled') + ']]',
 				message: '[[admin/extend/plugins:alert.' + (pluginData.installed ? 'install-success' : 'uninstall-success') + ']]',
@@ -268,7 +304,7 @@ define('admin/extend/plugins', ['jqueryui', 'translator', 'benchpress'], functio
 	};
 
 	Plugins.suggest = function (pluginId, callback) {
-		var nbbVersion = app.config.version.match(/^\d+\.\d+\.\d+/);
+		const nbbVersion = app.config.version.match(/^\d+\.\d+\.\d+/);
 		$.ajax((app.config.registry || 'https://packages.nodebb.org') + '/api/v1/suggest', {
 			type: 'GET',
 			data: {

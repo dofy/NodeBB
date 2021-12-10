@@ -1,11 +1,11 @@
 'use strict';
 
 define('forum/header/chat', ['components'], function (components) {
-	var chat = {};
+	const chat = {};
 
 	chat.prepareDOM = function () {
-		var chatsToggleEl = components.get('chat/dropdown');
-		var chatsListEl = components.get('chat/list');
+		const chatsToggleEl = components.get('chat/dropdown');
+		const chatsListEl = components.get('chat/list');
 
 		chatsToggleEl.on('click', function () {
 			if (chatsToggleEl.parent().hasClass('open')) {
@@ -26,6 +26,12 @@ define('forum/header/chat', ['components'], function (components) {
 
 		socket.removeListener('event:chats.roomRename', onRoomRename);
 		socket.on('event:chats.roomRename', onRoomRename);
+
+		socket.on('event:unread.updateChatCount', function (count) {
+			components.get('chat/icon')
+				.toggleClass('unread-count', count > 0)
+				.attr('data-content', count > 99 ? '99+' : count);
+		});
 	};
 
 	function onChatMessageReceived(data) {

@@ -1,11 +1,10 @@
 'use strict';
 
-
-define('forum/groups/memberlist', ['autocomplete'], function (autocomplete) {
-	var MemberList = {};
-	var searchInterval;
-	var groupName;
-	var templateName;
+define('forum/groups/memberlist', ['api', 'bootbox', 'alerts'], function (api, bootbox, alerts) {
+	const MemberList = {};
+	let searchInterval;
+	let groupName;
+	let templateName;
 
 	MemberList.init = function (_templateName) {
 		templateName = _templateName || 'groups/details';
@@ -18,41 +17,80 @@ define('forum/groups/memberlist', ['autocomplete'], function (autocomplete) {
 
 	function handleMemberAdd() {
 		$('[component="groups/members/add"]').on('click', function () {
-			var modal = bootbox.dialog({
-				title: '[[groups:details.add-member]]',
-				message: '<input class="form-control" type="text" placeholder="[[global:search]]"/>',
-			});
-			autocomplete.user(modal.find('input'), function (ev, ui) {
-				var user = ui.item.user;
-				if (user) {
-					addUserToGroup(user, function () {
-						modal.modal('hide');
+			app.parseAndTranslate('admin/partials/groups/add-members', {}, function (html) {
+				const foundUsers = [];
+				const modal = bootbox.dialog({
+					title: '[[groups:details.add-member]]',
+					message: html,
+					buttons: {
+						ok: {
+							callback: function () {
+								const users = [];
+								modal.find('[data-uid][data-selected]').each(function (index, el) {
+									users.push(foundUsers[$(el).attr('data-uid')]);
+								});
+								addUserToGroup(users, function () {
+									modal.modal('hide');
+								});
+							},
+						},
+					},
+				});
+				modal.on('click', '[data-username]', function () {
+					const isSelected = $(this).attr('data-selected') === '1';
+					if (isSelected) {
+						$(this).removeAttr('data-selected');
+					} else {
+						$(this).attr('data-selected', 1);
+					}
+					$(this).find('i').toggleClass('invisible');
+				});
+				modal.find('input').on('keyup', function () {
+					api.get('/api/users', {
+						query: $(this).val(),
+						paginate: false,
+					}, function (err, result) {
+						if (err) {
+							return alerts.error(err);
+						}
+						result.users.forEach(function (user) {
+							foundUsers[user.uid] = user;
+						});
+						app.parseAndTranslate('admin/partials/groups/add-members', 'users', { users: result.users }, function (html) {
+							modal.find('#search-result').html(html);
+						});
 					});
-				}
+				});
 			});
 		});
 	}
 
-	function addUserToGroup(user, callback) {
-		function done(err) {
-			if (err) {
-				return app.alertError(err);
-			}
-			parseAndTranslate([user], function (html) {
+	function addUserToGroup(users, callback) {
+		function done() {
+			users = users.filter(function (user) {
+				return !$('[component="groups/members"] [data-uid="' + user.uid + '"]').length;
+			});
+			parseAndTranslate(users, function (html) {
 				$('[component="groups/members"] tbody').prepend(html);
 			});
 			callback();
 		}
+		const uids = users.map(function (user) { return user.uid; });
 		if (groupName === 'administrators') {
-			socket.emit('admin.user.makeAdmins', [user.uid], done);
+			socket.emit('admin.user.makeAdmins', uids, function (err) {
+				if (err) {
+					return alerts.error(err);
+				}
+				done();
+			});
 		} else {
-			socket.emit('groups.addMember', { groupName: groupName, uid: user.uid }, done);
+			Promise.all(uids.map(uid => api.put('/groups/' + ajaxify.data.group.slug + '/membership/' + uid))).then(done).catch(alerts.error);
 		}
 	}
 
 	function handleMemberSearch() {
 		$('[component="groups/members/search"]').on('keyup', function () {
-			var query = $(this).val();
+			const query = $(this).val();
 			if (searchInterval) {
 				clearInterval(searchInterval);
 				searchInterval = 0;
@@ -61,7 +99,7 @@ define('forum/groups/memberlist', ['autocomplete'], function (autocomplete) {
 			searchInterval = setTimeout(function () {
 				socket.emit('groups.searchMembers', { groupName: groupName, query: query }, function (err, results) {
 					if (err) {
-						return app.alertError(err.message);
+						return alerts.error(err);
 					}
 					parseAndTranslate(results.users, function (html) {
 						$('[component="groups/members"] tbody').html(html);
@@ -74,8 +112,8 @@ define('forum/groups/memberlist', ['autocomplete'], function (autocomplete) {
 
 	function handleMemberInfiniteScroll() {
 		$('[component="groups/members"] tbody').on('scroll', function () {
-			var $this = $(this);
-			var bottom = ($this[0].scrollHeight - $this.innerHeight()) * 0.9;
+			const $this = $(this);
+			const bottom = ($this[0].scrollHeight - $this.innerHeight()) * 0.9;
 
 			if ($this.scrollTop() > bottom && !$('[component="groups/members/search"]').val()) {
 				loadMoreMembers();
@@ -84,7 +122,7 @@ define('forum/groups/memberlist', ['autocomplete'], function (autocomplete) {
 	}
 
 	function loadMoreMembers() {
-		var members = $('[component="groups/members"]');
+		const members = $('[component="groups/members"]');
 		if (members.attr('loading')) {
 			return;
 		}
@@ -95,7 +133,7 @@ define('forum/groups/memberlist', ['autocomplete'], function (autocomplete) {
 			after: members.attr('data-nextstart'),
 		}, function (err, data) {
 			if (err) {
-				return app.alertError(err.message);
+				return alerts.error(err);
 			}
 
 			if (data && data.users.length) {

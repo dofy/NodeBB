@@ -1,22 +1,21 @@
 'use strict';
 
-var async = require('async');
-var rss = require('rss');
-var nconf = require('nconf');
-var validator = require('validator');
+const rss = require('rss');
+const nconf = require('nconf');
+const validator = require('validator');
 
-var posts = require('../posts');
-var topics = require('../topics');
-var user = require('../user');
-var categories = require('../categories');
-var meta = require('../meta');
-var helpers = require('../controllers/helpers');
-var privileges = require('../privileges');
-var db = require('../database');
-var utils = require('../utils');
-var controllers404 = require('../controllers/404.js');
+const posts = require('../posts');
+const topics = require('../topics');
+const user = require('../user');
+const categories = require('../categories');
+const meta = require('../meta');
+const helpers = require('../controllers/helpers');
+const privileges = require('../privileges');
+const db = require('../database');
+const utils = require('../utils');
+const controllers404 = require('../controllers/404');
 
-var terms = {
+const terms = {
 	daily: 'day',
 	weekly: 'week',
 	monthly: 'month',
@@ -38,419 +37,313 @@ module.exports = function (app, middleware) {
 	app.get('/tags/:tag.rss', middleware.maintenanceMode, generateForTag);
 };
 
-function validateTokenIfRequiresLogin(requiresLogin, cid, req, res, callback) {
-	var uid = parseInt(req.query.uid, 10) || 0;
-	var token = req.query.token;
+async function validateTokenIfRequiresLogin(requiresLogin, cid, req, res) {
+	const uid = parseInt(req.query.uid, 10) || 0;
+	const { token } = req.query;
 
 	if (!requiresLogin) {
-		return callback();
+		return true;
 	}
 
 	if (uid <= 0 || !token) {
 		return helpers.notAllowed(req, res);
 	}
-
-	async.waterfall([
-		function (next) {
-			db.getObjectField('user:' + uid, 'rss_token', next);
-		},
-		function (_token, next) {
-			if (token === _token) {
-				async.waterfall([
-					function (next) {
-						privileges.categories.get(cid, uid, next);
-					},
-					function (privileges, next) {
-						if (!privileges.read) {
-							return helpers.notAllowed(req, res);
-						}
-						next();
-					},
-				], callback);
-				return;
-			}
-			user.auth.logAttempt(uid, req.ip, next);
-		},
-		function () {
-			helpers.notAllowed(req, res);
-		},
-	], callback);
+	const userToken = await db.getObjectField(`user:${uid}`, 'rss_token');
+	if (userToken !== token) {
+		await user.auth.logAttempt(uid, req.ip);
+		return helpers.notAllowed(req, res);
+	}
+	const userPrivileges = await privileges.categories.get(cid, uid);
+	if (!userPrivileges.read) {
+		return helpers.notAllowed(req, res);
+	}
+	return true;
 }
 
-function generateForTopic(req, res, callback) {
+async function generateForTopic(req, res, next) {
 	if (meta.config['feeds:disableRSS']) {
-		return controllers404.send404(req, res);
+		return next();
 	}
 
-	var tid = req.params.topic_id;
-	var userPrivileges;
-	var topic;
-	async.waterfall([
-		function (next) {
-			async.parallel({
-				privileges: function (next) {
-					privileges.topics.get(tid, req.uid, next);
-				},
-				topic: function (next) {
-					topics.getTopicData(tid, next);
-				},
-			}, next);
-		},
-		function (results, next) {
-			if (!results.topic || (results.topic.deleted && !results.privileges.view_deleted)) {
-				return controllers404.send404(req, res);
+	const tid = req.params.topic_id;
+
+	const [userPrivileges, topic] = await Promise.all([
+		privileges.topics.get(tid, req.uid),
+		topics.getTopicData(tid),
+	]);
+
+	if (!privileges.topics.canViewDeletedScheduled(topic, userPrivileges)) {
+		return next();
+	}
+
+	if (await validateTokenIfRequiresLogin(!userPrivileges['topics:read'], topic.cid, req, res)) {
+		const topicData = await topics.getTopicWithPosts(topic, `tid:${tid}:posts`, req.uid || req.query.uid || 0, 0, 24, true);
+
+		topics.modifyPostsByPrivilege(topicData, userPrivileges);
+
+		const feed = new rss({
+			title: utils.stripHTMLTags(topicData.title, utils.tags),
+			description: topicData.posts.length ? topicData.posts[0].content : '',
+			feed_url: `${nconf.get('url')}/topic/${tid}.rss`,
+			site_url: `${nconf.get('url')}/topic/${topicData.slug}`,
+			image_url: topicData.posts.length ? topicData.posts[0].picture : '',
+			author: topicData.posts.length ? topicData.posts[0].username : '',
+			ttl: 60,
+		});
+
+		if (topicData.posts.length > 0) {
+			feed.pubDate = new Date(parseInt(topicData.posts[0].timestamp, 10)).toUTCString();
+		}
+		const replies = topicData.posts.slice(1);
+		replies.forEach((postData) => {
+			if (!postData.deleted) {
+				const dateStamp = new Date(
+					parseInt(parseInt(postData.edited, 10) === 0 ? postData.timestamp : postData.edited, 10)
+				).toUTCString();
+
+				feed.item({
+					title: `Reply to ${utils.stripHTMLTags(topicData.title, utils.tags)} on ${dateStamp}`,
+					description: postData.content,
+					url: `${nconf.get('url')}/post/${postData.pid}`,
+					author: postData.user ? postData.user.username : '',
+					date: dateStamp,
+				});
 			}
-			userPrivileges = results.privileges;
-			topic = results.topic;
-			validateTokenIfRequiresLogin(!results.privileges['topics:read'], results.topic.cid, req, res, next);
-		},
-		function (next) {
-			topics.getTopicWithPosts(topic, 'tid:' + tid + ':posts', req.uid || req.query.uid || 0, 0, 25, false, next);
-		},
-		function (topicData) {
-			topics.modifyPostsByPrivilege(topicData, userPrivileges);
+		});
 
-			var description = topicData.posts.length ? topicData.posts[0].content : '';
-			var image_url = topicData.posts.length ? topicData.posts[0].picture : '';
-			var author = topicData.posts.length ? topicData.posts[0].username : '';
-
-			var feed = new rss({
-				title: utils.stripHTMLTags(topicData.title, utils.tags),
-				description: description,
-				feed_url: nconf.get('url') + '/topic/' + tid + '.rss',
-				site_url: nconf.get('url') + '/topic/' + topicData.slug,
-				image_url: image_url,
-				author: author,
-				ttl: 60,
-			});
-			var dateStamp;
-
-			if (topicData.posts.length > 0) {
-				feed.pubDate = new Date(parseInt(topicData.posts[0].timestamp, 10)).toUTCString();
-			}
-
-			topicData.posts.forEach(function (postData) {
-				if (!postData.deleted) {
-					dateStamp = new Date(parseInt(parseInt(postData.edited, 10) === 0 ? postData.timestamp : postData.edited, 10)).toUTCString();
-
-					feed.item({
-						title: 'Reply to ' + utils.stripHTMLTags(topicData.title, utils.tags) + ' on ' + dateStamp,
-						description: postData.content,
-						url: nconf.get('url') + '/post/' + postData.pid,
-						author: postData.user ? postData.user.username : '',
-						date: dateStamp,
-					});
-				}
-			});
-
-			sendFeed(feed, res);
-		},
-	], callback);
+		sendFeed(feed, res);
+	}
 }
 
-function generateForCategory(req, res, callback) {
+async function generateForCategory(req, res, next) {
+	const cid = req.params.category_id;
+	if (meta.config['feeds:disableRSS'] || !parseInt(cid, 10)) {
+		return next();
+	}
+	const uid = req.uid || req.query.uid || 0;
+	const [userPrivileges, category, tids] = await Promise.all([
+		privileges.categories.get(cid, req.uid),
+		categories.getCategoryData(cid),
+		db.getSortedSetRevIntersect({
+			sets: ['topics:tid', `cid:${cid}:tids:lastposttime`],
+			start: 0,
+			stop: 25,
+			weights: [1, 0],
+		}),
+	]);
+
+	if (!category || !category.name) {
+		return next();
+	}
+
+	if (await validateTokenIfRequiresLogin(!userPrivileges.read, cid, req, res)) {
+		let topicsData = await topics.getTopicsByTids(tids, uid);
+		topicsData = await user.blocks.filter(uid, topicsData);
+		const feed = await generateTopicsFeed({
+			uid: uid,
+			title: category.name,
+			description: category.description,
+			feed_url: `/category/${cid}.rss`,
+			site_url: `/category/${category.cid}`,
+		}, topicsData, 'timestamp');
+
+		sendFeed(feed, res);
+	}
+}
+
+async function generateForTopics(req, res, next) {
 	if (meta.config['feeds:disableRSS']) {
-		return controllers404.send404(req, res);
+		return next();
 	}
-	var cid = req.params.category_id;
-	var category;
-	if (!parseInt(cid, 10)) {
-		return setImmediate(callback);
+	let token = null;
+	if (req.query.token && req.query.uid) {
+		token = await db.getObjectField(`user:${req.query.uid}`, 'rss_token');
 	}
-	async.waterfall([
-		function (next) {
-			async.parallel({
-				privileges: function (next) {
-					privileges.categories.get(cid, req.uid, next);
-				},
-				category: function (next) {
-					categories.getCategoryById({
-						cid: cid,
-						set: 'cid:' + cid + ':tids',
-						reverse: true,
-						start: 0,
-						stop: 25,
-						uid: req.uid || req.query.uid || 0,
-					}, next);
-				},
-			}, next);
-		},
-		function (results, next) {
-			category = results.category;
-			if (!category) {
-				return callback();
-			}
-			validateTokenIfRequiresLogin(!results.privileges.read, cid, req, res, next);
-		},
-		function (next) {
-			generateTopicsFeed({
-				uid: req.uid || req.query.uid || 0,
-				title: category.name,
-				description: category.description,
-				feed_url: '/category/' + cid + '.rss',
-				site_url: '/category/' + category.cid,
-			}, category.topics, next);
-		},
-		function (feed) {
-			sendFeed(feed, res);
-		},
-	], callback);
+
+	await sendTopicsFeed({
+		uid: token && token === req.query.token ? req.query.uid : req.uid,
+		title: 'Most recently created topics',
+		description: 'A list of topics that have been created recently',
+		feed_url: '/topics.rss',
+		useMainPost: true,
+	}, 'topics:tid', res);
 }
 
-function generateForTopics(req, res, next) {
+async function generateForRecent(req, res, next) {
+	await generateSorted({
+		title: 'Recently Active Topics',
+		description: 'A list of topics that have been active within the past 24 hours',
+		feed_url: '/recent.rss',
+		site_url: '/recent',
+		sort: 'recent',
+		timestampField: 'lastposttime',
+		term: 'alltime',
+	}, req, res, next);
+}
+
+async function generateForTop(req, res, next) {
+	await generateSorted({
+		title: 'Top Voted Topics',
+		description: 'A list of topics that have received the most votes',
+		feed_url: `/top/${req.params.term || 'daily'}.rss`,
+		site_url: `/top/${req.params.term || 'daily'}`,
+		sort: 'votes',
+		timestampField: 'timestamp',
+		term: 'day',
+	}, req, res, next);
+}
+
+async function generateForPopular(req, res, next) {
+	await generateSorted({
+		title: 'Popular Topics',
+		description: 'A list of topics that are sorted by post count',
+		feed_url: `/popular/${req.params.term || 'daily'}.rss`,
+		site_url: `/popular/${req.params.term || 'daily'}`,
+		sort: 'posts',
+		timestampField: 'timestamp',
+		term: 'day',
+	}, req, res, next);
+}
+
+async function generateSorted(options, req, res, next) {
 	if (meta.config['feeds:disableRSS']) {
-		return controllers404.send404(req, res);
+		return next();
 	}
 
-	async.waterfall([
-		function (next) {
-			if (req.query.token && req.query.uid) {
-				db.getObjectField('user:' + req.query.uid, 'rss_token', next);
-			} else {
-				next(null, null);
-			}
-		},
-		function (token, next) {
-			sendTopicsFeed({
-				uid: token && token === req.query.token ? req.query.uid : req.uid,
-				title: 'Most recently created topics',
-				description: 'A list of topics that have been created recently',
-				feed_url: '/topics.rss',
-				useMainPost: true,
-			}, 'topics:tid', req, res, next);
-		},
-	], next);
-}
+	const term = terms[req.params.term] || options.term;
 
-function generateForRecent(req, res, next) {
-	if (meta.config['feeds:disableRSS']) {
-		return controllers404.send404(req, res);
+	let token = null;
+	if (req.query.token && req.query.uid) {
+		token = await db.getObjectField(`user:${req.query.uid}`, 'rss_token');
 	}
 
-	async.waterfall([
-		function (next) {
-			if (req.query.token && req.query.uid) {
-				db.getObjectField('user:' + req.query.uid, 'rss_token', next);
-			} else {
-				next(null, null);
-			}
-		},
-		function (token, next) {
-			sendTopicsFeed({
-				uid: token && token === req.query.token ? req.query.uid : req.uid,
-				title: 'Recently Active Topics',
-				description: 'A list of topics that have been active within the past 24 hours',
-				feed_url: '/recent.rss',
-				site_url: '/recent',
-			}, 'topics:recent', req, res, next);
-		},
-	], next);
-}
+	const uid = token && token === req.query.token ? req.query.uid : req.uid;
 
-function generateForTop(req, res, next) {
-	if (meta.config['feeds:disableRSS']) {
-		return controllers404.send404(req, res);
-	}
-	var term = terms[req.params.term] || 'day';
-	var uid;
-	async.waterfall([
-		function (next) {
-			if (req.query.token && req.query.uid) {
-				db.getObjectField('user:' + req.query.uid, 'rss_token', next);
-			} else {
-				next(null, null);
-			}
-		},
-		function (token, next) {
-			uid = token && token === req.query.token ? req.query.uid : req.uid;
+	const params = {
+		uid: uid,
+		start: 0,
+		stop: 19,
+		term: term,
+		sort: options.sort,
+	};
 
-			topics.getSortedTopics({
-				uid: uid,
-				start: 0,
-				stop: 19,
-				term: term,
-				sort: 'votes',
-			}, next);
-		},
-		function (result, next) {
-			generateTopicsFeed({
-				uid: uid,
-				title: 'Top Voted Topics',
-				description: 'A list of topics that have received the most votes',
-				feed_url: '/top/' + (req.params.term || 'daily') + '.rss',
-				site_url: '/top/' + (req.params.term || 'daily'),
-			}, result.topics, next);
-		},
-		function (feed) {
-			sendFeed(feed, res);
-		},
-	], next);
-}
-
-function generateForPopular(req, res, next) {
-	if (meta.config['feeds:disableRSS']) {
-		return controllers404.send404(req, res);
+	const { cid } = req.query;
+	if (cid) {
+		if (!await privileges.categories.can('topics:read', cid, uid)) {
+			return helpers.notAllowed(req, res);
+		}
+		params.cids = [cid];
 	}
 
-	var term = terms[req.params.term] || 'day';
-	var uid;
-	async.waterfall([
-		function (next) {
-			if (req.query.token && req.query.uid) {
-				db.getObjectField('user:' + req.query.uid, 'rss_token', next);
-			} else {
-				next(null, null);
-			}
-		},
-		function (token, next) {
-			uid = token && token === req.query.token ? req.query.uid : req.uid;
+	const result = await topics.getSortedTopics(params);
+	const feed = await generateTopicsFeed({
+		uid: uid,
+		title: options.title,
+		description: options.description,
+		feed_url: options.feed_url,
+		site_url: options.site_url,
+	}, result.topics, options.timestampField);
 
-			topics.getSortedTopics({
-				uid: uid,
-				start: 0,
-				stop: 19,
-				term: term,
-				sort: 'posts',
-			}, next);
-		},
-		function (result, next) {
-			generateTopicsFeed({
-				uid: uid,
-				title: 'Popular Topics',
-				description: 'A list of topics that are sorted by post count',
-				feed_url: '/popular/' + (req.params.term || 'daily') + '.rss',
-				site_url: '/popular/' + (req.params.term || 'daily'),
-			}, result.topics, next);
-		},
-		function (feed) {
-			sendFeed(feed, res);
-		},
-	], next);
+	sendFeed(feed, res);
 }
 
-function sendTopicsFeed(options, set, req, res, next) {
-	var start = options.hasOwnProperty('start') ? options.start : 0;
-	var stop = options.hasOwnProperty('stop') ? options.stop : 19;
-	async.waterfall([
-		function (next) {
-			topics.getTopicsFromSet(set, options.uid, start, stop, next);
-		},
-		function (data, next) {
-			generateTopicsFeed(options, data.topics, next);
-		},
-		function (feed) {
-			sendFeed(feed, res);
-		},
-	], next);
+async function sendTopicsFeed(options, set, res, timestampField) {
+	const start = options.hasOwnProperty('start') ? options.start : 0;
+	const stop = options.hasOwnProperty('stop') ? options.stop : 19;
+	const topicData = await topics.getTopicsFromSet(set, options.uid, start, stop);
+	const feed = await generateTopicsFeed(options, topicData.topics, timestampField);
+	sendFeed(feed, res);
 }
 
-function generateTopicsFeed(feedOptions, feedTopics, callback) {
+async function generateTopicsFeed(feedOptions, feedTopics, timestampField) {
 	feedOptions.ttl = 60;
 	feedOptions.feed_url = nconf.get('url') + feedOptions.feed_url;
 	feedOptions.site_url = nconf.get('url') + feedOptions.site_url;
 
 	feedTopics = feedTopics.filter(Boolean);
 
-	var feed = new rss(feedOptions);
+	const feed = new rss(feedOptions);
 
 	if (feedTopics.length > 0) {
-		feed.pubDate = new Date(feedTopics[0].lastposttime).toUTCString();
+		feed.pubDate = new Date(feedTopics[0][timestampField]).toUTCString();
 	}
 
-	async.eachSeries(feedTopics, function (topicData, next) {
-		var feedItem = {
+	async function addFeedItem(topicData) {
+		const feedItem = {
 			title: utils.stripHTMLTags(topicData.title, utils.tags),
-			url: nconf.get('url') + '/topic/' + topicData.slug,
-			date: new Date(topicData.lastposttime).toUTCString(),
+			url: `${nconf.get('url')}/topic/${topicData.slug}`,
+			date: new Date(topicData[timestampField]).toUTCString(),
 		};
+
+		if (topicData.deleted) {
+			return;
+		}
 
 		if (topicData.teaser && topicData.teaser.user && !feedOptions.useMainPost) {
 			feedItem.description = topicData.teaser.content;
 			feedItem.author = topicData.teaser.user.username;
 			feed.item(feedItem);
-			return next();
+			return;
 		}
 
-		topics.getMainPost(topicData.tid, feedOptions.uid, function (err, mainPost) {
-			if (err) {
-				return next(err);
-			}
-			if (!mainPost) {
-				feed.item(feedItem);
-				return next();
-			}
-			feedItem.description = mainPost.content;
-			feedItem.author = mainPost.user.username;
+		const mainPost = await topics.getMainPost(topicData.tid, feedOptions.uid);
+		if (!mainPost) {
 			feed.item(feedItem);
-			next();
-		});
-	}, function (err) {
-		callback(err, feed);
-	});
-}
-
-function generateForRecentPosts(req, res, next) {
-	if (meta.config['feeds:disableRSS']) {
-		return controllers404.send404(req, res);
+			return;
+		}
+		feedItem.description = mainPost.content;
+		feedItem.author = mainPost.user && mainPost.user.username;
+		feed.item(feedItem);
 	}
 
-	async.waterfall([
-		function (next) {
-			posts.getRecentPosts(req.uid, 0, 19, 'month', next);
-		},
-		function (posts) {
-			var feed = generateForPostsFeed({
-				title: 'Recent Posts',
-				description: 'A list of recent posts',
-				feed_url: '/recentposts.rss',
-				site_url: '/recentposts',
-			}, posts);
-
-			sendFeed(feed, res);
-		},
-	], next);
+	for (const topicData of feedTopics) {
+		/* eslint-disable no-await-in-loop */
+		await addFeedItem(topicData);
+	}
+	return feed;
 }
 
-function generateForCategoryRecentPosts(req, res, callback) {
+async function generateForRecentPosts(req, res, next) {
 	if (meta.config['feeds:disableRSS']) {
-		return controllers404.send404(req, res);
+		return next();
 	}
-	var cid = req.params.category_id;
-	var category;
-	var posts;
-	async.waterfall([
-		function (next) {
-			async.parallel({
-				privileges: function (next) {
-					privileges.categories.get(cid, req.uid, next);
-				},
-				category: function (next) {
-					categories.getCategoryData(cid, next);
-				},
-				posts: function (next) {
-					categories.getRecentReplies(cid, req.uid || req.query.uid || 0, 20, next);
-				},
-			}, next);
-		},
-		function (results, next) {
-			if (!results.category) {
-				return controllers404.send404(req, res);
-			}
-			category = results.category;
-			posts = results.posts;
-			validateTokenIfRequiresLogin(!results.privileges.read, cid, req, res, next);
-		},
-		function () {
-			var feed = generateForPostsFeed({
-				title: category.name + ' Recent Posts',
-				description: 'A list of recent posts from ' + category.name,
-				feed_url: '/category/' + cid + '/recentposts.rss',
-				site_url: '/category/' + cid + '/recentposts',
-			}, posts);
+	const postData = await posts.getRecentPosts(req.uid, 0, 19, 'month');
+	const feed = generateForPostsFeed({
+		title: 'Recent Posts',
+		description: 'A list of recent posts',
+		feed_url: '/recentposts.rss',
+		site_url: '/recentposts',
+	}, postData);
 
-			sendFeed(feed, res);
-		},
-	], callback);
+	sendFeed(feed, res);
+}
+
+async function generateForCategoryRecentPosts(req, res) {
+	if (meta.config['feeds:disableRSS']) {
+		return controllers404.handle404(req, res);
+	}
+	const cid = req.params.category_id;
+
+	const [userPrivileges, category, postData] = await Promise.all([
+		privileges.categories.get(cid, req.uid),
+		categories.getCategoryData(cid),
+		categories.getRecentReplies(cid, req.uid || req.query.uid || 0, 20),
+	]);
+
+	if (!category) {
+		return controllers404.handle404(req, res);
+	}
+
+	if (await validateTokenIfRequiresLogin(!userPrivileges.read, cid, req, res)) {
+		const feed = generateForPostsFeed({
+			title: `${category.name} Recent Posts`,
+			description: `A list of recent posts from ${category.name}`,
+			feed_url: `/category/${cid}/recentposts.rss`,
+			site_url: `/category/${cid}/recentposts`,
+		}, postData);
+
+		sendFeed(feed, res);
+	}
 }
 
 function generateForPostsFeed(feedOptions, posts) {
@@ -458,17 +351,17 @@ function generateForPostsFeed(feedOptions, posts) {
 	feedOptions.feed_url = nconf.get('url') + feedOptions.feed_url;
 	feedOptions.site_url = nconf.get('url') + feedOptions.site_url;
 
-	var feed = new rss(feedOptions);
+	const feed = new rss(feedOptions);
 
 	if (posts.length > 0) {
 		feed.pubDate = new Date(parseInt(posts[0].timestamp, 10)).toUTCString();
 	}
 
-	posts.forEach(function (postData) {
+	posts.forEach((postData) => {
 		feed.item({
 			title: postData.topic ? postData.topic.title : '',
 			description: postData.content,
-			url: nconf.get('url') + '/post/' + postData.pid,
+			url: `${nconf.get('url')}/post/${postData.pid}`,
 			author: postData.user ? postData.user.username : '',
 			date: new Date(parseInt(postData.timestamp, 10)).toUTCString(),
 		});
@@ -477,56 +370,47 @@ function generateForPostsFeed(feedOptions, posts) {
 	return feed;
 }
 
-function generateForUserTopics(req, res, callback) {
+async function generateForUserTopics(req, res, next) {
 	if (meta.config['feeds:disableRSS']) {
-		return controllers404.send404(req, res);
+		return next();
 	}
 
-	var userslug = req.params.userslug;
-
-	async.waterfall([
-		function (next) {
-			user.getUidByUserslug(userslug, next);
-		},
-		function (uid, next) {
-			if (!uid) {
-				return callback();
-			}
-			user.getUserFields(uid, ['uid', 'username'], next);
-		},
-		function (userData, next) {
-			sendTopicsFeed({
-				uid: req.uid,
-				title: 'Topics by ' + userData.username,
-				description: 'A list of topics that are posted by ' + userData.username,
-				feed_url: '/user/' + userslug + '/topics.rss',
-				site_url: '/user/' + userslug + '/topics',
-			}, 'uid:' + userData.uid + ':topics', req, res, next);
-		},
-	], callback);
+	const { userslug } = req.params;
+	const uid = await user.getUidByUserslug(userslug);
+	if (!uid) {
+		return next();
+	}
+	const userData = await user.getUserFields(uid, ['uid', 'username']);
+	await sendTopicsFeed({
+		uid: req.uid,
+		title: `Topics by ${userData.username}`,
+		description: `A list of topics that are posted by ${userData.username}`,
+		feed_url: `/user/${userslug}/topics.rss`,
+		site_url: `/user/${userslug}/topics`,
+	}, `uid:${userData.uid}:topics`, res);
 }
 
-function generateForTag(req, res, next) {
+async function generateForTag(req, res) {
 	if (meta.config['feeds:disableRSS']) {
-		return controllers404.send404(req, res);
+		return controllers404.handle404(req, res);
 	}
-	var tag = validator.escape(String(req.params.tag));
-	var page = parseInt(req.query.page, 10) || 1;
-	var topicsPerPage = meta.config.topicsPerPage || 20;
-	var start = Math.max(0, (page - 1) * topicsPerPage);
-	var stop = start + topicsPerPage - 1;
-	sendTopicsFeed({
+	const tag = validator.escape(String(req.params.tag));
+	const page = parseInt(req.query.page, 10) || 1;
+	const topicsPerPage = meta.config.topicsPerPage || 20;
+	const start = Math.max(0, (page - 1) * topicsPerPage);
+	const stop = start + topicsPerPage - 1;
+	await sendTopicsFeed({
 		uid: req.uid,
-		title: 'Topics tagged with ' + tag,
-		description: 'A list of topics that have been tagged with ' + tag,
-		feed_url: '/tags/' + tag + '.rss',
-		site_url: '/tags/' + tag,
+		title: `Topics tagged with ${tag}`,
+		description: `A list of topics that have been tagged with ${tag}`,
+		feed_url: `/tags/${tag}.rss`,
+		site_url: `/tags/${tag}`,
 		start: start,
 		stop: stop,
-	}, 'tag:' + tag + ':topics', req, res, next);
+	}, `tag:${tag}:topics`, res);
 }
 
 function sendFeed(feed, res) {
-	var xml = feed.xml();
+	const xml = feed.xml();
 	res.type('xml').set('Content-Length', Buffer.byteLength(xml)).send(xml);
 }

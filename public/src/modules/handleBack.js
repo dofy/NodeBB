@@ -6,8 +6,8 @@ define('handleBack', [
 	'navigator',
 	'forum/pagination',
 ], function (components, storage, navigator, pagination) {
-	var handleBack = {};
-	var loadTopicsMethod;
+	const handleBack = {};
+	let loadTopicsMethod;
 
 	handleBack.init = function (_loadTopicsMethod) {
 		loadTopicsMethod = _loadTopicsMethod;
@@ -15,23 +15,33 @@ define('handleBack', [
 		$(window).off('action:popstate', onBackClicked).on('action:popstate', onBackClicked);
 	};
 
+	handleBack.onBackClicked = onBackClicked;
+
 	function saveClickedIndex() {
 		$('[component="category"]').on('click', '[component="topic/header"]', function () {
-			var clickedIndex = $(this).parents('[data-index]').attr('data-index');
+			const clickedIndex = $(this).parents('[data-index]').attr('data-index');
+			const windowScrollTop = $(window).scrollTop();
 			$('[component="category/topic"]').each(function (index, el) {
-				if ($(el).offset().top - $(window).scrollTop() > 0) {
+				if ($(el).offset().top - windowScrollTop > 0) {
 					storage.setItem('category:bookmark', $(el).attr('data-index'));
 					storage.setItem('category:bookmark:clicked', clickedIndex);
+					storage.setItem('category:bookmark:offset', $(el).offset().top - windowScrollTop);
 					return false;
 				}
 			});
 		});
 	}
 
-	function onBackClicked() {
-		if ((ajaxify.data.template.category || ajaxify.data.template.recent)) {
-			var bookmarkIndex = storage.getItem('category:bookmark');
-			var clickedIndex = storage.getItem('category:bookmark:clicked');
+	function onBackClicked(isMarkedUnread) {
+		const highlightUnread = isMarkedUnread && ajaxify.data.template.unread;
+		if (
+			ajaxify.data.template.category ||
+			ajaxify.data.template.recent ||
+			ajaxify.data.template.popular ||
+			highlightUnread
+		) {
+			let bookmarkIndex = storage.getItem('category:bookmark');
+			let clickedIndex = storage.getItem('category:bookmark:clicked');
 
 			storage.removeItem('category:bookmark');
 			storage.removeItem('category:bookmark:clicked');
@@ -42,12 +52,8 @@ define('handleBack', [
 			bookmarkIndex = Math.max(0, parseInt(bookmarkIndex, 10) || 0);
 			clickedIndex = Math.max(0, parseInt(clickedIndex, 10) || 0);
 
-			if (!bookmarkIndex && !clickedIndex) {
-				return;
-			}
-
 			if (config.usePagination) {
-				var page = Math.ceil((parseInt(bookmarkIndex, 10) + 1) / config.topicsPerPage);
+				const page = Math.ceil((parseInt(bookmarkIndex, 10) + 1) / config.topicsPerPage);
 				if (parseInt(page, 10) !== ajaxify.data.pagination.currentPage) {
 					pagination.loadPage(page, function () {
 						handleBack.scrollToTopic(bookmarkIndex, clickedIndex);
@@ -57,7 +63,7 @@ define('handleBack', [
 				}
 			} else {
 				if (bookmarkIndex === 0) {
-					handleBack.highlightTopic(clickedIndex);
+					handleBack.scrollToTopic(bookmarkIndex, clickedIndex);
 					return;
 				}
 
@@ -70,7 +76,7 @@ define('handleBack', [
 	}
 
 	handleBack.highlightTopic = function (topicIndex) {
-		var highlight = components.get('category/topic', 'index', topicIndex);
+		const highlight = components.get('category/topic', 'index', topicIndex);
 
 		if (highlight.length && !highlight.hasClass('highlight')) {
 			highlight.addClass('highlight');
@@ -85,10 +91,12 @@ define('handleBack', [
 			return;
 		}
 
-		var scrollTo = components.get('category/topic', 'index', bookmarkIndex);
+		const scrollTo = components.get('category/topic', 'index', bookmarkIndex);
 
 		if (scrollTo.length) {
-			$(window).scrollTop(scrollTo.offset().top);
+			const offset = storage.getItem('category:bookmark:offset');
+			storage.removeItem('category:bookmark:offset');
+			$(window).scrollTop(scrollTo.offset().top - offset);
 			handleBack.highlightTopic(clickedIndex);
 			navigator.update();
 		}

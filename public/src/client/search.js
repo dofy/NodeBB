@@ -1,19 +1,25 @@
 'use strict';
 
 
-define('forum/search', ['search', 'autocomplete', 'storage'], function (searchModule, autocomplete, storage) {
-	var	Search = {};
+define('forum/search', [
+	'search',
+	'autocomplete',
+	'storage',
+	'hooks',
+	'alerts',
+], function (searchModule, autocomplete, storage, hooks, alerts) {
+	const Search = {};
 
 	Search.init = function () {
-		var searchQuery = $('#results').attr('data-search-query');
+		const searchQuery = $('#results').attr('data-search-query');
 
-		var searchIn = $('#search-in');
+		const searchIn = $('#search-in');
 
 		searchIn.on('change', function () {
 			updateFormItemVisiblity(searchIn.val());
 		});
 
-		highlightMatches(searchQuery);
+		searchModule.highlightMatches(searchQuery, $('.search-result-text p, .search-result-text.search-result-title a'));
 
 		$('#advanced-search').off('submit').on('submit', function (e) {
 			e.preventDefault();
@@ -31,8 +37,8 @@ define('forum/search', ['search', 'autocomplete', 'storage'], function (searchMo
 	};
 
 	function getSearchDataFromDOM() {
-		var form = $('#advanced-search');
-		var searchData = {
+		const form = $('#advanced-search');
+		const searchData = {
 			in: $('#search-in').val(),
 		};
 		searchData.term = $('#search-input').val();
@@ -51,7 +57,7 @@ define('forum/search', ['search', 'autocomplete', 'storage'], function (searchMo
 			searchData.showAs = form.find('#show-as-topics').is(':checked') ? 'topics' : 'posts';
 		}
 
-		$(window).trigger('action:search.getSearchDataFromDOM', {
+		hooks.fire('action:search.getSearchDataFromDOM', {
 			form: form,
 			data: searchData,
 		});
@@ -60,21 +66,23 @@ define('forum/search', ['search', 'autocomplete', 'storage'], function (searchMo
 	}
 
 	function updateFormItemVisiblity(searchIn) {
-		var hide = searchIn.indexOf('posts') === -1 && searchIn.indexOf('titles') === -1;
+		const hide = searchIn.indexOf('posts') === -1 && searchIn.indexOf('titles') === -1;
 		$('.post-search-item').toggleClass('hide', hide);
 	}
 
 	function fillOutForm() {
-		var params = utils.params();
+		const params = utils.params({
+			disableToType: true,
+		});
 
-		var searchData = searchModule.getSearchPreferences();
-		var formData = utils.merge(searchData, params);
+		const searchData = searchModule.getSearchPreferences();
+		const formData = utils.merge(searchData, params);
 
 		if (formData) {
 			if (ajaxify.data.term) {
 				$('#search-input').val(ajaxify.data.term);
 			}
-			formData.in = formData.in || 'posts';
+			formData.in = formData.in || ajaxify.data.searchDefaultIn;
 			$('#search-in').val(formData.in);
 			updateFormItemVisiblity(formData.in);
 
@@ -120,81 +128,53 @@ define('forum/search', ['search', 'autocomplete', 'storage'], function (searchMo
 			$('#post-sort-direction').val(formData.sortDirection || 'desc');
 
 			if (formData.showAs) {
-				var isTopic = formData.showAs === 'topics';
-				var isPost = formData.showAs === 'posts';
+				const isTopic = formData.showAs === 'topics';
+				const isPost = formData.showAs === 'posts';
 				$('#show-as-topics').prop('checked', isTopic).parent().toggleClass('active', isTopic);
 				$('#show-as-posts').prop('checked', isPost).parent().toggleClass('active', isPost);
 			}
 
-			$(window).trigger('action:search.fillOutForm', {
+			hooks.fire('action:search.fillOutForm', {
 				form: formData,
 			});
 		}
 	}
 
-	function highlightMatches(searchQuery) {
-		if (!searchQuery) {
-			return;
-		}
-		searchQuery = utils.escapeHTML(searchQuery.replace(/^"/, '').replace(/"$/, '').trim());
-		var regexStr = searchQuery.split(' ').join('|');
-		var regex = new RegExp('(' + utils.escapeRegexChars(regexStr) + ')', 'gi');
-
-		$('.search-result-text p, .search-result-text h4').each(function () {
-			var result = $(this);
-			var nested = [];
-
-			result.find('*').each(function () {
-				$(this).after('<!-- ' + nested.length + ' -->');
-				nested.push($('<div />').append($(this)));
-			});
-
-			result.html(result.html().replace(regex, function (match, p1) {
-				return '<strong class="search-match">' + p1 + '</strong>';
-			}));
-
-			nested.forEach(function (nestedEl, i) {
-				result.html(result.html().replace('<!-- ' + i + ' -->', function () {
-					return nestedEl.html();
-				}));
-			});
-		});
-
-		$('.search-result-text').find('img:not(.not-responsive)').addClass('img-responsive');
-	}
-
 	function handleSavePreferences() {
 		$('#save-preferences').on('click', function () {
 			storage.setItem('search-preferences', JSON.stringify(getSearchDataFromDOM()));
-			app.alertSuccess('[[search:search-preferences-saved]]');
+			alerts.success('[[search:search-preferences-saved]]');
 			return false;
 		});
 
 		$('#clear-preferences').on('click', function () {
 			storage.removeItem('search-preferences');
-			var query = $('#search-input').val();
+			const query = $('#search-input').val();
 			$('#advanced-search')[0].reset();
 			$('#search-input').val(query);
-			app.alertSuccess('[[search:search-preferences-cleared]]');
+			alerts.success('[[search:search-preferences-cleared]]');
 			return false;
 		});
 	}
 
 	function enableAutoComplete() {
-		var userEl = $('#posted-by-user');
+		const userEl = $('#posted-by-user');
 		userEl.tagsinput({
 			confirmKeys: [13, 44],
 			trimValue: true,
 		});
-		autocomplete.user(userEl.siblings('.bootstrap-tagsinput').find('input'));
+		if (app.user.privileges['search:users']) {
+			autocomplete.user(userEl.siblings('.bootstrap-tagsinput').find('input'));
+		}
 
-		var tagEl = $('#has-tags');
+		const tagEl = $('#has-tags');
 		tagEl.tagsinput({
 			confirmKeys: [13, 44],
 			trimValue: true,
 		});
-
-		autocomplete.tag(tagEl.siblings('.bootstrap-tagsinput').find('input'));
+		if (app.user.privileges['search:tags']) {
+			autocomplete.tag(tagEl.siblings('.bootstrap-tagsinput').find('input'));
+		}
 	}
 
 	return Search;

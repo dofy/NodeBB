@@ -1,19 +1,19 @@
 'use strict';
 
-var async = require('async');
-var _ = require('lodash');
+const _ = require('lodash');
+const validator = require('validator');
 
-var db = require('../database');
-var posts = require('../posts');
-var utils = require('../utils');
-var plugins = require('../plugins');
-var meta = require('../meta');
-var user = require('../user');
-var categories = require('../categories');
-var privileges = require('../privileges');
-var social = require('../social');
+const db = require('../database');
+const posts = require('../posts');
+const utils = require('../utils');
+const plugins = require('../plugins');
+const meta = require('../meta');
+const user = require('../user');
+const categories = require('../categories');
+const privileges = require('../privileges');
+const social = require('../social');
 
-var Topics = module.exports;
+const Topics = module.exports;
 
 require('./data')(Topics);
 require('./create')(Topics);
@@ -27,314 +27,252 @@ require('./posts')(Topics);
 require('./follow')(Topics);
 require('./tags')(Topics);
 require('./teaser')(Topics);
+Topics.scheduled = require('./scheduled');
 require('./suggested')(Topics);
 require('./tools')(Topics);
-require('./thumb')(Topics);
+Topics.thumbs = require('./thumbs');
 require('./bookmarks')(Topics);
 require('./merge')(Topics);
+Topics.events = require('./events');
 
-Topics.exists = function (tid, callback) {
-	db.exists('topic:' + tid, callback);
+Topics.exists = async function (tids) {
+	return await db.exists(
+		Array.isArray(tids) ? tids.map(tid => `topic:${tid}`) : `topic:${tids}`
+	);
 };
 
-Topics.getTopicsFromSet = function (set, uid, start, stop, callback) {
-	async.waterfall([
-		function (next) {
-			db.getSortedSetRevRange(set, start, stop, next);
-		},
-		function (tids, next) {
-			Topics.getTopics(tids, uid, next);
-		},
-		function (topics, next) {
-			Topics.calculateTopicIndices(topics, start);
-			next(null, { topics: topics, nextStart: stop + 1 });
-		},
-	], callback);
+Topics.getTopicsFromSet = async function (set, uid, start, stop) {
+	const tids = await db.getSortedSetRevRange(set, start, stop);
+	const topics = await Topics.getTopics(tids, uid);
+	Topics.calculateTopicIndices(topics, start);
+	return { topics: topics, nextStart: stop + 1 };
 };
 
-Topics.getTopics = function (tids, uid, callback) {
-	async.waterfall([
-		function (next) {
-			privileges.topics.filterTids('read', tids, uid, next);
-		},
-		function (tids, next) {
-			Topics.getTopicsByTids(tids, uid, next);
-		},
-	], callback);
-};
-
-Topics.getTopicsByTids = function (tids, uid, callback) {
-	if (!Array.isArray(tids) || !tids.length) {
-		return callback(null, []);
+Topics.getTopics = async function (tids, options) {
+	let uid = options;
+	if (typeof options === 'object') {
+		uid = options.uid;
 	}
 
-	var uids;
-	var cids;
-	var topics;
+	tids = await privileges.topics.filterTids('topics:read', tids, uid);
+	return await Topics.getTopicsByTids(tids, options);
+};
 
-	async.waterfall([
-		function (next) {
-			Topics.getTopicsData(tids, next);
-		},
-		function (_topics, next) {
-			function mapFilter(array, field) {
-				return array.map(function (topic) {
-					return topic && topic[field] && topic[field].toString();
-				}).filter(value => utils.isNumber(value));
+Topics.getTopicsByTids = async function (tids, options) {
+	if (!Array.isArray(tids) || !tids.length) {
+		return [];
+	}
+	let uid = options;
+	if (typeof options === 'object') {
+		uid = options.uid;
+	}
+
+	async function loadTopics() {
+		const topics = await Topics.getTopicsData(tids);
+		const uids = _.uniq(topics.map(t => t && t.uid && t.uid.toString()).filter(v => utils.isNumber(v)));
+		const cids = _.uniq(topics.map(t => t && t.cid && t.cid.toString()).filter(v => utils.isNumber(v)));
+		const guestTopics = topics.filter(t => t && t.uid === 0);
+
+		async function loadGuestHandles() {
+			const mainPids = guestTopics.map(t => t.mainPid);
+			const postData = await posts.getPostsFields(mainPids, ['handle']);
+			return postData.map(p => p.handle);
+		}
+
+		async function loadShowfullnameSettings() {
+			if (meta.config.hideFullname) {
+				return uids.map(() => ({ showfullname: false }));
 			}
-
-			topics = _topics;
-			uids = _.uniq(mapFilter(topics, 'uid'));
-			cids = _.uniq(mapFilter(topics, 'cid'));
-
-			async.parallel({
-				users: function (next) {
-					user.getUsersFields(uids, ['uid', 'username', 'fullname', 'userslug', 'reputation', 'postcount', 'picture', 'signature', 'banned', 'status'], next);
-				},
-				userSettings: function (next) {
-					user.getMultipleUserSettings(uids, next);
-				},
-				categories: function (next) {
-					categories.getCategoriesFields(cids, ['cid', 'name', 'slug', 'icon', 'image', 'imageClass', 'bgColor', 'color', 'disabled'], next);
-				},
-				hasRead: function (next) {
-					Topics.hasReadTopics(tids, uid, next);
-				},
-				isIgnored: function (next) {
-					Topics.isIgnoring(tids, uid, next);
-				},
-				bookmarks: function (next) {
-					Topics.getUserBookmarks(tids, uid, next);
-				},
-				teasers: function (next) {
-					Topics.getTeasers(topics, uid, next);
-				},
-				tags: function (next) {
-					Topics.getTopicsTagsObjects(tids, next);
-				},
-			}, next);
-		},
-		function (results, next) {
-			results.users.forEach(function (user, index) {
-				if (meta.config.hideFullname || !results.userSettings[index].showfullname) {
-					user.fullname = undefined;
-				}
+			const data = await db.getObjectsFields(uids.map(uid => `user:${uid}:settings`), ['showfullname']);
+			data.forEach((settings) => {
+				settings.showfullname = parseInt(settings.showfullname, 10) === 1;
 			});
+			return data;
+		}
 
-			var users = _.zipObject(uids, results.users);
-			var categories = _.zipObject(cids, results.categories);
+		const [teasers, users, userSettings, categoriesData, guestHandles, thumbs] = await Promise.all([
+			Topics.getTeasers(topics, options),
+			user.getUsersFields(uids, ['uid', 'username', 'fullname', 'userslug', 'reputation', 'postcount', 'picture', 'signature', 'banned', 'status']),
+			loadShowfullnameSettings(),
+			categories.getCategoriesFields(cids, ['cid', 'name', 'slug', 'icon', 'backgroundImage', 'imageClass', 'bgColor', 'color', 'disabled']),
+			loadGuestHandles(),
+			Topics.thumbs.load(topics),
+		]);
 
-			for (var i = 0; i < topics.length; i += 1) {
-				if (topics[i]) {
-					topics[i].category = categories[topics[i].cid];
-					topics[i].user = users[topics[i].uid];
-					topics[i].teaser = results.teasers[i];
-					topics[i].tags = results.tags[i];
-
-					topics[i].isOwner = topics[i].uid === parseInt(uid, 10);
-					topics[i].ignored = results.isIgnored[i];
-					topics[i].unread = !results.hasRead[i] && !results.isIgnored[i];
-					topics[i].bookmark = results.bookmarks[i];
-					topics[i].unreplied = !topics[i].teaser;
-
-					topics[i].icons = [];
-				}
+		users.forEach((userObj, idx) => {
+			// Hide fullname if needed
+			if (!userSettings[idx].showfullname) {
+				userObj.fullname = undefined;
 			}
+		});
 
-			topics = topics.filter(topic => topic && topic.category && !topic.category.disabled);
+		return {
+			topics,
+			teasers,
+			usersMap: _.zipObject(uids, users),
+			categoriesMap: _.zipObject(cids, categoriesData),
+			tidToGuestHandle: _.zipObject(guestTopics.map(t => t.tid), guestHandles),
+			thumbs,
+		};
+	}
 
-			plugins.fireHook('filter:topics.get', { topics: topics, uid: uid }, next);
-		},
-		function (data, next) {
-			next(null, data.topics);
-		},
-	], callback);
+	const [result, hasRead, isIgnored, bookmarks, callerSettings] = await Promise.all([
+		loadTopics(),
+		Topics.hasReadTopics(tids, uid),
+		Topics.isIgnoring(tids, uid),
+		Topics.getUserBookmarks(tids, uid),
+		user.getSettings(uid),
+	]);
+
+	const sortNewToOld = callerSettings.topicPostSort === 'newest_to_oldest';
+	result.topics.forEach((topic, i) => {
+		if (topic) {
+			topic.thumbs = result.thumbs[i];
+			topic.category = result.categoriesMap[topic.cid];
+			topic.user = topic.uid ? result.usersMap[topic.uid] : { ...result.usersMap[topic.uid] };
+			if (result.tidToGuestHandle[topic.tid]) {
+				topic.user.username = validator.escape(result.tidToGuestHandle[topic.tid]);
+				topic.user.displayname = topic.user.username;
+			}
+			topic.teaser = result.teasers[i] || null;
+			topic.isOwner = topic.uid === parseInt(uid, 10);
+			topic.ignored = isIgnored[i];
+			topic.unread = parseInt(uid, 10) <= 0 || (!hasRead[i] && !isIgnored[i]);
+			topic.bookmark = sortNewToOld ?
+				Math.max(1, topic.postcount + 2 - bookmarks[i]) :
+				Math.min(topic.postcount, bookmarks[i] + 1);
+			topic.unreplied = !topic.teaser;
+
+			topic.icons = [];
+		}
+	});
+
+	const filteredTopics = result.topics.filter(topic => topic && topic.category && !topic.category.disabled);
+
+	const hookResult = await plugins.hooks.fire('filter:topics.get', { topics: filteredTopics, uid: uid });
+	return hookResult.topics;
 };
 
-Topics.getTopicWithPosts = function (topicData, set, uid, start, stop, reverse, callback) {
-	async.waterfall([
-		function (next) {
-			async.parallel({
-				posts: async.apply(getMainPostAndReplies, topicData, set, uid, start, stop, reverse),
-				category: async.apply(categories.getCategoryData, topicData.cid),
-				tagWhitelist: async.apply(categories.getTagWhitelist, [topicData.cid]),
-				threadTools: async.apply(plugins.fireHook, 'filter:topic.thread_tools', { topic: topicData, uid: uid, tools: [] }),
-				followData: async.apply(Topics.getFollowData, [topicData.tid], uid),
-				bookmark: async.apply(Topics.getUserBookmark, topicData.tid, uid),
-				postSharing: async.apply(social.getActivePostSharing),
-				deleter: async.apply(getDeleter, topicData),
-				merger: async.apply(getMerger, topicData),
-				related: function (next) {
-					async.waterfall([
-						function (next) {
-							Topics.getTopicTagsObjects(topicData.tid, next);
-						},
-						function (tags, next) {
-							topicData.tags = tags;
-							Topics.getRelatedTopics(topicData, uid, next);
-						},
-					], next);
-				},
-			}, next);
-		},
-		function (results, next) {
-			topicData.posts = results.posts;
-			topicData.category = results.category;
-			topicData.tagWhitelist = results.tagWhitelist[0];
-			topicData.thread_tools = results.threadTools.tools;
-			topicData.isFollowing = results.followData[0].following;
-			topicData.isNotFollowing = !results.followData[0].following && !results.followData[0].ignoring;
-			topicData.isIgnoring = results.followData[0].ignoring;
-			topicData.bookmark = results.bookmark;
-			topicData.postSharing = results.postSharing;
-			topicData.deleter = results.deleter;
-			if (results.deleter) {
-				topicData.deletedTimestampISO = utils.toISOString(topicData.deletedTimestamp);
-			}
-			topicData.merger = results.merger;
-			if (results.merger) {
-				topicData.mergedTimestampISO = utils.toISOString(topicData.mergedTimestamp);
-			}
-			topicData.related = results.related || [];
-			topicData.unreplied = topicData.postcount === 1;
-			topicData.icons = [];
+Topics.getTopicWithPosts = async function (topicData, set, uid, start, stop, reverse) {
+	const [
+		posts,
+		category,
+		tagWhitelist,
+		threadTools,
+		followData,
+		bookmark,
+		postSharing,
+		deleter,
+		merger,
+		related,
+		thumbs,
+		events,
+	] = await Promise.all([
+		Topics.getTopicPosts(topicData, set, start, stop, uid, reverse),
+		categories.getCategoryData(topicData.cid),
+		categories.getTagWhitelist([topicData.cid]),
+		plugins.hooks.fire('filter:topic.thread_tools', { topic: topicData, uid: uid, tools: [] }),
+		Topics.getFollowData([topicData.tid], uid),
+		Topics.getUserBookmark(topicData.tid, uid),
+		social.getActivePostSharing(),
+		getDeleter(topicData),
+		getMerger(topicData),
+		Topics.getRelatedTopics(topicData, uid),
+		Topics.thumbs.load([topicData]),
+		Topics.events.get(topicData.tid, uid, reverse),
+	]);
 
-			plugins.fireHook('filter:topic.get', { topic: topicData, uid: uid }, next);
-		},
-		function (data, next) {
-			next(null, data.topic);
-		},
-	], callback);
+	topicData.thumbs = thumbs[0];
+	topicData.posts = posts;
+	topicData.events = events;
+	topicData.category = category;
+	topicData.tagWhitelist = tagWhitelist[0];
+	topicData.minTags = category.minTags;
+	topicData.maxTags = category.maxTags;
+	topicData.thread_tools = threadTools.tools;
+	topicData.isFollowing = followData[0].following;
+	topicData.isNotFollowing = !followData[0].following && !followData[0].ignoring;
+	topicData.isIgnoring = followData[0].ignoring;
+	topicData.bookmark = bookmark;
+	topicData.postSharing = postSharing;
+	topicData.deleter = deleter;
+	if (deleter) {
+		topicData.deletedTimestampISO = utils.toISOString(topicData.deletedTimestamp);
+	}
+	topicData.merger = merger;
+	if (merger) {
+		topicData.mergedTimestampISO = utils.toISOString(topicData.mergedTimestamp);
+	}
+	topicData.related = related || [];
+	topicData.unreplied = topicData.postcount === 1;
+	topicData.icons = [];
+
+	const result = await plugins.hooks.fire('filter:topic.get', { topic: topicData, uid: uid });
+	return result.topic;
 };
 
-function getMainPostAndReplies(topic, set, uid, start, stop, reverse, callback) {
-	async.waterfall([
-		function (next) {
-			if (stop > 0) {
-				stop -= 1;
-				if (start > 0) {
-					start -= 1;
-				}
-			}
-
-			posts.getPidsFromSet(set, start, stop, reverse, next);
-		},
-		function (pids, next) {
-			if (!pids.length && !topic.mainPid) {
-				return callback(null, []);
-			}
-
-			if (parseInt(topic.mainPid, 10) && start === 0) {
-				pids.unshift(topic.mainPid);
-			}
-			posts.getPostsByPids(pids, uid, next);
-		},
-		function (posts, next) {
-			if (!posts.length) {
-				return next(null, []);
-			}
-			var replies = posts;
-			if (topic.mainPid && start === 0) {
-				posts[0].index = 0;
-				replies = posts.slice(1);
-			}
-
-			Topics.calculatePostIndices(replies, start, topic.postcount, reverse);
-
-			Topics.addPostData(posts, uid, next);
-		},
-	], callback);
-}
-
-function getDeleter(topicData, callback) {
+async function getDeleter(topicData) {
 	if (!parseInt(topicData.deleterUid, 10)) {
-		return setImmediate(callback, null, null);
+		return null;
 	}
-	user.getUserFields(topicData.deleterUid, ['username', 'userslug', 'picture'], callback);
+	return await user.getUserFields(topicData.deleterUid, ['username', 'userslug', 'picture']);
 }
 
-function getMerger(topicData, callback) {
+async function getMerger(topicData) {
 	if (!parseInt(topicData.mergerUid, 10)) {
-		return setImmediate(callback, null, null);
+		return null;
 	}
-	async.waterfall([
-		function (next) {
-			async.parallel({
-				merger: function (next) {
-					user.getUserFields(topicData.mergerUid, ['username', 'userslug', 'picture'], next);
-				},
-				mergedIntoTitle: function (next) {
-					Topics.getTopicField(topicData.mergeIntoTid, 'title', next);
-				},
-			}, next);
-		},
-		function (results, next) {
-			results.merger.mergedIntoTitle = results.mergedIntoTitle;
-			next(null, results.merger);
-		},
-	], callback);
+	const [
+		merger,
+		mergedIntoTitle,
+	] = await Promise.all([
+		user.getUserFields(topicData.mergerUid, ['username', 'userslug', 'picture']),
+		Topics.getTopicField(topicData.mergeIntoTid, 'title'),
+	]);
+	merger.mergedIntoTitle = mergedIntoTitle;
+	return merger;
 }
 
-Topics.getMainPost = function (tid, uid, callback) {
-	Topics.getMainPosts([tid], uid, function (err, mainPosts) {
-		callback(err, Array.isArray(mainPosts) && mainPosts.length ? mainPosts[0] : null);
-	});
+Topics.getMainPost = async function (tid, uid) {
+	const mainPosts = await Topics.getMainPosts([tid], uid);
+	return Array.isArray(mainPosts) && mainPosts.length ? mainPosts[0] : null;
 };
 
-Topics.getMainPids = function (tids, callback) {
+Topics.getMainPids = async function (tids) {
 	if (!Array.isArray(tids) || !tids.length) {
-		return callback(null, []);
+		return [];
 	}
-	async.waterfall([
-		function (next) {
-			Topics.getTopicsFields(tids, ['mainPid'], next);
-		},
-		function (topicData, next) {
-			next(null, topicData.map(topic => topic && topic.mainPid));
-		},
-	], callback);
+	const topicData = await Topics.getTopicsFields(tids, ['mainPid']);
+	return topicData.map(topic => topic && topic.mainPid);
 };
 
-Topics.getMainPosts = function (tids, uid, callback) {
-	async.waterfall([
-		function (next) {
-			Topics.getMainPids(tids, next);
-		},
-		function (mainPids, next) {
-			getMainPosts(mainPids, uid, next);
-		},
-	], callback);
+Topics.getMainPosts = async function (tids, uid) {
+	const mainPids = await Topics.getMainPids(tids);
+	return await getMainPosts(mainPids, uid);
 };
 
-function getMainPosts(mainPids, uid, callback) {
-	async.waterfall([
-		function (next) {
-			posts.getPostsByPids(mainPids, uid, next);
-		},
-		function (postData, next) {
-			postData.forEach(function (post) {
-				if (post) {
-					post.index = 0;
-				}
-			});
-			Topics.addPostData(postData, uid, next);
-		},
-	], callback);
+async function getMainPosts(mainPids, uid) {
+	const postData = await posts.getPostsByPids(mainPids, uid);
+	postData.forEach((post) => {
+		if (post) {
+			post.index = 0;
+		}
+	});
+	return await Topics.addPostData(postData, uid);
 }
 
-Topics.isLocked = function (tid, callback) {
-	Topics.getTopicField(tid, 'locked', function (err, locked) {
-		callback(err, locked === 1);
-	});
+Topics.isLocked = async function (tid) {
+	const locked = await Topics.getTopicField(tid, 'locked');
+	return locked === 1;
 };
 
-Topics.search = function (tid, term, callback) {
-	plugins.fireHook('filter:topic.search', {
+Topics.search = async function (tid, term) {
+	const result = await plugins.hooks.fire('filter:topic.search', {
 		tid: tid,
 		term: term,
-	}, function (err, pids) {
-		callback(err, Array.isArray(pids) ? pids : []);
+		ids: [],
 	});
+	return Array.isArray(result) ? result : result.ids;
 };
 
-Topics.async = require('../promisify')(Topics);
+require('../promisify')(Topics);

@@ -2,9 +2,23 @@
 
 (function (factory) {
 	function loadClient(language, namespace) {
-		return Promise.resolve(jQuery.getJSON(config.relative_path + '/assets/language/' + language + '/' + namespace + '.json?' + config['cache-buster']));
+		return new Promise(function (resolve, reject) {
+			jQuery.getJSON([config.assetBaseUrl, 'language', language, namespace].join('/') + '.json?' + config['cache-buster'], function (data) {
+				const payload = {
+					language: language,
+					namespace: namespace,
+					data: data,
+				};
+				require(['hooks'], function (hooks) {
+					hooks.fire('action:translator.loadClient', payload);
+					resolve(payload.promise ? Promise.resolve(payload.promise) : data);
+				});
+			}).fail(function (jqxhr, textStatus, error) {
+				reject(new Error(textStatus + ', ' + error));
+			});
+		});
 	}
-	var warn = function () { console.warn.apply(console, arguments); };
+	let warn = function () { console.warn.apply(console, arguments); };
 	if (typeof define === 'function' && define.amd) {
 		// AMD. Register as a named module
 		define('translator', [], function () {
@@ -13,32 +27,21 @@
 	} else if (typeof module === 'object' && module.exports) {
 		// Node
 		(function () {
-			var languages = require('../../../src/languages');
-
 			if (global.env === 'development') {
-				var winston = require('winston');
+				const winston = require('winston');
 				warn = function (a) {
 					winston.warn(a);
 				};
 			}
 
-			function loadServer(language, namespace) {
-				return new Promise(function (resolve, reject) {
-					languages.get(language, namespace, function (err, data) {
-						if (err) {
-							reject(err);
-						} else {
-							resolve(data);
-						}
-					});
-				});
-			}
-
-			module.exports = factory(require('../utils'), loadServer, warn);
+			module.exports = factory(require('../utils'), function (lang, namespace) {
+				const languages = require('../../../src/languages');
+				return languages.get(lang, namespace);
+			}, warn);
 		}());
 	}
 }(function (utils, load, warn) {
-	var assign = Object.assign || jQuery.extend;
+	const assign = Object.assign || jQuery.extend;
 
 	function escapeHTML(str) {
 		return utils.escapeHTML(utils.decodeHTMLEntities(
@@ -48,25 +51,25 @@
 		));
 	}
 
-	var Translator = (function () {
+	const Translator = (function () {
 		/**
 		 * Construct a new Translator object
 		 * @param {string} language - Language code for this translator instance
 		 * @exports translator.Translator
 		 */
 		function Translator(language) {
-			var self = this;
+			const self = this;
 
 			if (!language) {
 				throw new TypeError('Parameter `language` must be a language string. Received ' + language + (language === '' ? '(empty string)' : ''));
 			}
 
 			self.modules = Object.keys(Translator.moduleFactories).map(function (namespace) {
-				var factory = Translator.moduleFactories[namespace];
+				const factory = Translator.moduleFactories[namespace];
 				return [namespace, factory(language)];
 			}).reduce(function (prev, elem) {
-				var namespace = elem[0];
-				var module = elem[1];
+				const namespace = elem[0];
+				const module = elem[1];
 				prev[namespace] = module;
 
 				return prev;
@@ -85,31 +88,31 @@
 		 */
 		Translator.prototype.translate = function translate(str) {
 			// regex for valid text in namespace / key
-			var validText = 'a-zA-Z0-9\\-_.\\/';
-			var validTextRegex = new RegExp('[' + validText + ']');
-			var invalidTextRegex = new RegExp('[^' + validText + '\\]]');
+			const validText = 'a-zA-Z0-9\\-_.\\/';
+			const validTextRegex = new RegExp('[' + validText + ']');
+			const invalidTextRegex = new RegExp('[^' + validText + '\\]]');
 
 			// current cursor position
-			var cursor = 0;
+			let cursor = 0;
 			// last break of the input string
-			var lastBreak = 0;
+			let lastBreak = 0;
 			// length of the input string
-			var len = str.length;
+			const len = str.length;
 			// array to hold the promises for the translations
 			// and the strings of untranslated text in between
-			var toTranslate = [];
+			const toTranslate = [];
 
 			// to store the state of if we're currently in a top-level token for later
-			var inToken = false;
+			let inToken = false;
 
 			// split a translator string into an array of tokens
 			// but don't split by commas inside other translator strings
 			function split(text) {
-				var len = text.length;
-				var arr = [];
-				var i = 0;
-				var brk = 0;
-				var level = 0;
+				const len = text.length;
+				const arr = [];
+				let i = 0;
+				let brk = 0;
+				let level = 0;
 
 				while (i + 2 <= len) {
 					if (text[i] === '[' && text[i + 1] === '[') {
@@ -150,14 +153,14 @@
 				inToken = true;
 
 				// the current level of nesting of the translation strings
-				var level = 0;
-				var char0;
-				var char1;
+				let level = 0;
+				let char0;
+				let char1;
 				// validating the current string is actually a translation
-				var textBeforeColonFound = false;
-				var colonFound = false;
-				var textAfterColonFound = false;
-				var commaAfterNameFound = false;
+				let textBeforeColonFound = false;
+				let colonFound = false;
+				let textAfterColonFound = false;
+				let commaAfterNameFound = false;
 
 				while (cursor + 2 <= len) {
 					char0 = str[cursor];
@@ -202,14 +205,14 @@
 						// if we're at the base level, then this is the end
 						if (level === 0) {
 							// so grab the name and args
-							var currentSlice = str.slice(lastBreak, cursor);
-							var result = split(currentSlice);
-							var name = result[0];
-							var args = result.slice(1);
+							const currentSlice = str.slice(lastBreak, cursor);
+							const result = split(currentSlice);
+							const name = result[0];
+							const args = result.slice(1);
 
 							// make a backup based on the raw string of the token
 							// if there are arguments to the token
-							var backup = '';
+							let backup = '';
 							if (args && args.length) {
 								backup = this.translate(currentSlice);
 							}
@@ -239,7 +242,7 @@
 			}
 
 			// ending string of source
-			var last = str.slice(lastBreak);
+			let last = str.slice(lastBreak);
 
 			// if we were mid-token, treat it as invalid
 			if (inToken) {
@@ -263,37 +266,44 @@
 		 * @returns {Promise<string>}
 		 */
 		Translator.prototype.translateKey = function translateKey(name, args, backup) {
-			var self = this;
+			const self = this;
 
-			var result = name.split(':', 2);
-			var namespace = result[0];
-			var key = result[1];
+			const result = name.split(':', 2);
+			const namespace = result[0];
+			const key = result[1];
 
 			if (self.modules[namespace]) {
 				return Promise.resolve(self.modules[namespace](key, args));
 			}
 
-			if (namespace && !key) {
-				warn('Missing key in translation token "' + name + '"');
+			if (namespace && result.length === 1) {
 				return Promise.resolve('[[' + namespace + ']]');
 			}
 
-			var translation = this.getTranslation(namespace, key);
+			if (namespace && !key) {
+				warn('Missing key in translation token "' + name + '" for language "' + self.lang + '"');
+				return Promise.resolve('[[' + namespace + ']]');
+			}
+
+			const translation = this.getTranslation(namespace, key);
 			return translation.then(function (translated) {
 				// check if the translation is missing first
 				if (!translated) {
-					warn('Missing translation "' + name + '"');
+					warn('Missing translation "' + name + '" for language "' + self.lang + '"');
 					return backup || key;
 				}
 
-				var argsToTranslate = args.map(function (arg) {
+				const argsToTranslate = args.map(function (arg) {
 					return self.translate(escapeHTML(arg));
 				});
 
 				return Promise.all(argsToTranslate).then(function (translatedArgs) {
-					var out = translated;
+					let out = translated;
 					translatedArgs.forEach(function (arg, i) {
-						var escaped = arg.replace(/%(?=\d)/g, '&#37;').replace(/\\,/g, '&#44;');
+						let escaped = arg.replace(/%(?=\d)/g, '&#37;').replace(/\\,/g, '&#44;');
+						// fix double escaped translation keys, see https://github.com/NodeBB/NodeBB/issues/9206
+						escaped = escaped.replace(/&amp;lsqb;/g, '&lsqb;')
+							.replace(/&amp;rsqb;/g, '&rsqb;');
 						out = out.replace(new RegExp('%' + (i + 1), 'g'), escaped);
 					});
 					return out;
@@ -308,18 +318,40 @@
 		 * @returns {Promise<{ [key: string]: string } | string>}
 		 */
 		Translator.prototype.getTranslation = function getTranslation(namespace, key) {
-			var translation;
+			let translation;
 			if (!namespace) {
 				warn('[translator] Parameter `namespace` is ' + namespace + (namespace === '' ? '(empty string)' : ''));
 				translation = Promise.resolve({});
 			} else {
-				this.translations[namespace] = this.translations[namespace] || this.load(this.lang, namespace).catch(function () { return {}; });
+				this.translations[namespace] = this.translations[namespace] ||
+					this.load(this.lang, namespace).catch(function () { return {}; });
 				translation = this.translations[namespace];
 			}
 
 			if (key) {
 				return translation.then(function (x) {
-					return x[key];
+					if (typeof x[key] === 'string') return x[key];
+					const keyParts = key.split('.');
+					for (let i = 0; i <= keyParts.length; i++) {
+						if (i === keyParts.length) {
+							// default to trying to find key with the same name as parent or equal to empty string
+							return x[keyParts[i - 1]] !== undefined ? x[keyParts[i - 1]] : x[''];
+						}
+						switch (typeof x[keyParts[i]]) {
+							case 'object':
+								x = x[keyParts[i]];
+								break;
+							case 'string':
+								if (i === keyParts.length - 1) {
+									return x[keyParts[i]];
+								}
+
+								return false;
+
+							default:
+								return false;
+						}
+					}
 				});
 			}
 			return translation;
@@ -330,13 +362,13 @@
 		 * @returns {Node[]}
 		 */
 		function descendantTextNodes(node) {
-			var textNodes = [];
+			const textNodes = [];
 
 			function helper(node) {
 				if (node.nodeType === 3) {
 					textNodes.push(node);
 				} else {
-					for (var i = 0, c = node.childNodes, l = c.length; i < l; i += 1) {
+					for (let i = 0, c = node.childNodes, l = c.length; i < l; i += 1) {
 						helper(c[i]);
 					}
 				}
@@ -355,18 +387,18 @@
 		Translator.prototype.translateInPlace = function translateInPlace(element, attributes) {
 			attributes = attributes || ['placeholder', 'title'];
 
-			var nodes = descendantTextNodes(element);
-			var text = nodes.map(function (node) {
-				return node.nodeValue;
+			const nodes = descendantTextNodes(element);
+			const text = nodes.map(function (node) {
+				return utils.escapeHTML(node.nodeValue);
 			}).join('  ||  ');
 
-			var attrNodes = attributes.reduce(function (prev, attr) {
-				var tuples = Array.prototype.map.call(element.querySelectorAll('[' + attr + '*="[["]'), function (el) {
+			const attrNodes = attributes.reduce(function (prev, attr) {
+				const tuples = Array.prototype.map.call(element.querySelectorAll('[' + attr + '*="[["]'), function (el) {
 					return [attr, el];
 				});
 				return prev.concat(tuples);
 			}, []);
-			var attrText = attrNodes.map(function (node) {
+			const attrText = attrNodes.map(function (node) {
 				return node[1].getAttribute(node[0]);
 			}).join('  ||  ');
 
@@ -374,8 +406,8 @@
 				this.translate(text),
 				this.translate(attrText),
 			]).then(function (ref) {
-				var translated = ref[0];
-				var translatedAttrs = ref[1];
+				const translated = ref[0];
+				const translatedAttrs = ref[1];
 				if (translated) {
 					translated.split('  ||  ').forEach(function (html, i) {
 						$(nodes[i]).replaceWith(html);
@@ -394,12 +426,12 @@
 		 * @returns {string}
 		 */
 		Translator.getLanguage = function getLanguage() {
-			var lang;
+			let lang;
 
 			if (typeof window === 'object' && window.config && window.utils) {
 				lang = utils.params().lang || config.userLang || config.defaultLang || 'en-GB';
 			} else {
-				var meta = require('../../../src/meta');
+				const meta = require('../../../src/meta');
 				lang = meta.config && meta.config.defaultLang ? meta.config.defaultLang : 'en-GB';
 			}
 
@@ -432,7 +464,7 @@
 			Translator.moduleFactories[namespace] = factory;
 
 			Object.keys(Translator.cache).forEach(function (key) {
-				var translator = Translator.cache[key];
+				const translator = Translator.cache[key];
 				translator.modules[namespace] = factory(translator.lang);
 			});
 		};
@@ -445,12 +477,12 @@
 		 * @returns {string}
 		 */
 		Translator.removePatterns = function removePatterns(text) {
-			var len = text.length;
-			var cursor = 0;
-			var lastBreak = 0;
-			var level = 0;
-			var out = '';
-			var sub;
+			const len = text.length;
+			let cursor = 0;
+			let lastBreak = 0;
+			let level = 0;
+			let out = '';
+			let sub;
 
 			while (cursor < len) {
 				sub = text.slice(cursor, cursor + 2);
@@ -489,7 +521,10 @@
 		 * @returns {string}
 		 */
 		Translator.unescape = function unescape(text) {
-			return typeof text === 'string' ? text.replace(/&lsqb;|\\\[/g, '[').replace(/&rsqb;|\\\]/g, ']') : text;
+			return typeof text === 'string' ?
+				text.replace(/&lsqb;/g, '[').replace(/\\\[/g, '[')
+					.replace(/&rsqb;/g, ']').replace(/\\\]/g, ']') :
+				text;
 		};
 
 		/**
@@ -498,7 +533,7 @@
 		 * @param {...string} arg - Optional argument for the pattern
 		 */
 		Translator.compile = function compile() {
-			var args = Array.prototype.slice.call(arguments, 0).map(function (text) {
+			const args = Array.prototype.slice.call(arguments, 0).map(function (text) {
 				// escape commas and percent signs in arguments
 				return String(text).replace(/%/g, '&#37;').replace(/,/g, '&#44;');
 			});
@@ -512,7 +547,7 @@
 	/**
 	 * @exports translator
 	 */
-	var adaptor = {
+	const adaptor = {
 		/**
 		 * The Translator class
 		 */
@@ -523,21 +558,42 @@
 		unescape: Translator.unescape,
 		getLanguage: Translator.getLanguage,
 
+		flush: function () {
+			Object.keys(Translator.cache).forEach(function (code) {
+				Translator.cache[code].translations = {};
+			});
+		},
+
+		flushNamespace: function (namespace) {
+			Object.keys(Translator.cache).forEach(function (code) {
+				if (Translator.cache[code] &&
+					Translator.cache[code].translations &&
+					Translator.cache[code].translations[namespace]
+				) {
+					Translator.cache[code].translations[namespace] = null;
+				}
+			});
+		},
+
+
 		/**
 		 * Legacy translator function for backwards compatibility
 		 */
 		translate: function translate(text, language, callback) {
 			// TODO: deprecate?
 
-			var cb = callback;
-			var lang = language;
+			let cb = callback;
+			let lang = language;
 			if (typeof language === 'function') {
 				cb = language;
 				lang = null;
 			}
 
 			if (!(typeof text === 'string' || text instanceof String) || text === '') {
-				return cb('');
+				if (cb) {
+					return setTimeout(cb, 0, '');
+				}
+				return '';
 			}
 
 			return Translator.create(lang).translate(text).then(function (output) {
@@ -575,8 +631,9 @@
 		},
 
 		toggleTimeagoShorthand: function toggleTimeagoShorthand(callback) {
+			/* eslint "prefer-object-spread": "off" */
 			function toggle() {
-				var tmp = assign({}, jQuery.timeago.settings.strings);
+				const tmp = assign({}, jQuery.timeago.settings.strings);
 				jQuery.timeago.settings.strings = assign({}, adaptor.timeagoShort);
 				adaptor.timeagoShort = assign({}, tmp);
 				if (typeof callback === 'function') {
@@ -585,13 +642,13 @@
 			}
 
 			if (!adaptor.timeagoShort) {
-				var languageCode = utils.userLangToTimeagoCode(config.userLang);
+				let languageCode = utils.userLangToTimeagoCode(config.userLang);
 				if (!config.timeagoCodes.includes(languageCode + '-short')) {
 					languageCode = 'en';
 				}
 
-				var originalSettings = assign({}, jQuery.timeago.settings.strings);
-				jQuery.getScript(config.relative_path + '/assets/vendor/jquery/timeago/locales/jquery.timeago.' + languageCode + '-short.js').done(function () {
+				const originalSettings = assign({}, jQuery.timeago.settings.strings);
+				adaptor.switchTimeagoLanguage(languageCode + '-short', function () {
 					adaptor.timeagoShort = assign({}, jQuery.timeago.settings.strings);
 					jQuery.timeago.settings.strings = assign({}, originalSettings);
 					toggle();
@@ -601,15 +658,16 @@
 			}
 		},
 
-		switchTimeagoLanguage: function switchTimeagoLanguage(callback) {
+		switchTimeagoLanguage: function switchTimeagoLanguage(langCode, callback) {
 			// Delete the cached shorthand strings if present
 			delete adaptor.timeagoShort;
 
-			var languageCode = utils.userLangToTimeagoCode(config.userLang);
-			if (!config.timeagoCodes.includes(languageCode + '-short')) {
-				languageCode = 'en';
-			}
-			jQuery.getScript(config.relative_path + '/assets/vendor/jquery/timeago/locales/jquery.timeago.' + languageCode + '.js').done(callback);
+			const stringsModule = 'timeago/locales/jquery.timeago.' + langCode;
+			// without undef, requirejs won't load the strings a second time
+			require.undef(stringsModule);
+			require([stringsModule], function () {
+				callback();
+			});
 		},
 
 		prepareDOM: function prepareDOM() {

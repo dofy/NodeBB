@@ -1,14 +1,15 @@
 'use strict';
 
-
-define('forum/account/edit/username', ['forum/account/header'], function (header) {
-	var AccountEditUsername = {};
+define('forum/account/edit/username', [
+	'forum/account/header', 'api', 'slugify', 'alerts',
+], function (header, api, slugify, alerts) {
+	const AccountEditUsername = {};
 
 	AccountEditUsername.init = function () {
 		header.init();
 
 		$('#submitBtn').on('click', function updateUsername() {
-			var userData = {
+			const userData = {
 				uid: $('#inputUID').val(),
 				username: $('#inputNewUsername').val(),
 				password: $('#inputCurrentPassword').val(),
@@ -19,28 +20,28 @@ define('forum/account/edit/username', ['forum/account/header'], function (header
 			}
 
 			if (userData.username === userData.password) {
-				return app.alertError('[[user:username_same_as_password]]');
+				return alerts.error('[[user:username_same_as_password]]');
 			}
 
-			var btn = $(this);
+			const btn = $(this);
 			btn.addClass('disabled').find('i').removeClass('hide');
-			socket.emit('user.changeUsernameEmail', userData, function (err, data) {
-				btn.removeClass('disabled').find('i').addClass('hide');
-				if (err) {
-					return app.alertError(err.message);
-				}
 
-				var userslug = utils.slugify(userData.username);
+			api.put('/users/' + userData.uid, userData).then((response) => {
+				const userslug = slugify(userData.username);
 				if (userData.username && userslug && parseInt(userData.uid, 10) === parseInt(app.user.uid, 10)) {
 					$('[component="header/profilelink"]').attr('href', config.relative_path + '/user/' + userslug);
 					$('[component="header/profilelink/edit"]').attr('href', config.relative_path + '/user/' + userslug + '/edit');
 					$('[component="header/profilelink/settings"]').attr('href', config.relative_path + '/user/' + userslug + '/settings');
 					$('[component="header/username"]').text(userData.username);
-					$('[component="header/usericon"]').css('background-color', data['icon:bgColor']).text(data['icon:text']);
+					$('[component="header/usericon"]').css('background-color', response['icon:bgColor']).text(response['icon:text']);
+					$('[component="avatar/icon"]').css('background-color', response['icon:bgColor']).text(response['icon:text']);
 				}
 
 				ajaxify.go('user/' + userslug + '/edit');
-			});
+			}).catch(alerts.error)
+				.finally(() => {
+					btn.removeClass('disabled').find('i').addClass('hide');
+				});
 
 			return false;
 		});

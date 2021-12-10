@@ -1,6 +1,13 @@
 <!-- IMPORT partials/breadcrumbs.tpl -->
 <div class="clearfix">
-	<button id="upload" class="btn-success pull-right"><i class="fa fa-upload"></i> [[global:upload]]</button>
+	<div class="pull-right">
+		<div class="btn-group">
+			<button id="new-folder" class="btn-primary"><i class="fa fa-folder"></i> [[admin/manage/uploads:new-folder]]</button>
+		</div>
+		<div class="btn-group">
+			<button id="upload" class="btn-success"><i class="fa fa-upload"></i> [[global:upload]]</button>
+		</div>
+	</div>
 </div>
 
 <div class="table-responsive">
@@ -30,9 +37,9 @@
 
 				<!-- IF showPids -->
 				<td class="col-md-3 text-right">
-					<!-- BEGIN ../inPids -->
-					<a target="_blank" href="{config.relative_path}/post/@value"><span class="label label-default">@value</span></a>
-					<!-- END -->
+					{{{ each ../inPids }}}
+					<a target="_blank" href="{config.relative_path}/post/{@value}"><span class="label label-default">{@value}</span></a>
+					{{{ end }}}
 					<!-- IF !../inPids.length -->
 					<span class="label label-danger">[[admin/manage/uploads:orphaned]]</span>
 					<!-- END -->

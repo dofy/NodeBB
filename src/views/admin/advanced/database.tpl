@@ -1,6 +1,12 @@
+
 <div class="row database">
-	<div class="col-sm-9">
-		<!-- IF mongo -->
+	{{{ if mongo }}}
+	<div class="col-lg-6">
+		{{{ if mongo.serverStatusError }}}
+		<div class="alert alert-warning">
+			{mongo.serverStatusError}
+		</div>
+		{{{ end }}}
 		<div class="panel panel-default">
 			<div class="panel-heading"><i class="fa fa-hdd-o"></i> [[admin/advanced/database:mongo]]</div>
 			<div class="panel-body">
@@ -30,9 +36,11 @@
 				</div>
 			</div>
 		</div>
-		<!-- ENDIF mongo -->
+	</div>
+	{{{ end }}}
 
-		<!-- IF redis -->
+	{{{ if redis }}}
+	<div class="col-lg-6">
 		<div class="panel panel-default">
 			<div class="panel-heading"><i class="fa fa-hdd-o"></i> [[admin/advanced/database:redis]]</div>
 			<div class="panel-body">
@@ -68,9 +76,11 @@
 				</div>
 			</div>
 		</div>
-		<!-- ENDIF redis -->
+	</div>
+	{{{ end }}}
 
-		<!-- IF postgres -->
+	{{{ if postgres }}}
+	<div class="col-lg-6">
 		<div class="panel panel-default">
 			<div class="panel-heading"><i class="fa fa-hdd-o"></i> [[admin/advanced/database:postgres]]</div>
 			<div class="panel-body">
@@ -81,9 +91,13 @@
 				</div>
 			</div>
 		</div>
-		<!-- ENDIF postgres -->
+	</div>
+	{{{ end }}}
+</div>
 
-		<!-- IF mongo -->
+<div class="row database">
+	{{{ if mongo }}}
+	<div class="col-lg-6">
 		<div class="panel panel-default">
 			<div class="panel-heading" data-toggle="collapse" data-target=".mongodb-raw">
 				<h3 class="panel-title"><i class="fa fa-caret-down"></i> [[admin/advanced/database:mongo.raw-info]]</h3>
@@ -95,9 +109,11 @@
 				</div>
 			</div>
 		</div>
-		<!-- ENDIF mongo -->
+	</div>
+	{{{ end }}}
 
-		<!-- IF redis -->
+	{{{ if redis }}}
+	<div class="col-lg-6">
 		<div class="panel panel-default">
 			<div class="panel-heading" data-toggle="collapse" data-target=".redis-raw">
 				<h3 class="panel-title"><i class="fa fa-caret-down"></i> [[admin/advanced/database:redis.raw-info]]</h3>
@@ -109,9 +125,11 @@
 				</div>
 			</div>
 		</div>
-		<!-- ENDIF redis -->
+	</div>
+	{{{ end }}}
 
-		<!-- IF postgres -->
+	{{{ if postgres }}}
+	<div class="col-lg-6">
 		<div class="panel panel-default">
 			<div class="panel-heading" data-toggle="collapse" data-target=".postgresql-raw">
 				<h3 class="panel-title"><i class="fa fa-caret-down"></i> [[admin/advanced/database:postgres.raw-info]]</h3>
@@ -123,6 +141,6 @@
 				</div>
 			</div>
 		</div>
-		<!-- ENDIF postgres -->
 	</div>
+	{{{ end }}}
 </div>

@@ -1,21 +1,43 @@
 'use strict';
 
-define('forum/account/blocks', ['forum/account/header', 'autocomplete'], function (header, autocomplete) {
-	var Blocks = {};
+define('forum/account/blocks', [
+	'forum/account/header',
+	'api',
+	'hooks',
+	'alerts',
+], function (header, api, hooks, alerts) {
+	const Blocks = {};
 
 	Blocks.init = function () {
 		header.init();
 
-		autocomplete.user($('#user-search'), function (ev, ui) {
-			app.parseAndTranslate('account/blocks', 'edit', {
-				edit: [ui.item.user],
-			}, function (html) {
-				$('.block-edit').html(html);
+		$('#user-search').on('keyup', function () {
+			const username = this.value;
+
+			api.get('/api/users', {
+				query: username,
+				searchBy: 'username',
+				paginate: false,
+			}, function (err, data) {
+				if (err) {
+					return alerts.error(err);
+				}
+
+				// Only show first 10 matches
+				if (data.matchCount > 10) {
+					data.users.length = 10;
+				}
+
+				app.parseAndTranslate('account/blocks', 'edit', {
+					edit: data.users,
+				}, function (html) {
+					$('.block-edit').html(html);
+				});
 			});
 		});
 
 		$('.block-edit').on('click', '[data-action="toggle"]', function () {
-			var uid = parseInt(this.getAttribute('data-uid'), 10);
+			const uid = parseInt(this.getAttribute('data-uid'), 10);
 			socket.emit('user.toggleBlock', {
 				blockeeUid: uid,
 				blockerUid: ajaxify.data.uid,
@@ -25,7 +47,7 @@ define('forum/account/blocks', ['forum/account/header', 'autocomplete'], functio
 
 	Blocks.refreshList = function (err) {
 		if (err) {
-			return app.alertError(err.message);
+			return alerts.error(err);
 		}
 
 		$.get(config.relative_path + '/api/' + ajaxify.currentPage)
@@ -34,6 +56,7 @@ define('forum/account/blocks', ['forum/account/header', 'autocomplete'], functio
 					$('#users-container').html(html);
 					$('#users-container').siblings('div.alert')[html.length ? 'hide' : 'show']();
 				});
+				hooks.fire('action:user.blocks.toggle', { data: payload });
 			})
 			.fail(function () {
 				ajaxify.go(ajaxify.currentPage);

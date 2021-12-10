@@ -1,29 +1,36 @@
 'use strict';
 
-define('navigator', ['forum/pagination', 'components'], function (pagination, components) {
-	var navigator = {};
-	var index = 1;
-	var count = 0;
-	var navigatorUpdateTimeoutId;
+define('navigator', ['forum/pagination', 'components', 'hooks', 'alerts'], function (pagination, components, hooks, alerts) {
+	const navigator = {};
+	let index = 0;
+	let count = 0;
+	let navigatorUpdateTimeoutId;
 
-	var touchTooltipEl;
-	var touchIntervalId;
-	var touchX;
-	var touchIndex;
+	let renderPostIntervalId;
+	let touchX;
+	let touchY;
+	let renderPostIndex;
+	let isNavigating = false;
+	let firstMove = true;
 
 	navigator.scrollActive = false;
 
-	var paginationBlockEl = $('.pagination-block');
-	var paginationTextEl = paginationBlockEl.find('.pagination-text');
-	var paginationBlockMeterEl = paginationBlockEl.find('meter');
-	var paginationBlockProgressEl = paginationBlockEl.find('.progress-bar');
+	let paginationBlockEl = $('.pagination-block');
+	let paginationTextEl = paginationBlockEl.find('.pagination-text');
+	let paginationBlockMeterEl = paginationBlockEl.find('meter');
+	let paginationBlockProgressEl = paginationBlockEl.find('.progress-bar');
+	let thumb;
+	let thumbText;
+	let thumbIcon;
+	let thumbIconHeight;
+	let thumbIconHalfHeight;
 
 	$(window).on('action:ajaxify.start', function () {
 		$(window).off('keydown', onKeyDown);
 	});
 
-	navigator.init = function (selector, count, toTop, toBottom, callback, calculateIndex) {
-		index = 1;
+	navigator.init = function (selector, count, toTop, toBottom, callback) {
+		index = 0;
 		navigator.selector = selector;
 		navigator.callback = callback;
 		navigator.toTop = toTop || function () {};
@@ -33,6 +40,13 @@ define('navigator', ['forum/pagination', 'components'], function (pagination, co
 		paginationTextEl = paginationBlockEl.find('.pagination-text');
 		paginationBlockMeterEl = paginationBlockEl.find('meter');
 		paginationBlockProgressEl = paginationBlockEl.find('.progress-bar');
+
+		thumbIcon = $('.scroller-thumb-icon');
+		thumbIconHeight = thumbIcon.height();
+		thumbIconHalfHeight = thumbIconHeight / 2;
+		thumb = $('.scroller-thumb');
+		thumbText = thumb.find('.thumb-text');
+
 
 		$(window).off('scroll', navigator.delayedUpdate).on('scroll', navigator.delayedUpdate);
 
@@ -52,49 +66,23 @@ define('navigator', ['forum/pagination', 'components'], function (pagination, co
 
 		paginationBlockEl.find('input').on('keydown', function (e) {
 			if (e.which === 13) {
-				var input = $(this);
+				const input = $(this);
 				if (!utils.isNumber(input.val())) {
 					input.val('');
 					return;
 				}
 
-				var index = parseInt(input.val(), 10);
-				if (typeof calculateIndex === 'function') {
-					index = calculateIndex(index, count);
-				}
-
-				var url = generateUrl(index);
+				const index = parseInt(input.val(), 10);
+				const url = generateUrl(index);
 				input.val('');
 				$('.pagination-block .dropdown-toggle').trigger('click');
 				ajaxify.go(url);
 			}
 		});
 
-		$('.pagination-block.visible-xs').on('touchstart', function (e) {
-			touchTooltipEl = $('.navigator-thumb');
-			touchTooltipEl.removeClass('hidden');
-			touchX = Math.min($(window).width(), Math.max(0, e.touches[0].clientX));
-			updateTooltip();
-			touchIntervalId = setInterval(updateTooltip, 100);
-		}).on('touchmove', function (e) {
-			e.preventDefault();
-			e.stopPropagation();
-			var windowWidth = $(window).width();
-			touchX = Math.min(windowWidth, Math.max(0, e.touches[0].clientX));
-			var percent = touchX / windowWidth;
-			index = Math.max(1, Math.ceil(count * percent));
-			index = index > count ? count : index;
-
-			navigator.updateTextAndProgressBar();
-		}).on('touchend', function () {
-			if (touchIntervalId) {
-				clearInterval(touchIntervalId);
-				touchIntervalId = 0;
-			}
-
-			touchTooltipEl.addClass('hidden');
-			navigator.scrollToIndex(index - 1, true, 0);
-		});
+		if (ajaxify.data.template.topic) {
+			handleScrollNav();
+		}
 
 		handleKeys();
 
@@ -102,27 +90,177 @@ define('navigator', ['forum/pagination', 'components'], function (pagination, co
 		navigator.update(0);
 	};
 
-	function updateTooltip() {
-		if (touchIndex === index) {
+	function clampTop(newTop) {
+		const parent = thumb.parent();
+		const parentOffset = parent.offset();
+		if (newTop < parentOffset.top) {
+			newTop = parentOffset.top;
+		} else if (newTop > parentOffset.top + parent.height() - thumbIconHeight) {
+			newTop = parentOffset.top + parent.height() - thumbIconHeight;
+		}
+		return newTop;
+	}
+
+	function setThumbToIndex(index) {
+		if (!thumb.length || thumb.is(':hidden')) {
 			return;
 		}
-		touchIndex = index;
-		touchTooltipEl.css({ left: Math.min($(window).width() - touchTooltipEl.outerWidth(), Math.max(touchX - (touchTooltipEl.outerWidth() / 2), 0)) });
+		const parent = thumb.parent();
+		const parentOffset = parent.offset();
+		let percent = (index - 1) / ajaxify.data.postcount;
+		if (index === count) {
+			percent = 1;
+		}
+		const newTop = clampTop(parentOffset.top + ((parent.height() - thumbIconHeight) * percent));
 
-		socket.emit('posts.getTimestampByIndex', { tid: ajaxify.data.tid, index: index - 1 }, function (err, timestamp) {
+		const offset = { top: newTop, left: thumb.offset().left };
+		thumb.offset(offset);
+		thumbText.text(index + '/' + ajaxify.data.postcount);
+		renderPost(index);
+	}
+
+	function handleScrollNav() {
+		if (!thumb.length) {
+			return;
+		}
+
+		const parent = thumb.parent();
+		parent.on('click', function (ev) {
+			if ($(ev.target).hasClass('scroller-container')) {
+				const index = calculateIndexFromY(ev.pageY);
+				navigator.scrollToIndex(index - 1, true, 0);
+				return false;
+			}
+		});
+
+		function calculateIndexFromY(y) {
+			const newTop = clampTop(y - thumbIconHalfHeight);
+			const parentOffset = parent.offset();
+			const percent = (newTop - parentOffset.top) / (parent.height() - thumbIconHeight);
+			index = Math.max(1, Math.ceil(ajaxify.data.postcount * percent));
+			return index > ajaxify.data.postcount ? ajaxify.data.count : index;
+		}
+
+		let mouseDragging = false;
+		hooks.on('action:ajaxify.end', function () {
+			renderPostIndex = null;
+		});
+		$('.pagination-block .dropdown-menu').parent().on('shown.bs.dropdown', function () {
+			setThumbToIndex(index);
+		});
+
+		thumb.on('mousedown', function () {
+			mouseDragging = true;
+			$(window).on('mousemove', mousemove);
+			firstMove = true;
+		});
+
+		function mouseup() {
+			$(window).off('mousemove', mousemove);
+			if (mouseDragging) {
+				navigator.scrollToIndex(index - 1, true, 0);
+				paginationBlockEl.find('[data-toggle="dropdown"]').trigger('click');
+			}
+			clearRenderInterval();
+			mouseDragging = false;
+			firstMove = false;
+		}
+
+		function mousemove(ev) {
+			const newTop = clampTop(ev.pageY - thumbIconHalfHeight);
+			thumb.offset({ top: newTop, left: thumb.offset().left });
+			const index = calculateIndexFromY(ev.pageY);
+			navigator.updateTextAndProgressBar();
+			thumbText.text(index + '/' + ajaxify.data.postcount);
+			if (firstMove) {
+				delayedRenderPost();
+			}
+			firstMove = false;
+			ev.stopPropagation();
+			return false;
+		}
+
+		function delayedRenderPost() {
+			clearRenderInterval();
+			renderPostIntervalId = setInterval(function () {
+				renderPost(index);
+			}, 250);
+		}
+
+		$(window).off('mousemove', mousemove);
+		$(window).off('mouseup', mouseup).on('mouseup', mouseup);
+
+		thumb.on('touchstart', function (ev) {
+			isNavigating = true;
+			touchX = Math.min($(window).width(), Math.max(0, ev.touches[0].clientX));
+			touchY = Math.min($(window).height(), Math.max(0, ev.touches[0].clientY));
+			firstMove = true;
+		});
+
+		thumb.on('touchmove', function (ev) {
+			const windowWidth = $(window).width();
+			const windowHeight = $(window).height();
+			const deltaX = Math.abs(touchX - Math.min(windowWidth, Math.max(0, ev.touches[0].clientX)));
+			const deltaY = Math.abs(touchY - Math.min(windowHeight, Math.max(0, ev.touches[0].clientY)));
+			touchX = Math.min(windowWidth, Math.max(0, ev.touches[0].clientX));
+			touchY = Math.min(windowHeight, Math.max(0, ev.touches[0].clientY));
+
+			if (deltaY >= deltaX && firstMove) {
+				isNavigating = true;
+				delayedRenderPost();
+			}
+
+			if (isNavigating && ev.cancelable) {
+				ev.preventDefault();
+				ev.stopPropagation();
+				const newTop = clampTop(touchY + $(window).scrollTop() - thumbIconHalfHeight);
+				thumb.offset({ top: newTop, left: thumb.offset().left });
+				const index = calculateIndexFromY(touchY + $(window).scrollTop());
+				navigator.updateTextAndProgressBar();
+				thumbText.text(index + '/' + ajaxify.data.postcount);
+				if (firstMove) {
+					renderPost(index);
+				}
+			}
+			firstMove = false;
+		});
+
+		thumb.on('touchend', function () {
+			clearRenderInterval();
+			if (isNavigating) {
+				navigator.scrollToIndex(index - 1, true, 0);
+				isNavigating = false;
+				paginationBlockEl.find('[data-toggle="dropdown"]').trigger('click');
+			}
+		});
+	}
+
+	function clearRenderInterval() {
+		if (renderPostIntervalId) {
+			clearInterval(renderPostIntervalId);
+			renderPostIntervalId = 0;
+		}
+	}
+
+	function renderPost(index, callback) {
+		callback = callback || function () {};
+		if (renderPostIndex === index || paginationBlockEl.find('.post-content').is(':hidden')) {
+			return;
+		}
+		renderPostIndex = index;
+
+		socket.emit('posts.getPostSummaryByIndex', { tid: ajaxify.data.tid, index: index - 1 }, function (err, postData) {
 			if (err) {
-				return app.alertError(err.message);
+				return alerts.error(err);
 			}
+			app.parseAndTranslate('partials/topic/navigation-post', { post: postData }, function (html) {
+				paginationBlockEl
+					.find('.post-content')
+					.html(html)
+					.find('.timeago').timeago();
+			});
 
-			var relIndex = getRelativeIndex();
-			var date = new Date(timestamp);
-			var ds = date.toLocaleString(config.userLang, { month: 'long' });
-			touchTooltipEl.find('.text').translateText('[[global:pagination.out_of, ' + relIndex + ', ' + count + ']]');
-			if (timestamp > Date.now() - (30 * 24 * 60 * 60 * 1000)) {
-				touchTooltipEl.find('.time').text(ds + ' ' + date.getDate());
-			} else {
-				touchTooltipEl.find('.time').text(ds + ' ' + date.getFullYear());
-			}
+			callback();
 		});
 	}
 
@@ -148,13 +286,17 @@ define('navigator', ['forum/pagination', 'components'], function (pagination, co
 	}
 
 	function generateUrl(index) {
-		var pathname = window.location.pathname.replace(config.relative_path, '');
-		var parts = pathname.split('/');
+		const pathname = window.location.pathname.replace(config.relative_path, '');
+		const parts = pathname.split('/');
 		return parts[1] + '/' + parts[2] + '/' + parts[3] + (index ? '/' + index : '');
 	}
 
 	navigator.setCount = function (value) {
-		count = parseInt(value, 10);
+		value = parseInt(value, 10);
+		if (value === count) {
+			return;
+		}
+		count = value;
 		navigator.updateTextAndProgressBar();
 	};
 
@@ -173,7 +315,7 @@ define('navigator', ['forum/pagination', 'components'], function (pagination, co
 	};
 
 	function toggle(flag) {
-		var path = ajaxify.removeRelativePath(window.location.pathname.slice(1));
+		const path = ajaxify.removeRelativePath(window.location.pathname.slice(1));
 		if (flag && (!path.startsWith('topic') && !path.startsWith('category'))) {
 			return;
 		}
@@ -196,57 +338,65 @@ define('navigator', ['forum/pagination', 'components'], function (pagination, co
 			a spot where a user is expecting to begin reading.
 		*/
 		threshold = typeof threshold === 'number' ? threshold : undefined;
-
-		var els = $(navigator.selector);
+		let newIndex = index;
+		const els = $(navigator.selector);
 		if (els.length) {
-			index = parseInt(els.first().attr('data-index'), 10) + 1;
+			newIndex = parseInt(els.first().attr('data-index'), 10) + 1;
 		}
 
-		var scrollTop = $(window).scrollTop();
-		var windowHeight = $(window).height();
-		var documentHeight = $(document).height();
-		var middleOfViewport = scrollTop + (windowHeight / 2);
-		var previousDistance = Number.MAX_VALUE;
+		const scrollTop = $(window).scrollTop();
+		const windowHeight = $(window).height();
+		const documentHeight = $(document).height();
+		const middleOfViewport = scrollTop + (windowHeight / 2);
+		let previousDistance = Number.MAX_VALUE;
 		els.each(function () {
-			var distanceToMiddle = Math.abs(middleOfViewport - $(this).offset().top);
+			const $this = $(this);
+			const elIndex = parseInt($this.attr('data-index'), 10);
+			if (elIndex >= 0) {
+				const distanceToMiddle = Math.abs(middleOfViewport - ($this.offset().top + ($this.outerHeight(true) / 2)));
+				if (distanceToMiddle > previousDistance) {
+					return false;
+				}
 
-			if (distanceToMiddle > previousDistance) {
-				return false;
-			}
-
-			if (distanceToMiddle < previousDistance) {
-				index = parseInt($(this).attr('data-index'), 10) + 1;
-				previousDistance = distanceToMiddle;
+				if (distanceToMiddle < previousDistance) {
+					newIndex = elIndex + 1;
+					previousDistance = distanceToMiddle;
+				}
 			}
 		});
 
-		var atTop = scrollTop === 0 && parseInt(els.first().attr('data-index'), 10) === 0;
-		var nearBottom = scrollTop + windowHeight > documentHeight - 100 && parseInt(els.last().attr('data-index'), 10) === count - 1;
+		const atTop = scrollTop === 0 && parseInt(els.first().attr('data-index'), 10) === 0;
+		const nearBottom = scrollTop + windowHeight > documentHeight - 100 && parseInt(els.last().attr('data-index'), 10) === count - 1;
 
 		if (atTop) {
-			index = 1;
+			newIndex = 1;
 		} else if (nearBottom) {
-			index = count;
+			newIndex = count;
 		}
 
 		// If a threshold is undefined, try to determine one based on new index
-		if (threshold === undefined && ajaxify.data.template.topic === true) {
+		if (threshold === undefined && ajaxify.data.template.topic) {
 			if (atTop) {
 				threshold = 0;
 			} else {
-				var anchorEl = components.get('post/anchor', index - 1);
+				const anchorEl = components.get('post/anchor', index - 1);
 				if (anchorEl.length) {
-					var anchorRect = anchorEl.get(0).getBoundingClientRect();
+					const anchorRect = anchorEl.get(0).getBoundingClientRect();
 					threshold = anchorRect.top;
 				}
 			}
 		}
 
 		if (typeof navigator.callback === 'function') {
-			navigator.callback(index, count, threshold);
+			navigator.callback(newIndex, count, threshold);
 		}
 
-		navigator.updateTextAndProgressBar();
+		if (newIndex !== index) {
+			index = newIndex;
+			navigator.updateTextAndProgressBar();
+			setThumbToIndex(index);
+		}
+
 		toggle(!!count);
 	};
 
@@ -255,31 +405,17 @@ define('navigator', ['forum/pagination', 'components'], function (pagination, co
 			return;
 		}
 		index = index > count ? count : index;
-		var relIndex = getRelativeIndex();
-		paginationTextEl.translateHtml('[[global:pagination.out_of, ' + relIndex + ', ' + count + ']]');
-		var fraction = (relIndex - 1) / (count - 1 || 1);
+		paginationTextEl.translateHtml('[[global:pagination.out_of, ' + index + ', ' + count + ']]');
+		const fraction = (index - 1) / (count - 1 || 1);
 		paginationBlockMeterEl.val(fraction);
 		paginationBlockProgressEl.width((fraction * 100) + '%');
 	};
 
-	function getRelativeIndex() {
-		var relIndex = index;
-		if (relIndex === 1) {
-			return 1;
-		}
-		if (ajaxify.data.template.topic) {
-			if (config.topicPostSort === 'most_votes' || config.topicPostSort === 'newest_to_oldest') {
-				relIndex = ajaxify.data.postcount - index + 2;
-			}
-		}
-		return relIndex;
-	}
-
 	navigator.scrollUp = function () {
-		var $window = $(window);
+		const $window = $(window);
 
 		if (config.usePagination) {
-			var atTop = $window.scrollTop() <= 0;
+			const atTop = $window.scrollTop() <= 0;
 			if (atTop) {
 				return pagination.previousPage(function () {
 					$('body,html').scrollTop($(document).height() - $window.height());
@@ -292,10 +428,10 @@ define('navigator', ['forum/pagination', 'components'], function (pagination, co
 	};
 
 	navigator.scrollDown = function () {
-		var $window = $(window);
+		const $window = $(window);
 
 		if (config.usePagination) {
-			var atBottom = $window.scrollTop() >= $(document).height() - $window.height();
+			const atBottom = $window.scrollTop() >= $(document).height() - $window.height();
 			if (atBottom) {
 				return pagination.nextPage();
 			}
@@ -327,8 +463,8 @@ define('navigator', ['forum/pagination', 'components'], function (pagination, co
 	};
 
 	navigator.scrollToIndex = function (index, highlight, duration) {
-		var inTopic = !!components.get('topic').length;
-		var inCategory = !!components.get('category').length;
+		const inTopic = !!components.get('topic').length;
+		const inCategory = !!components.get('category').length;
 
 		if (!utils.isNumber(index) || (!inTopic && !inCategory)) {
 			return;
@@ -354,19 +490,9 @@ define('navigator', ['forum/pagination', 'components'], function (pagination, co
 			return;
 		}
 
-		var scrollMethod = inTopic ? navigator.scrollToPostIndex : navigator.scrollToTopicIndex;
-		if (inTopic) {
-			if (config.topicPostSort === 'most_votes' || config.topicPostSort === 'newest_to_oldest') {
-				index = ajaxify.data.postcount - index;
-			}
-		} else if (inCategory) {
-			if (config.categoryTopicSort === 'most_posts' || config.categoryTopicSort === 'oldest_to_newest') {
-				index = ajaxify.data.topic_count - index;
-			}
-		}
+		const scrollMethod = inTopic ? navigator.scrollToPostIndex : navigator.scrollToTopicIndex;
 
-		var page = Math.max(1, Math.ceil((index + 1) / config.postsPerPage));
-
+		const page = 1 + Math.floor(index / config.postsPerPage);
 		if (parseInt(page, 10) !== ajaxify.data.pagination.currentPage) {
 			pagination.loadPage(page, function () {
 				scrollMethod(index, highlight, duration);
@@ -377,12 +503,12 @@ define('navigator', ['forum/pagination', 'components'], function (pagination, co
 	};
 
 	navigator.scrollToPostIndex = function (postIndex, highlight, duration) {
-		var scrollTo = components.get('post', 'index', postIndex);
+		const scrollTo = components.get('post', 'index', postIndex);
 		navigator.scrollToElement(scrollTo, highlight, duration);
 	};
 
 	navigator.scrollToTopicIndex = function (topicIndex, highlight, duration) {
-		var scrollTo = $('[component="category/topic"][data-index="' + topicIndex + '"]');
+		const scrollTo = $('[component="category/topic"][data-index="' + topicIndex + '"]');
 		navigator.scrollToElement(scrollTo, highlight, duration);
 	};
 
@@ -391,24 +517,29 @@ define('navigator', ['forum/pagination', 'components'], function (pagination, co
 			navigator.scrollActive = false;
 			return;
 		}
-		var postHeight = scrollTo.height();
-		var viewportHeight = $(window).height();
-		var navbarHeight = components.get('navbar').height();
+
+		const postHeight = scrollTo.outerHeight(true);
+		const navbarHeight = components.get('navbar').outerHeight(true);
+		const topicHeaderHeight = $('.topic-header').outerHeight(true) || 0;
+		const viewportHeight = $(window).height();
 
 		// Temporarily disable navigator update on scroll
-		$(window).off('scroll', navigator.update);
+		$(window).off('scroll', navigator.delayedUpdate);
 
 		duration = duration !== undefined ? duration : 400;
 		navigator.scrollActive = true;
-		var done = false;
+		let done = false;
 
 		function animateScroll() {
+			function reenableScroll() {
+				// Re-enable onScroll behaviour
+				$(window).on('scroll', navigator.delayedUpdate);
+				const scrollToRect = scrollTo.get(0).getBoundingClientRect();
+				navigator.update(scrollToRect.top);
+			}
 			function onAnimateComplete() {
 				if (done) {
-					// Re-enable onScroll behaviour
-					$(window).on('scroll', navigator.update);
-					var scrollToRect = scrollTo.get(0).getBoundingClientRect();
-					navigator.update(scrollToRect.top);
+					reenableScroll();
 					return;
 				}
 				done = true;
@@ -419,15 +550,18 @@ define('navigator', ['forum/pagination', 'components'], function (pagination, co
 				$('html').scrollTop($('html').scrollTop() - 1);
 			}
 
-			var scrollTop = 0;
-			if (postHeight < viewportHeight) {
-				scrollTop = (scrollTo.offset().top - (viewportHeight / 2) + (postHeight / 2));
+			let scrollTop = 0;
+			if (postHeight < viewportHeight - navbarHeight - topicHeaderHeight) {
+				scrollTop = scrollTo.offset().top - (viewportHeight / 2) + (postHeight / 2);
 			} else {
-				scrollTop = scrollTo.offset().top - navbarHeight;
+				scrollTop = scrollTo.offset().top - navbarHeight - topicHeaderHeight;
 			}
+
 			if (duration === 0) {
 				$(window).scrollTop(scrollTop);
-				return onAnimateComplete();
+				onAnimateComplete();
+				reenableScroll();
+				return;
 			}
 			$('html, body').animate({
 				scrollTop: scrollTop + 'px',
@@ -436,6 +570,7 @@ define('navigator', ['forum/pagination', 'components'], function (pagination, co
 
 		function highlightPost() {
 			if (highlight) {
+				$('[component="post"],[component="category/topic"]').removeClass('highlight');
 				scrollTo.addClass('highlight');
 				setTimeout(function () {
 					scrollTo.removeClass('highlight');
@@ -448,3 +583,4 @@ define('navigator', ['forum/pagination', 'components'], function (pagination, co
 
 	return navigator;
 });
+

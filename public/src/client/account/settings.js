@@ -1,13 +1,15 @@
 'use strict';
 
 
-define('forum/account/settings', ['forum/account/header', 'components', 'sounds', 'translator'], function (header, components, sounds, translator) {
-	var	AccountSettings = {};
+define('forum/account/settings', [
+	'forum/account/header', 'components', 'translator', 'api', 'alerts',
+], function (header, components, translator, api, alerts) {
+	const AccountSettings = {};
 
 	// If page skin is changed but not saved, switch the skin back
 	$(window).on('action:ajaxify.start', function () {
 		if (ajaxify.data.template.name === 'account/settings' && $('#bootswatchSkin').val() !== config.bootswatchSkin) {
-			app.reskin(config.bootswatchSkin);
+			reskin(config.bootswatchSkin);
 		}
 	});
 
@@ -15,13 +17,13 @@ define('forum/account/settings', ['forum/account/header', 'components', 'sounds'
 		header.init();
 
 		$('#submitBtn').on('click', function () {
-			var settings = loadSettings();
+			const settings = loadSettings();
 
 			if (settings.homePageRoute === 'custom' && settings.homePageCustom) {
 				$.get(config.relative_path + '/' + settings.homePageCustom, function () {
 					saveSettings(settings);
 				}).fail(function () {
-					app.alertError('[[error:invalid-home-page-route]]');
+					alerts.error('[[error:invalid-home-page-route]]');
 				});
 			} else {
 				saveSettings(settings);
@@ -31,18 +33,10 @@ define('forum/account/settings', ['forum/account/header', 'components', 'sounds'
 		});
 
 		$('#bootswatchSkin').on('change', function () {
-			app.reskin($(this).val());
+			reskin($(this).val());
 		});
 
 		$('[data-property="homePageRoute"]').on('change', toggleCustomRoute);
-
-		$('.account').find('button[data-action="play"]').on('click', function (e) {
-			e.preventDefault();
-
-			var	soundName = $(this).parent().parent().find('select')
-				.val();
-			sounds.playSound(soundName);
-		});
 
 		toggleCustomRoute();
 
@@ -50,24 +44,23 @@ define('forum/account/settings', ['forum/account/header', 'components', 'sounds'
 	};
 
 	function loadSettings() {
-		var settings = {};
+		const settings = {};
 
 		$('.account').find('input, textarea, select').each(function (id, input) {
 			input = $(input);
-			var setting = input.attr('data-property');
+			const setting = input.attr('data-property');
 			if (input.is('select')) {
 				settings[setting] = input.val();
 				return;
 			}
 
 			switch (input.attr('type')) {
-			case 'text':
-			case 'textarea':
-				settings[setting] = input.val();
-				break;
-			case 'checkbox':
-				settings[setting] = input.is(':checked') ? 1 : 0;
-				break;
+				case 'checkbox':
+					settings[setting] = input.is(':checked') ? 1 : 0;
+					break;
+				default:
+					settings[setting] = input.val();
+					break;
 			}
 		});
 
@@ -75,17 +68,13 @@ define('forum/account/settings', ['forum/account/header', 'components', 'sounds'
 	}
 
 	function saveSettings(settings) {
-		socket.emit('user.saveSettings', { uid: ajaxify.data.theirid, settings: settings }, function (err, newSettings) {
-			if (err) {
-				return app.alertError(err.message);
-			}
-
-			app.alertSuccess('[[success:settings-saved]]');
-			var requireReload = false;
-			for (var key in newSettings) {
+		api.put(`/users/${ajaxify.data.uid}/settings`, { settings }).then((newSettings) => {
+			alerts.success('[[success:settings-saved]]');
+			let languageChanged = false;
+			for (const key in newSettings) {
 				if (newSettings.hasOwnProperty(key)) {
 					if (key === 'userLang' && config.userLang !== newSettings.userLang) {
-						requireReload = true;
+						languageChanged = true;
 					}
 					if (config.hasOwnProperty(key)) {
 						config[key] = newSettings[key];
@@ -93,15 +82,17 @@ define('forum/account/settings', ['forum/account/header', 'components', 'sounds'
 				}
 			}
 
-			sounds.loadMap();
-
-			if (requireReload && parseInt(app.user.uid, 10) === parseInt(ajaxify.data.theirid, 10)) {
+			if (languageChanged && parseInt(app.user.uid, 10) === parseInt(ajaxify.data.theirid, 10)) {
 				translator.translate('[[language:dir]]', config.userLang, function (translated) {
-					var htmlEl = $('html');
+					const htmlEl = $('html');
 					htmlEl.attr('data-dir', translated);
 					htmlEl.css('direction', translated);
 				});
-				ajaxify.refresh();
+
+				translator.switchTimeagoLanguage(utils.userLangToTimeagoCode(config.userLang), function () {
+					overrides.overrideTimeago();
+					ajaxify.refresh();
+				});
 			}
 		});
 	}
@@ -113,6 +104,43 @@ define('forum/account/settings', ['forum/account/header', 'components', 'sounds'
 			$('#homePageCustom').hide();
 			$('[data-property="homePageCustom"]').val('');
 		}
+	}
+
+	function reskin(skinName) {
+		const clientEl = Array.prototype.filter.call(document.querySelectorAll('link[rel="stylesheet"]'), function (el) {
+			return el.href.indexOf(config.relative_path + '/assets/client') !== -1;
+		})[0] || null;
+		if (!clientEl) {
+			return;
+		}
+
+		const currentSkinClassName = $('body').attr('class').split(/\s+/).filter(function (className) {
+			return className.startsWith('skin-');
+		});
+		if (!currentSkinClassName[0]) {
+			return;
+		}
+		let currentSkin = currentSkinClassName[0].slice(5);
+		currentSkin = currentSkin !== 'noskin' ? currentSkin : '';
+
+		// Stop execution if skin didn't change
+		if (skinName === currentSkin) {
+			return;
+		}
+
+		const linkEl = document.createElement('link');
+		linkEl.rel = 'stylesheet';
+		linkEl.type = 'text/css';
+		linkEl.href = config.relative_path + '/assets/client' + (skinName ? '-' + skinName : '') + '.css';
+		linkEl.onload = function () {
+			clientEl.parentNode.removeChild(clientEl);
+
+			// Update body class with proper skin name
+			$('body').removeClass(currentSkinClassName.join(' '));
+			$('body').addClass('skin-' + (skinName || 'noskin'));
+		};
+
+		document.head.appendChild(linkEl);
 	}
 
 	return AccountSettings;

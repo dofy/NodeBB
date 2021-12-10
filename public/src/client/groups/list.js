@@ -1,8 +1,9 @@
 'use strict';
 
-
-define('forum/groups/list', ['forum/infinitescroll', 'benchpress'], function (infinitescroll, Benchpress) {
-	var Groups = {};
+define('forum/groups/list', [
+	'forum/infinitescroll', 'benchpress', 'api', 'bootbox', 'alerts',
+], function (infinitescroll, Benchpress, api, bootbox, alerts) {
+	const Groups = {};
 
 	Groups.init = function () {
 		infinitescroll.init(Groups.loadMoreGroups);
@@ -11,19 +12,15 @@ define('forum/groups/list', ['forum/infinitescroll', 'benchpress'], function (in
 		$('button[data-action="new"]').on('click', function () {
 			bootbox.prompt('[[groups:new-group.group_name]]', function (name) {
 				if (name && name.length) {
-					socket.emit('groups.create', {
+					api.post('/groups', {
 						name: name,
-					}, function (err) {
-						if (!err) {
-							ajaxify.go('groups/' + utils.slugify(name));
-						} else {
-							app.alertError(err.message);
-						}
-					});
+					}).then((res) => {
+						ajaxify.go('groups/' + res.slug);
+					}).catch(alerts.error);
 				}
 			});
 		});
-		var params = utils.params();
+		const params = utils.params();
 		$('#search-sort').val(params.sort || 'alpha');
 
 		// Group searching
@@ -44,9 +41,9 @@ define('forum/groups/list', ['forum/infinitescroll', 'benchpress'], function (in
 			after: $('[component="groups/container"]').attr('data-nextstart'),
 		}, function (data, done) {
 			if (data && data.groups.length) {
-				Benchpress.parse('partials/groups/list', {
+				Benchpress.render('partials/groups/list', {
 					groups: data.groups,
-				}, function (html) {
+				}).then(function (html) {
 					$('#groups-list').append(html);
 					done();
 				});
@@ -61,9 +58,9 @@ define('forum/groups/list', ['forum/infinitescroll', 'benchpress'], function (in
 	};
 
 	Groups.search = function () {
-		var groupsEl = $('#groups-list');
-		var queryEl = $('#search-text');
-		var sortEl = $('#search-sort');
+		const groupsEl = $('#groups-list');
+		const queryEl = $('#search-text');
+		const sortEl = $('#search-sort');
 
 		socket.emit('groups.search', {
 			query: queryEl.val(),
@@ -75,14 +72,14 @@ define('forum/groups/list', ['forum/infinitescroll', 'benchpress'], function (in
 			},
 		}, function (err, groups) {
 			if (err) {
-				return app.alertError(err.message);
+				return alerts.error(err);
 			}
 			groups = groups.filter(function (group) {
 				return group.name !== 'registered-users' && group.name !== 'guests';
 			});
-			Benchpress.parse('partials/groups/list', {
+			Benchpress.render('partials/groups/list', {
 				groups: groups,
-			}, function (html) {
+			}).then(function (html) {
 				groupsEl.empty().append(html);
 			});
 		});

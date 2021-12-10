@@ -1,62 +1,52 @@
 'use strict';
 
-var async = require('async');
+const categories = require('../../categories');
+const privileges = require('../../privileges');
 
-var categories = require('../../categories');
-var privileges = require('../../privileges');
+const privilegesController = module.exports;
 
-var privilegesController = module.exports;
+privilegesController.get = async function (req, res) {
+	const cid = req.params.cid ? parseInt(req.params.cid, 10) || 0 : 0;
+	const isAdminPriv = req.params.cid === 'admin';
 
-privilegesController.get = function (req, res, callback) {
-	var cid = req.params.cid ? parseInt(req.params.cid, 10) : 0;
-	async.waterfall([
-		function (next) {
-			async.parallel({
-				privileges: function (next) {
-					if (!cid) {
-						privileges.global.list(next);
-					} else {
-						privileges.categories.list(cid, next);
-					}
-				},
-				categories: function (next) {
-					async.waterfall([
-						function (next) {
-							categories.getAllCidsFromSet('categories:cid', next);
-						},
-						function (cids, next) {
-							categories.getCategories(cids, req.uid, next);
-						},
-						function (categoriesData, next) {
-							categoriesData = categories.getTree(categoriesData);
-							categories.buildForSelectCategories(categoriesData, next);
-						},
-					], next);
-				},
-			}, next);
-		},
-		function (data) {
-			data.categories.unshift({
-				cid: 0,
-				name: '[[admin/manage/privileges:global]]',
-				icon: 'fa-list',
-			});
-			data.categories.forEach(function (category) {
-				if (category) {
-					category.selected = category.cid === cid;
+	let privilegesData;
+	if (cid > 0) {
+		privilegesData = await privileges.categories.list(cid);
+	} else if (cid === 0) {
+		privilegesData = await (isAdminPriv ? privileges.admin.list(req.uid) : privileges.global.list());
+	}
 
-					if (category.selected) {
-						data.selected = category;
-					}
-				}
-			});
+	const categoriesData = [{
+		cid: 0,
+		name: '[[admin/manage/privileges:global]]',
+		icon: 'fa-list',
+	}, {
+		cid: 'admin',
+		name: '[[admin/manage/privileges:admin]]',
+		icon: 'fa-lock',
+	}];
 
-			res.render('admin/manage/privileges', {
-				privileges: data.privileges,
-				categories: data.categories,
-				selectedCategory: data.selected,
-				cid: cid,
-			});
-		},
-	], callback);
+	let selectedCategory;
+	categoriesData.forEach((category) => {
+		if (category) {
+			category.selected = category.cid === (!isAdminPriv ? cid : 'admin');
+
+			if (category.selected) {
+				selectedCategory = category;
+			}
+		}
+	});
+	if (!selectedCategory) {
+		selectedCategory = await categories.getCategoryFields(cid, ['cid', 'name', 'icon', 'bgColor', 'color']);
+	}
+
+	const group = req.query.group ? req.query.group : '';
+	res.render('admin/manage/privileges', {
+		privileges: privilegesData,
+		categories: categoriesData,
+		selectedCategory,
+		cid,
+		group,
+		isAdminPriv,
+	});
 };

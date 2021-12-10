@@ -1,21 +1,22 @@
 'use strict';
 
-var async = require('async');
-var _ = require('lodash');
+const _ = require('lodash');
 
-var groups = require('../groups');
-var plugins = require('../plugins');
-var db = require('../database');
-var privileges = require('../privileges');
-var categories = require('../categories');
-var meta = require('../meta');
+const groups = require('../groups');
+const plugins = require('../plugins');
+const db = require('../database');
+const privileges = require('../privileges');
+const categories = require('../categories');
+const meta = require('../meta');
+const utils = require('../utils');
 
-var User = module.exports;
+const User = module.exports;
 
 User.email = require('./email');
 User.notifications = require('./notifications');
 User.reset = require('./reset');
 User.digest = require('./digest');
+User.interstitials = require('./interstitials');
 
 require('./data')(User);
 require('./auth')(User);
@@ -40,375 +41,202 @@ require('./online')(User);
 require('./blocks')(User);
 require('./uploads')(User);
 
-User.getUidsFromSet = function (set, start, stop, callback) {
+User.exists = async function (uids) {
+	return await (
+		Array.isArray(uids) ?
+			db.isSortedSetMembers('users:joindate', uids) :
+			db.isSortedSetMember('users:joindate', uids)
+	);
+};
+
+User.existsBySlug = async function (userslug) {
+	const exists = await User.getUidByUserslug(userslug);
+	return !!exists;
+};
+
+User.getUidsFromSet = async function (set, start, stop) {
 	if (set === 'users:online') {
-		var count = parseInt(stop, 10) === -1 ? stop : stop - start + 1;
-		var now = Date.now();
-		db.getSortedSetRevRangeByScore(set, start, count, '+inf', now - (meta.config.onlineCutoff * 60000), callback);
-	} else {
-		db.getSortedSetRevRange(set, start, stop, callback);
+		const count = parseInt(stop, 10) === -1 ? stop : stop - start + 1;
+		const now = Date.now();
+		return await db.getSortedSetRevRangeByScore(set, start, count, '+inf', now - (meta.config.onlineCutoff * 60000));
 	}
+	return await db.getSortedSetRevRange(set, start, stop);
 };
 
-User.getUsersFromSet = function (set, uid, start, stop, callback) {
-	async.waterfall([
-		function (next) {
-			User.getUidsFromSet(set, start, stop, next);
-		},
-		function (uids, next) {
-			User.getUsers(uids, uid, next);
-		},
-	], callback);
+User.getUsersFromSet = async function (set, uid, start, stop) {
+	const uids = await User.getUidsFromSet(set, start, stop);
+	return await User.getUsers(uids, uid);
 };
 
-User.getUsersWithFields = function (uids, fields, uid, callback) {
-	async.waterfall([
-		function (next) {
-			plugins.fireHook('filter:users.addFields', { fields: fields }, next);
-		},
-		function (data, next) {
-			data.fields = _.uniq(data.fields);
-
-			async.parallel({
-				userData: function (next) {
-					User.getUsersFields(uids, data.fields, next);
-				},
-				isAdmin: function (next) {
-					User.isAdministrator(uids, next);
-				},
-			}, next);
-		},
-		function (results, next) {
-			results.userData.forEach(function (user, index) {
-				if (user) {
-					user.administrator = results.isAdmin[index];
-
-					if (user.hasOwnProperty('status')) {
-						user.status = User.getStatus(user);
-					}
-				}
-			});
-			plugins.fireHook('filter:userlist.get', { users: results.userData, uid: uid }, next);
-		},
-		function (data, next) {
-			next(null, data.users);
-		},
-	], callback);
+User.getUsersWithFields = async function (uids, fields, uid) {
+	let results = await plugins.hooks.fire('filter:users.addFields', { fields: fields });
+	results.fields = _.uniq(results.fields);
+	const userData = await User.getUsersFields(uids, results.fields);
+	results = await plugins.hooks.fire('filter:userlist.get', { users: userData, uid: uid });
+	return results.users;
 };
 
-User.getUsers = function (uids, uid, callback) {
-	User.getUsersWithFields(uids, [
+User.getUsers = async function (uids, uid) {
+	return await User.getUsersWithFields(uids, [
 		'uid', 'username', 'userslug', 'picture', 'status',
 		'postcount', 'reputation', 'email:confirmed', 'lastonline',
 		'flags', 'banned', 'banned:expire', 'joindate',
-	], uid, callback);
+	], uid);
 };
 
 User.getStatus = function (userData) {
 	if (userData.uid <= 0) {
 		return 'offline';
 	}
-	var isOnline = (Date.now() - userData.lastonline) < (meta.config.onlineCutoff * 60000);
+	const isOnline = (Date.now() - userData.lastonline) < (meta.config.onlineCutoff * 60000);
 	return isOnline ? (userData.status || 'online') : 'offline';
 };
 
-User.exists = function (uid, callback) {
-	db.exists('user:' + uid, callback);
-};
-
-User.existsBySlug = function (userslug, callback) {
-	User.getUidByUserslug(userslug, function (err, exists) {
-		callback(err, !!exists);
-	});
-};
-
-User.getUidByUsername = function (username, callback) {
+User.getUidByUsername = async function (username) {
 	if (!username) {
-		return callback(null, 0);
+		return 0;
 	}
-	db.sortedSetScore('username:uid', username, callback);
+	return await db.sortedSetScore('username:uid', username);
 };
 
-User.getUidsByUsernames = function (usernames, callback) {
-	db.sortedSetScores('username:uid', usernames, callback);
+User.getUidsByUsernames = async function (usernames) {
+	return await db.sortedSetScores('username:uid', usernames);
 };
 
-User.getUidByUserslug = function (userslug, callback) {
+User.getUidByUserslug = async function (userslug) {
 	if (!userslug) {
-		return callback(null, 0);
+		return 0;
 	}
-	db.sortedSetScore('userslug:uid', userslug, callback);
+	return await db.sortedSetScore('userslug:uid', userslug);
 };
 
-User.getUsernamesByUids = function (uids, callback) {
-	async.waterfall([
-		function (next) {
-			User.getUsersFields(uids, ['username'], next);
-		},
-		function (users, next) {
-			users = users.map(function (user) {
-				return user.username;
-			});
-
-			next(null, users);
-		},
-	], callback);
+User.getUsernamesByUids = async function (uids) {
+	const users = await User.getUsersFields(uids, ['username']);
+	return users.map(user => user.username);
 };
 
-User.getUsernameByUserslug = function (slug, callback) {
-	async.waterfall([
-		function (next) {
-			User.getUidByUserslug(slug, next);
-		},
-		function (uid, next) {
-			User.getUserField(uid, 'username', next);
-		},
-	], callback);
+User.getUsernameByUserslug = async function (slug) {
+	const uid = await User.getUidByUserslug(slug);
+	return await User.getUserField(uid, 'username');
 };
 
-User.getUidByEmail = function (email, callback) {
-	db.sortedSetScore('email:uid', email.toLowerCase(), callback);
+User.getUidByEmail = async function (email) {
+	return await db.sortedSetScore('email:uid', email.toLowerCase());
 };
 
-User.getUidsByEmails = function (emails, callback) {
-	emails = emails.map(function (email) {
-		return email && email.toLowerCase();
-	});
-	db.sortedSetScores('email:uid', emails, callback);
+User.getUidsByEmails = async function (emails) {
+	emails = emails.map(email => email && email.toLowerCase());
+	return await db.sortedSetScores('email:uid', emails);
 };
 
-User.getUsernameByEmail = function (email, callback) {
-	async.waterfall([
-		function (next) {
-			db.sortedSetScore('email:uid', email.toLowerCase(), next);
-		},
-		function (uid, next) {
-			User.getUserField(uid, 'username', next);
-		},
-	], callback);
+User.getUsernameByEmail = async function (email) {
+	const uid = await db.sortedSetScore('email:uid', String(email).toLowerCase());
+	return await User.getUserField(uid, 'username');
 };
 
-User.isModerator = function (uid, cid, callback) {
-	privileges.users.isModerator(uid, cid, callback);
+User.isModerator = async function (uid, cid) {
+	return await privileges.users.isModerator(uid, cid);
 };
 
-User.isModeratorOfAnyCategory = function (uid, callback) {
-	User.getModeratedCids(uid, function (err, cids) {
-		callback(err, Array.isArray(cids) ? !!cids.length : false);
+User.isModeratorOfAnyCategory = async function (uid) {
+	const cids = await User.getModeratedCids(uid);
+	return Array.isArray(cids) ? !!cids.length : false;
+};
+
+User.isAdministrator = async function (uid) {
+	return await privileges.users.isAdministrator(uid);
+};
+
+User.isGlobalModerator = async function (uid) {
+	return await privileges.users.isGlobalModerator(uid);
+};
+
+User.getPrivileges = async function (uid) {
+	return await utils.promiseParallel({
+		isAdmin: User.isAdministrator(uid),
+		isGlobalModerator: User.isGlobalModerator(uid),
+		isModeratorOfAnyCategory: User.isModeratorOfAnyCategory(uid),
 	});
 };
 
-User.isAdministrator = function (uid, callback) {
-	privileges.users.isAdministrator(uid, callback);
+User.isPrivileged = async function (uid) {
+	if (!(parseInt(uid, 10) > 0)) {
+		return false;
+	}
+	const results = await User.getPrivileges(uid);
+	return results ? (results.isAdmin || results.isGlobalModerator || results.isModeratorOfAnyCategory) : false;
 };
 
-User.isGlobalModerator = function (uid, callback) {
-	privileges.users.isGlobalModerator(uid, callback);
+User.isAdminOrGlobalMod = async function (uid) {
+	const [isAdmin, isGlobalMod] = await Promise.all([
+		User.isAdministrator(uid),
+		User.isGlobalModerator(uid),
+	]);
+	return isAdmin || isGlobalMod;
 };
 
-User.getPrivileges = function (uid, callback) {
-	async.parallel({
-		isAdmin: async.apply(User.isAdministrator, uid),
-		isGlobalModerator: async.apply(User.isGlobalModerator, uid),
-		isModeratorOfAnyCategory: async.apply(User.isModeratorOfAnyCategory, uid),
-	}, callback);
+User.isAdminOrSelf = async function (callerUid, uid) {
+	await isSelfOrMethod(callerUid, uid, User.isAdministrator);
 };
 
-User.isPrivileged = function (uid, callback) {
-	User.getPrivileges(uid, function (err, results) {
-		callback(err, results ? (results.isAdmin || results.isGlobalModerator || results.isModeratorOfAnyCategory) : false);
-	});
+User.isAdminOrGlobalModOrSelf = async function (callerUid, uid) {
+	await isSelfOrMethod(callerUid, uid, User.isAdminOrGlobalMod);
 };
 
-User.isAdminOrGlobalMod = function (uid, callback) {
-	async.parallel({
-		isAdmin: async.apply(User.isAdministrator, uid),
-		isGlobalMod: async.apply(User.isGlobalModerator, uid),
-	}, function (err, results) {
-		callback(err, results ? (results.isAdmin || results.isGlobalMod) : false);
-	});
+User.isPrivilegedOrSelf = async function (callerUid, uid) {
+	await isSelfOrMethod(callerUid, uid, User.isPrivileged);
 };
 
-User.isAdminOrSelf = function (callerUid, uid, callback) {
-	isSelfOrMethod(callerUid, uid, User.isAdministrator, callback);
-};
-
-User.isAdminOrGlobalModOrSelf = function (callerUid, uid, callback) {
-	isSelfOrMethod(callerUid, uid, User.isAdminOrGlobalMod, callback);
-};
-
-User.isPrivilegedOrSelf = function (callerUid, uid, callback) {
-	isSelfOrMethod(callerUid, uid, User.isPrivileged, callback);
-};
-
-function isSelfOrMethod(callerUid, uid, method, callback) {
+async function isSelfOrMethod(callerUid, uid, method) {
 	if (parseInt(callerUid, 10) === parseInt(uid, 10)) {
-		return callback();
+		return;
 	}
-	async.waterfall([
-		function (next) {
-			method(callerUid, next);
-		},
-		function (isPass, next) {
-			if (!isPass) {
-				return next(new Error('[[error:no-privileges]]'));
-			}
-			next();
-		},
-	], callback);
+	const isPass = await method(callerUid);
+	if (!isPass) {
+		throw new Error('[[error:no-privileges]]');
+	}
 }
 
-User.getAdminsandGlobalMods = function (callback) {
-	async.waterfall([
-		function (next) {
-			async.parallel([
-				async.apply(groups.getMembers, 'administrators', 0, -1),
-				async.apply(groups.getMembers, 'Global Moderators', 0, -1),
-			], next);
-		},
-		function (results, next) {
-			User.getUsersData(_.union.apply(_, results), next);
-		},
-	], callback);
+User.getAdminsandGlobalMods = async function () {
+	const results = await groups.getMembersOfGroups(['administrators', 'Global Moderators']);
+	return await User.getUsersData(_.union(...results));
 };
 
-User.getAdminsandGlobalModsandModerators = function (callback) {
-	async.waterfall([
-		function (next) {
-			async.parallel([
-				async.apply(groups.getMembers, 'administrators', 0, -1),
-				async.apply(groups.getMembers, 'Global Moderators', 0, -1),
-				async.apply(User.getModeratorUids),
-			], next);
-		},
-		function (results, next) {
-			User.getUsersData(_.union.apply(_, results), next);
-		},
-	], callback);
+User.getAdminsandGlobalModsandModerators = async function () {
+	const results = await Promise.all([
+		groups.getMembers('administrators', 0, -1),
+		groups.getMembers('Global Moderators', 0, -1),
+		User.getModeratorUids(),
+	]);
+	return await User.getUsersData(_.union(...results));
 };
 
-User.getModeratorUids = function (callback) {
-	async.waterfall([
-		async.apply(categories.getAllCidsFromSet, 'categories:cid'),
-		function (cids, next) {
-			categories.getModeratorUids(cids, next);
-		},
-		function (uids, next) {
-			next(null, _.union(uids));
-		},
-	], callback);
+User.getModeratorUids = async function () {
+	const cids = await categories.getAllCidsFromSet('categories:cid');
+	const uids = await categories.getModeratorUids(cids);
+	return _.union(...uids);
 };
 
-User.getModeratedCids = function (uid, callback) {
+User.getModeratedCids = async function (uid) {
 	if (parseInt(uid, 10) <= 0) {
-		return setImmediate(callback, null, []);
+		return [];
 	}
-	var cids;
-	async.waterfall([
-		function (next) {
-			categories.getAllCidsFromSet('categories:cid', next);
-		},
-		function (_cids, next) {
-			cids = _cids;
-			User.isModerator(uid, cids, next);
-		},
-		function (isMods, next) {
-			cids = cids.filter((cid, index) => cid && isMods[index]);
-			next(null, cids);
-		},
-	], callback);
+	const cids = await categories.getAllCidsFromSet('categories:cid');
+	const isMods = await User.isModerator(uid, cids);
+	return cids.filter((cid, index) => cid && isMods[index]);
 };
 
 User.addInterstitials = function (callback) {
-	plugins.registerHook('core', {
+	plugins.hooks.register('core', {
 		hook: 'filter:register.interstitial',
 		method: [
-			// GDPR information collection/processing consent + email consent
-			function (data, callback) {
-				if (!meta.config.gdpr_enabled) {
-					return setImmediate(callback, null, data);
-				}
-
-				const add = function () {
-					data.interstitials.push({
-						template: 'partials/gdpr_consent',
-						data: {
-							digestFrequency: meta.config.dailyDigestFreq,
-							digestEnabled: meta.config.dailyDigestFreq !== 'off',
-						},
-						callback: function (userData, formData, next) {
-							if (formData.gdpr_agree_data === 'on' && formData.gdpr_agree_email === 'on') {
-								userData.gdpr_consent = true;
-							}
-
-							next(userData.gdpr_consent ? null : new Error('[[register:gdpr_consent_denied]]'));
-						},
-					});
-				};
-
-				if (!data.userData.gdpr_consent) {
-					if (data.userData.uid) {
-						db.getObjectField('user:' + data.userData.uid, 'gdpr_consent', function (err, consented) {
-							if (err) {
-								return callback(err);
-							} else if (!parseInt(consented, 10)) {
-								add();
-							}
-
-							callback(null, data);
-						});
-					} else {
-						add();
-						setImmediate(callback, null, data);
-					}
-				} else {
-					// GDPR consent signed
-					setImmediate(callback, null, data);
-				}
-			},
-
-			// Forum Terms of Use
-			function (data, callback) {
-				const add = function () {
-					data.interstitials.push({
-						template: 'partials/acceptTos',
-						data: {
-							termsOfUse: meta.config.termsOfUse,
-						},
-						callback: function (userData, formData, next) {
-							if (formData['agree-terms'] === 'on') {
-								userData.acceptTos = true;
-							}
-
-							next(userData.acceptTos ? null : new Error('[[register:terms_of_use_error]]'));
-						},
-					});
-				};
-
-				if (meta.config.termsOfUse && !data.userData.acceptTos) {
-					if (data.userData.uid) {
-						db.getObjectField('user:' + data.userData.uid, 'acceptTos', function (err, accepted) {
-							if (err) {
-								return callback(err);
-							} else if (!parseInt(accepted, 10)) {
-								add();
-							}
-
-							callback(null, data);
-						});
-					} else {
-						add();
-						setImmediate(callback, null, data);
-					}
-				} else {
-					// TOS accepted
-					setImmediate(callback, null, data);
-				}
-			},
+			User.interstitials.email, // Email address (for password reset + digest)
+			User.interstitials.gdpr, // GDPR information collection/processing consent + email consent
+			User.interstitials.tou, // Forum Terms of Use
 		],
 	});
 
 	callback();
 };
 
-User.async = require('../promisify')(User);
+require('../promisify')(User);

@@ -1,14 +1,15 @@
 'use strict';
 
 
-define('forum/topic/merge', function () {
-	var Merge = {};
-	var modal;
-	var mergeBtn;
+define('forum/topic/merge', ['search', 'alerts'], function (search, alerts) {
+	const Merge = {};
+	let modal;
+	let mergeBtn;
 
-	var selectedTids = {};
+	let selectedTids = {};
 
-	Merge.init = function () {
+	Merge.init = function (callback) {
+		callback = callback || function () {};
 		if (modal) {
 			return;
 		}
@@ -21,23 +22,41 @@ define('forum/topic/merge', function () {
 
 			modal.find('.close,#merge_topics_cancel').on('click', closeModal);
 
-			$('#content').on('click', '[component="category"] [component="category/topic"] a', onTopicClicked);
+			$('#content').on('click', '[component="topic/select"]', onTopicClicked);
 
 			showTopicsSelected();
 
 			mergeBtn.on('click', function () {
 				mergeTopics(mergeBtn);
 			});
+
+			search.enableQuickSearch({
+				searchElements: {
+					inputEl: modal.find('.topic-search-input'),
+					resultEl: modal.find('.quick-search-container'),
+				},
+				searchOptions: {
+					in: 'titles',
+				},
+			});
+			modal.on('click', '[data-tid]', function () {
+				if ($(this).attr('data-tid')) {
+					Merge.addTopic($(this).attr('data-tid'));
+				}
+				return false;
+			});
+
+			callback();
 		});
 	};
 
-	function onTopicClicked(ev) {
-		var tid = $(this).parents('[component="category/topic"]').attr('data-tid');
+	Merge.addTopic = function (tid, callback) {
+		callback = callback || function () {};
 		socket.emit('topics.getTopic', tid, function (err, topicData) {
 			if (err) {
-				return app.alertError(err);
+				return alerts.error(err);
 			}
-			var title = topicData ? topicData.title : 'No title';
+			const title = topicData ? topicData.title : 'No title';
 			if (selectedTids[tid]) {
 				delete selectedTids[tid];
 			} else {
@@ -45,7 +64,17 @@ define('forum/topic/merge', function () {
 			}
 			checkButtonEnable();
 			showTopicsSelected();
+			callback();
 		});
+	};
+
+	function onTopicClicked(ev) {
+		if (!modal) {
+			return;
+		}
+		const tid = $(this).parents('[component="category/topic"]').attr('data-tid');
+		Merge.addTopic(tid);
+
 		ev.preventDefault();
 		ev.stopPropagation();
 		return false;
@@ -53,30 +82,44 @@ define('forum/topic/merge', function () {
 
 	function mergeTopics(btn) {
 		btn.attr('disabled', true);
-		var tids = Object.keys(selectedTids);
-		socket.emit('topics.merge', tids, function (err) {
+		const tids = Object.keys(selectedTids);
+		const options = {};
+		if (modal.find('.merge-main-topic-radio').is(':checked')) {
+			options.mainTid = modal.find('.merge-main-topic-select').val();
+		} else if (modal.find('.merge-new-title-radio').is(':checked')) {
+			options.newTopicTitle = modal.find('.merge-new-title-input').val();
+		}
+
+		socket.emit('topics.merge', { tids: tids, options: options }, function (err, tid) {
 			btn.removeAttr('disabled');
 			if (err) {
-				return app.alertError(err.message);
+				return alerts.error(err);
 			}
-			ajaxify.go('/topic/' + tids[0]);
+			ajaxify.go('/topic/' + tid);
 			closeModal();
 		});
 	}
 
 	function showTopicsSelected() {
-		var tids = Object.keys(selectedTids);
+		if (!modal) {
+			return;
+		}
+		const tids = Object.keys(selectedTids);
 		tids.sort(function (a, b) {
 			return a - b;
 		});
 
-		var topics = tids.map(function (tid) {
+		const topics = tids.map(function (tid) {
 			return { tid: tid, title: selectedTids[tid] };
 		});
 
 		if (tids.length) {
-			app.parseAndTranslate('partials/merge_topics_modal', 'topics', { topics: topics }, function (html) {
-				modal.find('.topics-section').html(html);
+			app.parseAndTranslate('partials/merge_topics_modal', {
+				config: config,
+				topics: topics,
+			}, function (html) {
+				modal.find('.topics-section').html(html.find('.topics-section').html());
+				modal.find('.merge-main-topic-select').html(html.find('.merge-main-topic-select').html());
 			});
 		} else {
 			modal.find('.topics-section').translateHtml('[[error:no-topics-selected]]');
@@ -97,7 +140,7 @@ define('forum/topic/merge', function () {
 			modal = null;
 		}
 		selectedTids = {};
-		$('#content').off('click', '[component="category"] [component="category/topic"] a', onTopicClicked);
+		$('#content').off('click', '[component="topic/select"]', onTopicClicked);
 	}
 
 	return Merge;

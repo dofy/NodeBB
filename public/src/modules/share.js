@@ -1,19 +1,23 @@
 'use strict';
 
 
-define('share', function () {
-	var module = {};
+define('share', ['hooks'], function (hooks) {
+	const module = {};
 
 	module.addShareHandlers = function (name) {
-		var baseUrl = window.location.protocol + '//' + window.location.host;
+		const baseUrl = window.location.protocol + '//' + window.location.host;
 
 		function openShare(url, urlToPost, width, height) {
 			window.open(url + encodeURIComponent(baseUrl + config.relative_path + urlToPost), '_blank', 'width=' + width + ',height=' + height + ',scrollbars=no,status=no');
+			hooks.fire('action:share.open', {
+				url: url,
+				urlToPost: urlToPost,
+			});
 			return false;
 		}
 
 		$('#content').off('shown.bs.dropdown', '.share-dropdown').on('shown.bs.dropdown', '.share-dropdown', function () {
-			var postLink = $(this).find('.post-link');
+			const postLink = $(this).find('.post-link');
 			postLink.val(baseUrl + getPostUrl($(this)));
 
 			// without the setTimeout can't select the text in the input
@@ -39,7 +43,7 @@ define('share', function () {
 			return openShare('https://plus.google.com/share?url=', getPostUrl($(this)), 500, 570);
 		});
 
-		$(window).trigger('action:share.addHandlers', { openShare: openShare });
+		hooks.fire('action:share.addHandlers', { openShare: openShare });
 	};
 
 	function addHandler(selector, callback) {
@@ -47,7 +51,7 @@ define('share', function () {
 	}
 
 	function getPostUrl(clickedElement) {
-		var pid = parseInt(clickedElement.parents('[data-pid]').attr('data-pid'), 10);
+		const pid = parseInt(clickedElement.parents('[data-pid]').attr('data-pid'), 10);
 		return '/post' + (pid ? '/' + (pid) : '');
 	}
 

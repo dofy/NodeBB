@@ -1,8 +1,8 @@
 'use strict';
 
 
-define('alerts', ['translator', 'components', 'benchpress'], function (translator, components, Benchpress) {
-	var module = {};
+define('alerts', ['translator', 'components', 'hooks'], function (translator, components, hooks) {
+	const module = {};
 
 	module.alert = function (params) {
 		params.alert_id = 'alert_button_' + (params.alert_id ? params.alert_id : new Date().getTime());
@@ -10,7 +10,7 @@ define('alerts', ['translator', 'components', 'benchpress'], function (translato
 		params.message = params.message ? params.message.trim() : '';
 		params.type = params.type || 'info';
 
-		var alert = $('#' + params.alert_id);
+		const alert = $('#' + params.alert_id);
 		if (alert.length) {
 			updateAlert(alert, params);
 		} else {
@@ -18,47 +18,75 @@ define('alerts', ['translator', 'components', 'benchpress'], function (translato
 		}
 	};
 
-	function createNew(params) {
-		Benchpress.parse('alert', params, function (alertTpl) {
-			translator.translate(alertTpl, function (translatedHTML) {
-				var alert = $('#' + params.alert_id);
-				if (alert.length) {
-					return updateAlert(alert, params);
-				}
-				alert = $(translatedHTML);
-				alert.fadeIn(200);
-
-				components.get('toaster/tray').prepend(alert);
-
-				if (typeof params.closefn === 'function') {
-					alert.find('button').on('click', function () {
-						params.closefn();
-						fadeOut(alert);
-						return false;
-					});
-				}
-
-				if (params.timeout) {
-					startTimeout(alert, params.timeout);
-				}
-
-				if (typeof params.clickfn === 'function') {
-					alert
-						.addClass('pointer')
-						.on('click', function (e) {
-							if (!$(e.target).is('.close')) {
-								params.clickfn();
-							}
-							fadeOut(alert);
-						});
-				}
-			});
+	module.success = function (message, timeout) {
+		module.alert({
+			alert_id: utils.generateUUID(),
+			title: '[[global:alert.success]]',
+			message: message,
+			type: 'success',
+			timeout: timeout || 5000,
 		});
-	}
+	};
+
+	module.error = function (message, timeout) {
+		message = (message && message.message) || message;
+
+		if (message === '[[error:revalidate-failure]]') {
+			socket.disconnect();
+			app.reconnect();
+			return;
+		}
+
+		module.alert({
+			alert_id: utils.generateUUID(),
+			title: '[[global:alert.error]]',
+			message: message,
+			type: 'danger',
+			timeout: timeout || 10000,
+		});
+	};
 
 	module.remove = function (id) {
 		$('#alert_button_' + id).remove();
 	};
+
+	function createNew(params) {
+		app.parseAndTranslate('alert', params, function (html) {
+			let alert = $('#' + params.alert_id);
+			if (alert.length) {
+				return updateAlert(alert, params);
+			}
+			alert = html;
+			alert.fadeIn(200);
+
+			components.get('toaster/tray').prepend(alert);
+
+			if (typeof params.closefn === 'function') {
+				alert.find('button').on('click', function () {
+					params.closefn();
+					fadeOut(alert);
+					return false;
+				});
+			}
+
+			if (params.timeout) {
+				startTimeout(alert, params);
+			}
+
+			if (typeof params.clickfn === 'function') {
+				alert
+					.addClass('pointer')
+					.on('click', function (e) {
+						if (!$(e.target).is('.close')) {
+							params.clickfn(alert, params);
+						}
+						fadeOut(alert);
+					});
+			}
+
+			hooks.fire('action:alert.new', { alert, params });
+		});
+	}
 
 	function updateAlert(alert, params) {
 		alert.find('strong').html(params.title);
@@ -67,13 +95,14 @@ define('alerts', ['translator', 'components', 'benchpress'], function (translato
 
 		clearTimeout(parseInt(alert.attr('timeoutId'), 10));
 		if (params.timeout) {
-			startTimeout(alert, params.timeout);
+			startTimeout(alert, params);
 		}
 
 		alert.children().fadeOut(100);
 		translator.translate(alert.html(), function (translatedHTML) {
 			alert.children().fadeIn(100);
 			alert.html(translatedHTML);
+			hooks.fire('action:alert.update', { alert, params });
 		});
 
 		// Handle changes in the clickfn
@@ -96,9 +125,15 @@ define('alerts', ['translator', 'components', 'benchpress'], function (translato
 		});
 	}
 
-	function startTimeout(alert, timeout) {
-		var timeoutId = setTimeout(function () {
+	function startTimeout(alert, params) {
+		const timeout = params.timeout;
+
+		const timeoutId = setTimeout(function () {
 			fadeOut(alert);
+
+			if (typeof params.timeoutfn === 'function') {
+				params.timeoutfn(alert, params);
+			}
 		}, timeout);
 
 		alert.attr('timeoutId', timeoutId);
@@ -111,6 +146,7 @@ define('alerts', ['translator', 'components', 'benchpress'], function (translato
 			alert.css('transition-property', '');
 			alert.css('transition', 'width ' + (timeout + 450) + 'ms linear, background-color ' + (timeout + 450) + 'ms ease-in');
 			alert.addClass('animate');
+			hooks.fire('action:alert.animate', { alert, params });
 		}, 50);
 
 		// Handle mouseenter/mouseleave

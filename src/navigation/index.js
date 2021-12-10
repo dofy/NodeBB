@@ -1,40 +1,34 @@
 'use strict';
 
-var async = require('async');
-var nconf = require('nconf');
-
-var admin = require('./admin');
-var translator = require('../translator');
+const nconf = require('nconf');
+const validator = require('validator');
+const admin = require('./admin');
 const groups = require('../groups');
 
-var navigation = module.exports;
+const navigation = module.exports;
 
-navigation.get = function (uid, callback) {
-	async.waterfall([
-		admin.get,
-		function (data, next) {
-			data = data.filter(function (item) {
-				return item && item.enabled;
-			}).map(function (item) {
-				item.originalRoute = item.route;
+const relative_path = nconf.get('relative_path');
 
-				if (!item.route.startsWith('http')) {
-					item.route = nconf.get('relative_path') + item.route;
-				}
+navigation.get = async function (uid) {
+	let data = await admin.get();
 
-				Object.keys(item).forEach(function (key) {
-					item[key] = translator.unescape(item[key]);
-				});
+	data = data.filter(item => item && item.enabled).map((item) => {
+		item.originalRoute = validator.unescape(item.route);
 
-				return item;
-			});
+		if (!item.route.startsWith('http')) {
+			item.route = relative_path + item.route;
+		}
 
-			async.filter(data, function (navItem, next) {
-				if (!navItem.groups.length) {
-					return setImmediate(next, null, true);
-				}
-				groups.isMemberOfAny(uid, navItem.groups, next);
-			}, next);
-		},
-	], callback);
+		return item;
+	});
+
+	const pass = await Promise.all(data.map(async (navItem) => {
+		if (!navItem.groups.length) {
+			return true;
+		}
+		return await groups.isMemberOfAny(uid, navItem.groups);
+	}));
+	return data.filter((navItem, i) => pass[i]);
 };
+
+require('../promisify')(navigation);

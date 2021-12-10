@@ -3,5 +3,5 @@
 	"welcome-notification": "Sveicināšanas paziņojums",
 	"welcome-notification-link": "Sveicināšanas paziņojuma saite",
 	"welcome-notification-uid": "Sveicināšanas paziņojuma lietotājs (UID)",
-	"notification-alert-timeout": "Paziņojuma brīdinājuma ilgums"
+	"post-queue-notification-uid": "Post Queue User (UID)"
 }

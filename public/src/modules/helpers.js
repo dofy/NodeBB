@@ -2,7 +2,7 @@
 
 (function (factory) {
 	if (typeof module === 'object' && module.exports) {
-		var relative_path = require('nconf').get('relative_path');
+		const relative_path = require('nconf').get('relative_path');
 		module.exports = factory(require('../utils'), require('benchpressjs'), relative_path);
 	} else if (typeof define === 'function' && define.amd) {
 		define('helpers', ['benchpress'], function (Benchpress) {
@@ -10,23 +10,29 @@
 		});
 	}
 }(function (utils, Benchpress, relative_path) {
-	var helpers = {
-		displayMenuItem: displayMenuItem,
-		buildMetaTag: buildMetaTag,
-		buildLinkTag: buildLinkTag,
-		stringify: stringify,
-		escape: escape,
-		stripTags: stripTags,
-		generateCategoryBackground: generateCategoryBackground,
-		generateChildrenCategories: generateChildrenCategories,
-		generateTopicClass: generateTopicClass,
-		membershipBtn: membershipBtn,
-		spawnPrivilegeStates: spawnPrivilegeStates,
-		localeToHTML: localeToHTML,
-		renderTopicImage: renderTopicImage,
-		renderDigestAvatar: renderDigestAvatar,
-		userAgentIcons: userAgentIcons,
-		register: register,
+	Benchpress.setGlobal('true', true);
+	Benchpress.setGlobal('false', false);
+
+	const helpers = {
+		displayMenuItem,
+		buildMetaTag,
+		buildLinkTag,
+		stringify,
+		escape,
+		stripTags,
+		generateCategoryBackground,
+		generateChildrenCategories,
+		generateTopicClass,
+		membershipBtn,
+		spawnPrivilegeStates,
+		localeToHTML,
+		renderTopicImage,
+		renderTopicEvents,
+		renderEvents,
+		renderDigestAvatar,
+		userAgentIcons,
+		buildAvatar,
+		register,
 		__escape: identity,
 	};
 
@@ -35,18 +41,20 @@
 	}
 
 	function displayMenuItem(data, index) {
-		var item = data.navigation[index];
+		const item = data.navigation[index];
 		if (!item) {
 			return false;
 		}
 
-		var loggedIn = data.config ? data.config.loggedIn : false;
-
-		if (item.route.match('/users') && data.privateUserInfo && !loggedIn) {
+		if (item.route.match('/users') && data.user && !data.user.privileges['view:users']) {
 			return false;
 		}
 
-		if (item.route.match('/tags') && data.privateTagListing && !loggedIn) {
+		if (item.route.match('/tags') && data.user && !data.user.privileges['view:tags']) {
+			return false;
+		}
+
+		if (item.route.match('/groups') && data.user && !data.user.privileges['view:groups']) {
 			return false;
 		}
 
@@ -54,22 +62,18 @@
 	}
 
 	function buildMetaTag(tag) {
-		var name = tag.name ? 'name="' + tag.name + '" ' : '';
-		var property = tag.property ? 'property="' + tag.property + '" ' : '';
-		var content = tag.content ? 'content="' + tag.content.replace(/\n/g, ' ') + '" ' : '';
+		const name = tag.name ? 'name="' + tag.name + '" ' : '';
+		const property = tag.property ? 'property="' + tag.property + '" ' : '';
+		const content = tag.content ? 'content="' + tag.content.replace(/\n/g, ' ') + '" ' : '';
 
 		return '<meta ' + name + property + content + '/>\n\t';
 	}
 
 	function buildLinkTag(tag) {
-		var link = tag.link ? 'link="' + tag.link + '" ' : '';
-		var rel = tag.rel ? 'rel="' + tag.rel + '" ' : '';
-		var type = tag.type ? 'type="' + tag.type + '" ' : '';
-		var href = tag.href ? 'href="' + tag.href + '" ' : '';
-		var sizes = tag.sizes ? 'sizes="' + tag.sizes + '" ' : '';
-		var title = tag.title ? 'title="' + tag.title + '" ' : '';
+		const attributes = ['link', 'rel', 'as', 'type', 'href', 'sizes', 'title', 'crossorigin'];
+		const [link, rel, as, type, href, sizes, title, crossorigin] = attributes.map(attr => (tag[attr] ? `${attr}="${tag[attr]}" ` : ''));
 
-		return '<link ' + link + rel + type + sizes + title + href + '/>\n\t';
+		return '<link ' + link + rel + as + type + sizes + title + href + crossorigin + '/>\n\t';
 	}
 
 	function stringify(obj) {
@@ -90,7 +94,7 @@
 		if (!category) {
 			return '';
 		}
-		var style = [];
+		const style = [];
 
 		if (category.bgColor) {
 			style.push('background-color: ' + category.bgColor);
@@ -111,15 +115,15 @@
 	}
 
 	function generateChildrenCategories(category) {
-		var html = '';
+		let html = '';
 		if (!category || !category.children || !category.children.length) {
 			return html;
 		}
 		category.children.forEach(function (child) {
 			if (child && !child.isSection) {
-				var link = child.link ? child.link : (relative_path + '/category/' + child.slug);
+				const link = child.link ? child.link : (relative_path + '/category/' + child.slug);
 				html += '<span class="category-children-item pull-left">' +
-					'<div class="icon pull-left" style="' + generateCategoryBackground(child) + '">' +
+					'<div role="presentation" class="icon pull-left" style="' + generateCategoryBackground(child) + '">' +
 					'<i class="fa fa-fw ' + child.icon + '"></i>' +
 					'</div>' +
 					'<a href="' + link + '"><small>' + child.name + '</small></a></span>';
@@ -130,7 +134,7 @@
 	}
 
 	function generateTopicClass(topic) {
-		var style = [];
+		const style = [];
 
 		if (topic.locked) {
 			style.push('locked');
@@ -148,13 +152,17 @@
 			style.push('unread');
 		}
 
+		if (topic.scheduled) {
+			style.push('scheduled');
+		}
+
 		return style.join(' ');
 	}
 
 	// Groups helpers
 	function membershipBtn(groupObj) {
 		if (groupObj.isMember && groupObj.name !== 'administrators') {
-			return '<button class="btn btn-danger" data-action="leave" data-group="' + groupObj.displayName + '"><i class="fa fa-times"></i> [[groups:membership.leave-group]]</button>';
+			return '<button class="btn btn-danger" data-action="leave" data-group="' + groupObj.displayName + '"' + (groupObj.disableLeave ? ' disabled' : '') + '><i class="fa fa-times"></i> [[groups:membership.leave-group]]</button>';
 		}
 
 		if (groupObj.isPending && groupObj.name !== 'administrators') {
@@ -168,8 +176,8 @@
 	}
 
 	function spawnPrivilegeStates(member, privileges) {
-		var states = [];
-		for (var priv in privileges) {
+		const states = [];
+		for (const priv in privileges) {
 			if (privileges.hasOwnProperty(priv)) {
 				states.push({
 					name: priv,
@@ -178,10 +186,15 @@
 			}
 		}
 		return states.map(function (priv) {
-			var guestDisabled = ['groups:moderate', 'groups:posts:upvote', 'groups:posts:downvote'];
-			var disabled = member === 'guests' && guestDisabled.includes(priv.name);
+			const guestDisabled = ['groups:moderate', 'groups:posts:upvote', 'groups:posts:downvote', 'groups:local:login', 'groups:group:create'];
+			const spidersEnabled = ['groups:find', 'groups:read', 'groups:topics:read', 'groups:view:users', 'groups:view:tags', 'groups:view:groups'];
+			const globalModDisabled = ['groups:moderate'];
+			const disabled =
+				(member === 'guests' && (guestDisabled.includes(priv.name) || priv.name.startsWith('groups:admin:'))) ||
+				(member === 'spiders' && !spidersEnabled.includes(priv.name)) ||
+				(member === 'Global Moderators' && globalModDisabled.includes(priv.name));
 
-			return '<td class="text-center" data-privilege="' + priv.name + '"><input type="checkbox"' + (priv.state ? ' checked' : '') + (disabled ? ' disabled="disabled"' : '') + ' /></td>';
+			return '<td class="text-center" data-privilege="' + priv.name + '" data-value="' + priv.state + '"><input autocomplete="off" type="checkbox"' + (priv.state ? ' checked' : '') + (disabled ? ' disabled="disabled"' : '') + ' /></td>';
 		}).join('');
 	}
 
@@ -197,69 +210,161 @@
 		return '<img component="user/picture" data-uid="' + topicObj.user.uid + '" src="' + topicObj.user.picture + '" class="user-img" title="' + topicObj.user.username + '" />';
 	}
 
+	function renderTopicEvents(index, sort) {
+		if (sort === 'most_votes') {
+			return '';
+		}
+		const start = this.posts[index].eventStart;
+		const end = this.posts[index].eventEnd;
+		const events = this.events.filter(event => event.timestamp >= start && event.timestamp < end);
+		if (!events.length) {
+			return '';
+		}
+
+		return renderEvents.call(this, events);
+	}
+
+	function renderEvents(events) {
+		return events.reduce((html, event) => {
+			html += `<li component="topic/event" class="timeline-event" data-topic-event-id="${event.id}">
+				<div class="timeline-badge">
+					<i class="fa ${event.icon || 'fa-circle'}"></i>
+				</div>
+				<span class="timeline-text">
+					${event.href ? `<a href="${relative_path}${event.href}">${event.text}</a>` : event.text}&nbsp;
+				</span>
+			`;
+
+			if (event.user) {
+				if (!event.user.system) {
+					html += `<span><a href="${relative_path}/user/${event.user.userslug}">${buildAvatar(event.user, 'xs', true)}&nbsp;${event.user.username}</a></span>&nbsp;`;
+				} else {
+					html += `<span class="timeline-text">[[global:system-user]]</span>&nbsp;`;
+				}
+			}
+
+			html += `<span class="timeago timeline-text" title="${event.timestampISO}"></span>`;
+
+			if (this.privileges.isAdminOrMod) {
+				html += `&nbsp;<span component="topic/event/delete" data-topic-event-id="${event.id}" class="timeline-text pointer" title="[[topic:delete-event]]"><i class="fa fa-trash"></i></span>`;
+			}
+
+			return html;
+		}, '');
+	}
+
 	function renderDigestAvatar(block) {
 		if (block.teaser) {
 			if (block.teaser.user.picture) {
-				return '<img style="vertical-align: middle; width: 16px; height: 16px; padding-right: 8px;" src="' + block.teaser.user.picture + '" title="' + block.teaser.user.username + '" />';
+				return '<img style="vertical-align: middle; width: 32px; height: 32px; border-radius: 50%;" src="' + block.teaser.user.picture + '" title="' + block.teaser.user.username + '" />';
 			}
-			return '<div style="vertical-align: middle; width: 16px; height: 16px; line-height: 16px; font-size: 10px; margin-right: 8px; background-color: ' + block.teaser.user['icon:bgColor'] + '; color: white; text-align: center; display: inline-block;">' + block.teaser.user['icon:text'] + '</div>';
+			return '<div style="vertical-align: middle; width: 32px; height: 32px; line-height: 32px; font-size: 16px; background-color: ' + block.teaser.user['icon:bgColor'] + '; color: white; text-align: center; display: inline-block; border-radius: 50%;">' + block.teaser.user['icon:text'] + '</div>';
 		}
 		if (block.user.picture) {
-			return '<img style="vertical-align: middle; width: 16px; height: 16px; padding-right: 8px;" src="' + block.user.picture + '" title="' + block.user.username + '" />';
+			return '<img style="vertical-align: middle; width: 32px; height: 32px; border-radius: 50%;" src="' + block.user.picture + '" title="' + block.user.username + '" />';
 		}
-		return '<div style="vertical-align: middle; width: 16px; height: 16px; line-height: 16px; font-size: 10px; margin-right: 8px; background-color: ' + block.user['icon:bgColor'] + '; color: white; text-align: center; display: inline-block;">' + block.user['icon:text'] + '</div>';
+		return '<div style="vertical-align: middle; width: 32px; height: 32px; line-height: 32px; font-size: 16px; background-color: ' + block.user['icon:bgColor'] + '; color: white; text-align: center; display: inline-block; border-radius: 50%;">' + block.user['icon:text'] + '</div>';
 	}
 
 	function userAgentIcons(data) {
-		var icons = '';
+		let icons = '';
 
 		switch (data.platform) {
-		case 'Linux':
-			icons += '<i class="fa fa-fw fa-linux"></i>';
-			break;
-		case 'Microsoft Windows':
-			icons += '<i class="fa fa-fw fa-windows"></i>';
-			break;
-		case 'Apple Mac':
-			icons += '<i class="fa fa-fw fa-apple"></i>';
-			break;
-		case 'Android':
-			icons += '<i class="fa fa-fw fa-android"></i>';
-			break;
-		case 'iPad':
-			icons += '<i class="fa fa-fw fa-tablet"></i>';
-			break;
-		case 'iPod':	// intentional fall-through
-		case 'iPhone':
-			icons += '<i class="fa fa-fw fa-mobile"></i>';
-			break;
-		default:
-			icons += '<i class="fa fa-fw fa-question-circle"></i>';
-			break;
+			case 'Linux':
+				icons += '<i class="fa fa-fw fa-linux"></i>';
+				break;
+			case 'Microsoft Windows':
+				icons += '<i class="fa fa-fw fa-windows"></i>';
+				break;
+			case 'Apple Mac':
+				icons += '<i class="fa fa-fw fa-apple"></i>';
+				break;
+			case 'Android':
+				icons += '<i class="fa fa-fw fa-android"></i>';
+				break;
+			case 'iPad':
+				icons += '<i class="fa fa-fw fa-tablet"></i>';
+				break;
+			case 'iPod': // intentional fall-through
+			case 'iPhone':
+				icons += '<i class="fa fa-fw fa-mobile"></i>';
+				break;
+			default:
+				icons += '<i class="fa fa-fw fa-question-circle"></i>';
+				break;
 		}
 
 		switch (data.browser) {
-		case 'Chrome':
-			icons += '<i class="fa fa-fw fa-chrome"></i>';
-			break;
-		case 'Firefox':
-			icons += '<i class="fa fa-fw fa-firefox"></i>';
-			break;
-		case 'Safari':
-			icons += '<i class="fa fa-fw fa-safari"></i>';
-			break;
-		case 'IE':
-			icons += '<i class="fa fa-fw fa-internet-explorer"></i>';
-			break;
-		case 'Edge':
-			icons += '<i class="fa fa-fw fa-edge"></i>';
-			break;
-		default:
-			icons += '<i class="fa fa-fw fa-question-circle"></i>';
-			break;
+			case 'Chrome':
+				icons += '<i class="fa fa-fw fa-chrome"></i>';
+				break;
+			case 'Firefox':
+				icons += '<i class="fa fa-fw fa-firefox"></i>';
+				break;
+			case 'Safari':
+				icons += '<i class="fa fa-fw fa-safari"></i>';
+				break;
+			case 'IE':
+				icons += '<i class="fa fa-fw fa-internet-explorer"></i>';
+				break;
+			case 'Edge':
+				icons += '<i class="fa fa-fw fa-edge"></i>';
+				break;
+			default:
+				icons += '<i class="fa fa-fw fa-question-circle"></i>';
+				break;
 		}
 
 		return icons;
+	}
+
+	function buildAvatar(userObj, size, rounded, classNames, component) {
+		/**
+		 * userObj requires:
+		 *   - uid, picture, icon:bgColor, icon:text (getUserField w/ "picture" should return all 4), username
+		 * size: one of "xs", "sm", "md", "lg", or "xl" (required), or an integer
+		 * rounded: true or false (optional, default false)
+		 * classNames: additional class names to prepend (optional, default none)
+		 * component: overrides the default component (optional, default none)
+		 */
+
+		// Try to use root context if passed-in userObj is undefined
+		if (!userObj) {
+			userObj = this;
+		}
+
+		const attributes = [
+			'alt="' + userObj.username + '"',
+			'title="' + userObj.username + '"',
+			'data-uid="' + userObj.uid + '"',
+			'loading="lazy"',
+		];
+		const styles = [];
+		classNames = classNames || '';
+
+		// Validate sizes, handle integers, otherwise fall back to `avatar-sm`
+		if (['xs', 'sm', 'sm2x', 'md', 'lg', 'xl'].includes(size)) {
+			classNames += ' avatar-' + size;
+		} else if (!isNaN(parseInt(size, 10))) {
+			styles.push('width: ' + size + 'px;', 'height: ' + size + 'px;', 'line-height: ' + size + 'px;', 'font-size: ' + (parseInt(size, 10) / 16) + 'rem;');
+		} else {
+			classNames += ' avatar-sm';
+		}
+		attributes.unshift('class="avatar ' + classNames + (rounded ? ' avatar-rounded' : '') + '"');
+
+		// Component override
+		if (component) {
+			attributes.push('component="' + component + '"');
+		} else {
+			attributes.push('component="avatar/' + (userObj.picture ? 'picture' : 'icon') + '"');
+		}
+
+		if (userObj.picture) {
+			return '<img ' + attributes.join(' ') + ' src="' + userObj.picture + '" style="' + styles.join(' ') + '" />';
+		}
+
+		styles.push('background-color: ' + userObj['icon:bgColor'] + ';');
+		return '<span ' + attributes.join(' ') + ' style="' + styles.join(' ') + '">' + userObj['icon:text'] + '</span>';
 	}
 
 	function register() {

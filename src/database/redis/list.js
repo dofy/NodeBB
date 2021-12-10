@@ -1,63 +1,57 @@
 'use strict';
 
-module.exports = function (redisClient, module) {
-	module.listPrepend = function (key, value, callback) {
-		callback = callback || function () {};
+module.exports = function (module) {
+	const helpers = require('./helpers');
+
+	module.listPrepend = async function (key, value) {
 		if (!key) {
-			return callback();
+			return;
 		}
-		redisClient.lpush(key, value, function (err) {
-			callback(err);
-		});
+		await module.client.lpush(key, value);
 	};
 
-	module.listAppend = function (key, value, callback) {
-		callback = callback || function () {};
+	module.listAppend = async function (key, value) {
 		if (!key) {
-			return callback();
+			return;
 		}
-		redisClient.rpush(key, value, function (err) {
-			callback(err);
-		});
+		await module.client.rpush(key, value);
 	};
 
-	module.listRemoveLast = function (key, callback) {
-		callback = callback || function () {};
+	module.listRemoveLast = async function (key) {
 		if (!key) {
-			return callback();
+			return;
 		}
-		redisClient.rpop(key, callback);
+		return await module.client.rpop(key);
 	};
 
-	module.listRemoveAll = function (key, value, callback) {
-		callback = callback || function () {};
+	module.listRemoveAll = async function (key, value) {
 		if (!key) {
-			return callback();
+			return;
 		}
-		redisClient.lrem(key, 0, value, function (err) {
-			callback(err);
-		});
+		if (Array.isArray(value)) {
+			const batch = module.client.batch();
+			value.forEach(value => batch.lrem(key, 0, value));
+			await helpers.execBatch(batch);
+		} else {
+			await module.client.lrem(key, 0, value);
+		}
 	};
 
-	module.listTrim = function (key, start, stop, callback) {
-		callback = callback || function () {};
+	module.listTrim = async function (key, start, stop) {
 		if (!key) {
-			return callback();
+			return;
 		}
-		redisClient.ltrim(key, start, stop, function (err) {
-			callback(err);
-		});
+		await module.client.ltrim(key, start, stop);
 	};
 
-	module.getListRange = function (key, start, stop, callback) {
-		callback = callback || function () {};
+	module.getListRange = async function (key, start, stop) {
 		if (!key) {
-			return callback();
+			return;
 		}
-		redisClient.lrange(key, start, stop, callback);
+		return await module.client.lrange(key, start, stop);
 	};
 
-	module.listLength = function (key, callback) {
-		redisClient.llen(key, callback);
+	module.listLength = async function (key) {
+		return await module.client.llen(key);
 	};
 };

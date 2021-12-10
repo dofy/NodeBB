@@ -1,26 +1,26 @@
 'use strict';
 
 const validator = require('validator');
-var plugins = require('../../plugins');
+const plugins = require('../../plugins');
 
-var hooksController = module.exports;
+const hooksController = module.exports;
 
 hooksController.get = function (req, res) {
-	var hooks = [];
-	Object.keys(plugins.loadedHooks).forEach(function (key, hookIndex) {
-		var current = {
+	const hooks = [];
+	Object.keys(plugins.loadedHooks).forEach((key, hookIndex) => {
+		const current = {
 			hookName: key,
 			methods: [],
-			index: 'hook-' + hookIndex,
+			index: `hook-${hookIndex}`,
 			count: plugins.loadedHooks[key].length,
 		};
 
-		plugins.loadedHooks[key].forEach(function (hookData, methodIndex) {
+		plugins.loadedHooks[key].forEach((hookData, methodIndex) => {
 			current.methods.push({
 				id: hookData.id,
 				priority: hookData.priority,
 				method: hookData.method ? validator.escape(hookData.method.toString()) : 'No plugin function!',
-				index: hookIndex + '-code-' + methodIndex,
+				index: `${hookIndex}-code-${methodIndex}`,
 			});
 		});
 		hooks.push(current);
