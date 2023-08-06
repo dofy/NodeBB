@@ -69,12 +69,19 @@ module.exports = function (Messaging) {
 
 	Messaging.getUserCountInRoom = async roomId => db.sortedSetCard(`chat:room:${roomId}:uids`);
 
-	Messaging.isRoomOwner = async (uid, roomId, knownOwner) => {
-		const owner = (knownOwner == null) ? await db.getObjectField(`chat:room:${roomId}`, 'owner') : knownOwner;
-		const isOwner = parseInt(uid, 10) === parseInt(owner, 10);
+	Messaging.isRoomOwner = async (uids, roomId) => {
+		const isArray = Array.isArray(uids);
+		if (!isArray) {
+			uids = [uids];
+		}
+		const owner = await db.getObjectField(`chat:room:${roomId}`, 'owner');
+		const isOwners = uids.map(uid => parseInt(uid, 10) === parseInt(owner, 10));
 
-		const payload = await plugins.hooks.fire('filter:messaging.isRoomOwner', { uid, roomId, owner, isOwner });
-		return payload.isOwner;
+		const result = await Promise.all(isOwners.map(async (isOwner, index) => {
+			const payload = await plugins.hooks.fire('filter:messaging.isRoomOwner', { uid: uids[index], roomId, owner, isOwner });
+			return payload.isOwner;
+		}));
+		return isArray ? result : result[0];
 	};
 
 	Messaging.addUsersToRoom = async function (uid, uids, roomId) {
@@ -102,9 +109,6 @@ module.exports = function (Messaging) {
 		if (!payload.isOwner) {
 			throw new Error('[[error:cant-remove-users-from-chat-room]]');
 		}
-		if (payload.userCount === 2) {
-			throw new Error('[[error:cant-remove-last-user]]');
-		}
 
 		await Messaging.leaveRoom(payload.uids, payload.roomId);
 	};
@@ -117,9 +121,9 @@ module.exports = function (Messaging) {
 		const userCounts = await db.sortedSetsCard(roomIds.map(roomId => `chat:room:${roomId}:uids`));
 		const groupChats = roomIds.filter((roomId, index) => userCounts[index] > 2);
 		const privateChats = roomIds.filter((roomId, index) => userCounts[index] <= 2);
-		await Promise.all([
-			db.setObjectField(groupChats.map(id => `chat:room:${id}`, 'groupChat', 1)),
-			db.setObjectField(privateChats.map(id => `chat:room:${id}`, 'groupChat', 0)),
+		await db.setObjectBulk([
+			...groupChats.map(id => [`chat:room:${id}`, { groupChat: 1 }]),
+			...privateChats.map(id => [`chat:room:${id}`, { groupChat: 0 }]),
 		]);
 	}
 
@@ -171,20 +175,20 @@ module.exports = function (Messaging) {
 
 	Messaging.getUsersInRoom = async (roomId, start, stop) => {
 		const uids = await Messaging.getUidsInRoom(roomId, start, stop);
-		const [users, ownerId] = await Promise.all([
+		const [users, isOwners] = await Promise.all([
 			user.getUsersFields(uids, ['uid', 'username', 'picture', 'status']),
-			db.getObjectField(`chat:room:${roomId}`, 'owner'),
+			Messaging.isRoomOwner(uids, roomId),
 		]);
 
-		return Promise.all(users.map(async (user) => {
-			user.isOwner = await Messaging.isRoomOwner(user.uid, roomId, ownerId);
+		return users.map((user, index) => {
+			user.isOwner = isOwners[index];
 			return user;
-		}));
+		});
 	};
 
 	Messaging.renameRoom = async function (uid, roomId, newName) {
 		if (!newName) {
-			throw new Error('[[error:invalid-name]]');
+			throw new Error('[[error:invalid-data]]');
 		}
 		newName = newName.trim();
 		if (newName.length > 75) {
@@ -226,7 +230,7 @@ module.exports = function (Messaging) {
 			return null;
 		}
 
-		const [room, canReply, users, messages, isAdminOrGlobalMod] = await Promise.all([
+		const [room, canReply, users, messages, isAdminOrGlobalMod, isOwner] = await Promise.all([
 			Messaging.getRoomData(data.roomId),
 			Messaging.canReply(data.roomId, uid),
 			Messaging.getUsersInRoom(data.roomId, 0, -1),
@@ -237,14 +241,16 @@ module.exports = function (Messaging) {
 				isNew: false,
 			}),
 			user.isAdminOrGlobalMod(uid),
+			Messaging.isRoomOwner(uid, data.roomId),
 		]);
 
 		room.messages = messages;
-		room.isOwner = await Messaging.isRoomOwner(uid, room.roomId, room.owner);
+		room.isOwner = isOwner;
 		room.users = users.filter(user => user && parseInt(user.uid, 10) && parseInt(user.uid, 10) !== parseInt(uid, 10));
 		room.canReply = canReply;
 		room.groupChat = room.hasOwnProperty('groupChat') ? room.groupChat : users.length > 2;
 		room.usernames = Messaging.generateUsernames(users, uid);
+		room.chatWithMessage = await Messaging.generateChatWithMessage(users, uid);
 		room.maximumUsersInChatRoom = meta.config.maximumUsersInChatRoom;
 		room.maximumChatMessageLength = meta.config.maximumChatMessageLength;
 		room.showUserInput = !room.maximumUsersInChatRoom || room.maximumUsersInChatRoom > 2;

@@ -19,11 +19,16 @@ const User = require('../src/user');
 const Groups = require('../src/groups');
 const Meta = require('../src/meta');
 const Privileges = require('../src/privileges');
+const utils = require('../src/utils');
+const api = require('../src/api');
 
 describe('Flags', () => {
 	let uid1;
 	let adminUid;
 	let uid3;
+	let moderatorUid;
+	let jar;
+	let csrfToken;
 	let category;
 	before(async () => {
 		// Create some stuff to flag
@@ -45,6 +50,15 @@ describe('Flags', () => {
 		uid3 = await User.create({
 			username: 'unprivileged', password: 'abcdef', email: 'd@e.com',
 		});
+
+		moderatorUid = await User.create({
+			username: 'moderator', password: 'abcdef',
+		});
+		await Privileges.categories.give(['moderate'], category.cid, [moderatorUid]);
+
+		const login = await helpers.loginUser('moderator', 'abcdef');
+		jar = login.jar;
+		csrfToken = login.csrf_token;
 	});
 
 	describe('.create()', () => {
@@ -140,6 +154,40 @@ describe('Flags', () => {
 
 				done();
 			});
+		});
+
+		it('should show user history for admins', async () => {
+			await Groups.join('administrators', moderatorUid);
+			const flagData = await request({
+				uri: `${nconf.get('url')}/api/flags/1`,
+				jar,
+				headers: {
+					'x-csrf-token': csrfToken,
+				},
+				json: true,
+			});
+
+			assert(flagData.history);
+			assert(Array.isArray(flagData.history));
+
+			await Groups.leave('administrators', moderatorUid);
+		});
+
+		it('should show user history for global moderators', async () => {
+			await Groups.join('Global Moderators', moderatorUid);
+			const flagData = await request({
+				uri: `${nconf.get('url')}/api/flags/1`,
+				jar,
+				headers: {
+					'x-csrf-token': csrfToken,
+				},
+				json: true,
+			});
+
+			assert(flagData.history);
+			assert(Array.isArray(flagData.history));
+
+			await Groups.leave('Global Moderators', moderatorUid);
 		});
 	});
 
@@ -450,26 +498,75 @@ describe('Flags', () => {
 			assert.strictEqual('wip', state);
 		});
 
-		it('should rescind notification if flag is resolved', async () => {
-			const flagsAPI = require('../src/api/flags');
-			const result = await Topics.post({
-				cid: category.cid,
-				uid: uid3,
-				title: 'Topic to flag',
-				content: 'This is flaggable content',
-			});
-			const flagObj = await flagsAPI.create({ uid: uid1 }, { type: 'post', id: result.postData.pid, reason: 'spam' });
-			await sleep(2000);
-
-			let userNotifs = await User.notifications.getAll(adminUid);
-			assert(userNotifs.includes(`flag:post:${result.postData.pid}`));
-
-			await Flags.update(flagObj.flagId, adminUid, {
-				state: 'resolved',
+		describe('resolve/reject', () => {
+			let result;
+			let flagObj;
+			beforeEach(async () => {
+				result = await Topics.post({
+					cid: category.cid,
+					uid: uid3,
+					title: 'Topic to flag',
+					content: 'This is flaggable content',
+				});
+				flagObj = await api.flags.create({ uid: uid1 }, { type: 'post', id: result.postData.pid, reason: 'spam' });
+				await sleep(2000);
 			});
 
-			userNotifs = await User.notifications.getAll(adminUid);
-			assert(!userNotifs.includes(`flag:post:${result.postData.pid}`));
+			it('should rescind notification if flag is resolved', async () => {
+				let userNotifs = await User.notifications.getAll(adminUid);
+				assert(userNotifs.includes(`flag:post:${result.postData.pid}`));
+
+				await Flags.update(flagObj.flagId, adminUid, {
+					state: 'resolved',
+				});
+
+				userNotifs = await User.notifications.getAll(adminUid);
+				assert(!userNotifs.includes(`flag:post:${result.postData.pid}`));
+			});
+
+			it('should rescind notification if flag is rejected', async () => {
+				let userNotifs = await User.notifications.getAll(adminUid);
+				assert(userNotifs.includes(`flag:post:${result.postData.pid}`));
+
+				await Flags.update(flagObj.flagId, adminUid, {
+					state: 'rejected',
+				});
+
+				userNotifs = await User.notifications.getAll(adminUid);
+				assert(!userNotifs.includes(`flag:post:${result.postData.pid}`));
+			});
+
+			it('should do nothing if flag is resolved but ACP action is not "rescind"', async () => {
+				Meta.config['flags:actionOnResolve'] = '';
+
+				let userNotifs = await User.notifications.getAll(adminUid);
+				assert(userNotifs.includes(`flag:post:${result.postData.pid}`));
+
+				await Flags.update(flagObj.flagId, adminUid, {
+					state: 'resolved',
+				});
+
+				userNotifs = await User.notifications.getAll(adminUid);
+				assert(userNotifs.includes(`flag:post:${result.postData.pid}`));
+
+				delete Meta.config['flags:actionOnResolve'];
+			});
+
+			it('should do nothing if flag is rejected but ACP action is not "rescind"', async () => {
+				Meta.config['flags:actionOnReject'] = '';
+
+				let userNotifs = await User.notifications.getAll(adminUid);
+				assert(userNotifs.includes(`flag:post:${result.postData.pid}`));
+
+				await Flags.update(flagObj.flagId, adminUid, {
+					state: 'rejected',
+				});
+
+				userNotifs = await User.notifications.getAll(adminUid);
+				assert(userNotifs.includes(`flag:post:${result.postData.pid}`));
+
+				delete Meta.config['flags:actionOnReject'];
+			});
 		});
 	});
 
@@ -548,7 +645,7 @@ describe('Flags', () => {
 					uid: 3,
 				}, (err) => {
 					assert.ok(err);
-					assert.strictEqual('[[error:not-enough-reputation-to-flag]]', err.message);
+					assert.strictEqual('[[error:not-enough-reputation-to-flag, 50]]', err.message);
 					Meta.configs.set('min:rep:flag', 0, done);
 				});
 			});
@@ -873,6 +970,169 @@ describe('Flags', () => {
 				assert(Array.isArray(response.history));
 				assert(Array.isArray(response.notes));
 				assert.strictEqual(response.notes.length, 0);
+			});
+		});
+
+		describe('access control', () => {
+			let uid;
+			let jar;
+			let csrf_token;
+			let requests;
+
+			let flaggerUid;
+			let flagId;
+
+			const noteTime = Date.now();
+
+			before(async () => {
+				uid = await User.create({ username: 'flags-access-control', password: 'abcdef' });
+				({ jar, csrf_token } = await helpers.loginUser('flags-access-control', 'abcdef'));
+
+				flaggerUid = await User.create({ username: 'flags-access-control-flagger', password: 'abcdef' });
+			});
+
+			beforeEach(async () => {
+				// Reset uid back to unprivileged user
+				await Groups.leave('administrators', uid);
+				await Groups.leave('Global Moderators', uid);
+				await Privileges.categories.rescind(['moderate'], 1, [uid]);
+
+				const { postData } = await Topics.post({
+					uid,
+					cid: 1,
+					title: utils.generateUUID(),
+					content: utils.generateUUID(),
+				});
+
+				({ flagId } = await Flags.create('post', postData.pid, flaggerUid, 'spam'));
+				requests = new Set([
+					{
+						method: 'get',
+						uri: `${nconf.get('url')}/api/v3/flags/${flagId}`,
+						jar,
+						headers: {
+							'x-csrf-token': csrf_token,
+						},
+						json: true,
+						simple: false,
+						resolveWithFullResponse: true,
+					},
+					{
+						method: 'put',
+						uri: `${nconf.get('url')}/api/v3/flags/${flagId}`,
+						jar,
+						headers: {
+							'x-csrf-token': csrf_token,
+						},
+						body: {
+							state: 'wip',
+						},
+						json: true,
+						simple: false,
+						resolveWithFullResponse: true,
+					},
+					{
+						method: 'post',
+						uri: `${nconf.get('url')}/api/v3/flags/${flagId}/notes`,
+						jar,
+						headers: {
+							'x-csrf-token': csrf_token,
+						},
+						body: {
+							note: 'test note',
+							datetime: noteTime,
+						},
+						json: true,
+						simple: false,
+						resolveWithFullResponse: true,
+					},
+					{
+						method: 'delete',
+						uri: `${nconf.get('url')}/api/v3/flags/${flagId}/notes/${noteTime}`,
+						jar,
+						headers: {
+							'x-csrf-token': csrf_token,
+						},
+						json: true,
+						simple: false,
+						resolveWithFullResponse: true,
+					},
+					{
+						method: 'delete',
+						uri: `${nconf.get('url')}/api/v3/flags/${flagId}`,
+						jar,
+						headers: {
+							'x-csrf-token': csrf_token,
+						},
+						json: true,
+						simple: false,
+						resolveWithFullResponse: true,
+					},
+				]);
+			});
+
+			it('should not allow access to privileged flag endpoints to guests', async () => {
+				for (let opts of requests) {
+					opts = { ...opts };
+					delete opts.jar;
+					delete opts.headers;
+
+					// eslint-disable-next-line no-await-in-loop
+					const { statusCode } = await request(opts);
+					assert(statusCode.toString().startsWith(4), `${opts.method.toUpperCase()} ${opts.uri} => ${statusCode}`);
+				}
+			});
+
+			it('should not allow access to privileged flag endpoints to regular users', async () => {
+				for (const opts of requests) {
+					// eslint-disable-next-line no-await-in-loop
+					const { statusCode } = await request(opts);
+					assert(statusCode.toString().startsWith(4), `${opts.method.toUpperCase()} ${opts.uri} => ${statusCode}`);
+				}
+			});
+
+			it('should allow access to privileged endpoints to administrators', async () => {
+				await Groups.join('administrators', uid);
+
+				for (const opts of requests) {
+					// eslint-disable-next-line no-await-in-loop
+					const { statusCode } = await request(opts);
+					assert.strictEqual(statusCode, 200, `${opts.method.toUpperCase()} ${opts.uri} => ${statusCode}`);
+				}
+			});
+
+			it('should allow access to privileged endpoints to global moderators', async () => {
+				await Groups.join('Global Moderators', uid);
+
+				for (const opts of requests) {
+					// eslint-disable-next-line no-await-in-loop
+					const { statusCode } = await request(opts);
+					assert.strictEqual(statusCode, 200, `${opts.method.toUpperCase()} ${opts.uri} => ${statusCode}`);
+				}
+			});
+
+			it('should allow access to privileged endpoints to moderators if the flag target is a post in a cid they moderate', async () => {
+				await Privileges.categories.give(['moderate'], 1, [uid]);
+
+				for (const opts of requests) {
+					// eslint-disable-next-line no-await-in-loop
+					const { statusCode } = await request(opts);
+					assert.strictEqual(statusCode, 200, `${opts.method.toUpperCase()} ${opts.uri} => ${statusCode}`);
+				}
+			});
+
+			it('should NOT allow access to privileged endpoints to moderators if the flag target is a post in a cid they DO NOT moderate', async () => {
+				// This is a new category the user will moderate, but the flagged post is in a different category
+				const { cid } = await Categories.create({
+					name: utils.generateUUID(),
+				});
+				await Privileges.categories.give(['moderate'], cid, [uid]);
+
+				for (const opts of requests) {
+					// eslint-disable-next-line no-await-in-loop
+					const { statusCode } = await request(opts);
+					assert(statusCode.toString().startsWith(4), `${opts.method.toUpperCase()} ${opts.uri} => ${statusCode}`);
+				}
 			});
 		});
 	});

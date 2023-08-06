@@ -15,6 +15,9 @@ define('admin/appearance/themes', ['bootbox', 'translator', 'alerts'], function 
 				const cssSrc = parentEl.attr('data-css');
 				const themeId = parentEl.attr('data-theme');
 
+				if (config['theme:id'] === themeId) {
+					return;
+				}
 				socket.emit('admin.themes.set', {
 					type: themeType,
 					id: themeId,
@@ -43,16 +46,20 @@ define('admin/appearance/themes', ['bootbox', 'translator', 'alerts'], function 
 		});
 
 		$('#revert_theme').on('click', function () {
+			if (config['theme:id'] === 'nodebb-theme-harmony') {
+				return;
+			}
 			bootbox.confirm('[[admin/appearance/themes:revert-confirm]]', function (confirm) {
 				if (confirm) {
 					socket.emit('admin.themes.set', {
 						type: 'local',
-						id: 'nodebb-theme-persona',
+						id: 'nodebb-theme-harmony',
 					}, function (err) {
 						if (err) {
 							return alerts.error(err);
 						}
-						highlightSelectedTheme('nodebb-theme-persona');
+						config['theme:id'] = 'nodebb-theme-harmony';
+						highlightSelectedTheme('nodebb-theme-harmony');
 						alerts.alert({
 							alert_id: 'admin:theme',
 							type: 'success',

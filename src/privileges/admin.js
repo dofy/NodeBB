@@ -11,40 +11,36 @@ const utils = require('../utils');
 
 const privsAdmin = module.exports;
 
-privsAdmin.privilegeLabels = [
-	{ name: '[[admin/manage/privileges:admin-dashboard]]' },
-	{ name: '[[admin/manage/privileges:admin-categories]]' },
-	{ name: '[[admin/manage/privileges:admin-privileges]]' },
-	{ name: '[[admin/manage/privileges:admin-admins-mods]]' },
-	{ name: '[[admin/manage/privileges:admin-users]]' },
-	{ name: '[[admin/manage/privileges:admin-groups]]' },
-	{ name: '[[admin/manage/privileges:admin-tags]]' },
-	{ name: '[[admin/manage/privileges:admin-settings]]' },
-];
+/**
+ * Looking to add a new admin privilege via plugin/theme? Attach a hook to
+ * `static:privileges.admin.init` and call .set() on the privilege map passed
+ * in to your listener.
+ */
+const _privilegeMap = new Map([
+	['admin:dashboard', { label: '[[admin/manage/privileges:admin-dashboard]]' }],
+	['admin:categories', { label: '[[admin/manage/privileges:admin-categories]]' }],
+	['admin:privileges', { label: '[[admin/manage/privileges:admin-privileges]]' }],
+	['admin:admins-mods', { label: '[[admin/manage/privileges:admin-admins-mods]]' }],
+	['admin:users', { label: '[[admin/manage/privileges:admin-users]]' }],
+	['admin:groups', { label: '[[admin/manage/privileges:admin-groups]]' }],
+	['admin:tags', { label: '[[admin/manage/privileges:admin-tags]]' }],
+	['admin:settings', { label: '[[admin/manage/privileges:admin-settings]]' }],
+]);
 
-privsAdmin.userPrivilegeList = [
-	'admin:dashboard',
-	'admin:categories',
-	'admin:privileges',
-	'admin:admins-mods',
-	'admin:users',
-	'admin:groups',
-	'admin:tags',
-	'admin:settings',
-];
-
-privsAdmin.groupPrivilegeList = privsAdmin.userPrivilegeList.map(privilege => `groups:${privilege}`);
-
-privsAdmin.privilegeList = privsAdmin.userPrivilegeList.concat(privsAdmin.groupPrivilegeList);
-
-privsAdmin.getUserPrivilegeList = async () => await plugins.hooks.fire('filter:privileges.admin.list', privsAdmin.userPrivilegeList.slice());
-privsAdmin.getGroupPrivilegeList = async () => await plugins.hooks.fire('filter:privileges.admin.groups.list', privsAdmin.groupPrivilegeList.slice());
+privsAdmin.getUserPrivilegeList = async () => await plugins.hooks.fire('filter:privileges.admin.list', Array.from(_privilegeMap.keys()));
+privsAdmin.getGroupPrivilegeList = async () => await plugins.hooks.fire('filter:privileges.admin.groups.list', Array.from(_privilegeMap.keys()).map(privilege => `groups:${privilege}`));
 privsAdmin.getPrivilegeList = async () => {
 	const [user, group] = await Promise.all([
 		privsAdmin.getUserPrivilegeList(),
 		privsAdmin.getGroupPrivilegeList(),
 	]);
 	return user.concat(group);
+};
+
+privsAdmin.init = async () => {
+	await plugins.hooks.fire('static:privileges.admin.init', {
+		privileges: _privilegeMap,
+	});
 };
 
 // Mapping for a page route (via direct match or regexp) to a privilege
@@ -60,8 +56,17 @@ privsAdmin.routeMap = {
 	'extend/plugins': 'admin:settings',
 	'extend/widgets': 'admin:settings',
 	'extend/rewards': 'admin:settings',
+	// uploads
+	'category/uploadpicture': 'admin:categories',
+	uploadfavicon: 'admin:settings',
+	uploadTouchIcon: 'admin:settings',
+	uploadMaskableIcon: 'admin:settings',
+	uploadlogo: 'admin:settings',
+	uploadOgImage: 'admin:settings',
+	uploadDefaultAvatar: 'admin:settings',
 };
 privsAdmin.routePrefixMap = {
+	'dashboard/': 'admin:dashboard',
 	'manage/categories/': 'admin:categories',
 	'manage/privileges/': 'admin:privileges',
 	'manage/groups/': 'admin:groups',
@@ -113,18 +118,23 @@ privsAdmin.resolve = (path) => {
 		return privsAdmin.routeMap[path];
 	}
 
-	const found = Object.entries(privsAdmin.routePrefixMap).find(entry => path.startsWith(entry[0]));
-	return found ? found[1] : undefined;
+	const found = Object.entries(privsAdmin.routePrefixMap)
+		.filter(entry => path.startsWith(entry[0]))
+		.sort((entry1, entry2) => entry2[0].length - entry1[0].length);
+	if (!found.length) {
+		return undefined;
+	}
+	return found[0][1]; // [0] is path [1] is privilege
 };
 
 privsAdmin.list = async function (uid) {
-	const privilegeLabels = privsAdmin.privilegeLabels.slice();
-	const userPrivilegeList = privsAdmin.userPrivilegeList.slice();
-	const groupPrivilegeList = privsAdmin.groupPrivilegeList.slice();
+	const privilegeLabels = Array.from(_privilegeMap.values()).map(data => data.label);
+	const userPrivilegeList = await privsAdmin.getUserPrivilegeList();
+	const groupPrivilegeList = await privsAdmin.getGroupPrivilegeList();
 
 	// Restrict privileges column to superadmins
 	if (!(await user.isAdministrator(uid))) {
-		const idx = privsAdmin.userPrivilegeList.indexOf('admin:privileges');
+		const idx = Array.from(_privilegeMap.keys()).indexOf('admin:privileges');
 		privilegeLabels.splice(idx, 1);
 		userPrivilegeList.splice(idx, 1);
 		groupPrivilegeList.splice(idx, 1);
@@ -135,10 +145,10 @@ privsAdmin.list = async function (uid) {
 		groups: plugins.hooks.fire('filter:privileges.admin.groups.list_human', privilegeLabels.slice()),
 	});
 
-	const keys = await utils.promiseParallel({
-		users: plugins.hooks.fire('filter:privileges.admin.list', userPrivilegeList.slice()),
-		groups: plugins.hooks.fire('filter:privileges.admin.groups.list', groupPrivilegeList.slice()),
-	});
+	const keys = {
+		users: userPrivilegeList,
+		groups: groupPrivilegeList,
+	};
 
 	const payload = await utils.promiseParallel({
 		labels,
@@ -200,4 +210,9 @@ privsAdmin.userPrivileges = async function (uid) {
 privsAdmin.groupPrivileges = async function (groupName) {
 	const groupPrivilegeList = await privsAdmin.getGroupPrivilegeList();
 	return await helpers.userOrGroupPrivileges(0, groupName, groupPrivilegeList);
+};
+
+privsAdmin.getUidsWithPrivilege = async function (privilege) {
+	const uidsByCid = await helpers.getUidsWithPrivilege([0], privilege);
+	return uidsByCid[0];
 };

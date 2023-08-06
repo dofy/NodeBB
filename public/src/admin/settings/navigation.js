@@ -32,10 +32,16 @@ define('admin/settings/navigation', [
 			iconSelect.init(iconEl, function (el) {
 				const newIconClass = el.attr('value');
 				const index = iconEl.parents('[data-index]').attr('data-index');
-				$('#active-navigation [data-index="' + index + '"] i').attr('class', 'fa fa-fw ' + newIconClass);
+				$('#active-navigation [data-index="' + index + '"] i.nav-icon').attr('class', 'fa fa-fw ' + newIconClass);
 				iconEl.siblings('[name="iconClass"]').val(newIconClass);
 				iconEl.siblings('.change-icon-link').toggleClass('hidden', !!newIconClass);
 			});
+		});
+
+		$('#enabled').on('click', '[name="dropdown"]', function () {
+			const el = $(this);
+			const index = el.parents('[data-index]').attr('data-index');
+			$('#active-navigation [data-index="' + index + '"] i.dropdown-icon').toggleClass('hidden', !el.is(':checked'));
 		});
 
 		$('#active-navigation').on('click', 'li', onSelect);
@@ -49,42 +55,61 @@ define('admin/settings/navigation', [
 
 	function onSelect() {
 		const clickedIndex = $(this).attr('data-index');
-		$('#active-navigation li').removeClass('active');
-		$(this).addClass('active');
+		selectIndex(clickedIndex);
+		return false;
+	}
 
-		const detailsForm = $('#enabled').children('[data-index="' + clickedIndex + '"]');
+	function selectIndex(index) {
+		$('#active-navigation li').removeClass('active');
+		$('#active-navigation [data-index="' + index + '"]').addClass('active');
+
+		const detailsForm = $('#enabled').children('[data-index="' + index + '"]');
 		$('#enabled li').addClass('hidden');
 
 		if (detailsForm.length) {
 			detailsForm.removeClass('hidden');
 		}
-		return false;
 	}
 
 	function drop(ev, ui) {
 		const id = ui.helper.attr('data-id');
 		const el = $('#active-navigation [data-id="' + id + '"]');
-		const data = id === 'custom' ? { iconClass: 'fa-navicon', groups: available[0].groups } : available[id];
+		const data = id === 'custom' ? {
+			iconClass: 'fa-navicon',
+			groups: available[0].groups,
+			enabled: true,
+		} : available[id];
 
-		data.enabled = false;
 		data.index = (parseInt($('#enabled').children().last().attr('data-index'), 10) || 0) + 1;
 		data.title = translator.escape(data.title);
 		data.text = translator.escape(data.text);
 		data.groups = ajaxify.data.groups;
-		Benchpress.parse('admin/settings/navigation', 'navigation', { navigation: [data] }, function (li) {
-			translator.translate(li, function (li) {
-				li = $(translator.unescape(li));
-				el.after(li);
-				el.remove();
+
+		const renderNav = new Promise((resolve) => {
+			Benchpress.parse('admin/settings/navigation', 'navigation', { navigation: [data] }, function (li) {
+				translator.translate(li, function (li) {
+					li = $(translator.unescape(li));
+					el.after(li);
+					el.remove();
+					resolve();
+				});
 			});
 		});
-		Benchpress.parse('admin/settings/navigation', 'enabled', { enabled: [data] }, function (li) {
-			translator.translate(li, function (li) {
-				li = $(translator.unescape(li));
-				$('#enabled').append(li);
-				componentHandler.upgradeDom();
+		const renderForm = new Promise((resolve) => {
+			Benchpress.parse('admin/settings/navigation', 'enabled', { enabled: [data] }, function (li) {
+				translator.translate(li, function (li) {
+					li = $(translator.unescape(li));
+					$('#enabled').append(li);
+					componentHandler.upgradeDom();
+					resolve();
+				});
 			});
 		});
+
+		Promise.all([
+			renderNav,
+			renderForm,
+		]).then(() => selectIndex(data.index));
 	}
 
 	function save() {
@@ -99,12 +124,9 @@ define('admin/settings/navigation', [
 			const el = $('#enabled').children('[data-index="' + index + '"]');
 			const form = el.find('form').serializeArray();
 			const data = {};
-			const properties = {};
 
 			form.forEach(function (input) {
-				if (input.name.slice(0, 9) === 'property:' && input.value === 'on') {
-					properties[input.name.slice(9)] = true;
-				} else if (data[input.name]) {
+				if (data[input.name]) {
 					if (!Array.isArray(data[input.name])) {
 						data[input.name] = [
 							data[input.name],
@@ -116,14 +138,6 @@ define('admin/settings/navigation', [
 				}
 			});
 
-			data.properties = {};
-
-			for (const prop in properties) {
-				if (properties.hasOwnProperty(prop)) {
-					data.properties[prop] = properties[prop];
-				}
-			}
-
 			nav.push(data);
 		});
 
@@ -131,7 +145,11 @@ define('admin/settings/navigation', [
 			if (err) {
 				alerts.error(err);
 			} else {
-				alerts.success('Successfully saved navigation');
+				const saveBtn = document.getElementById('save');
+				saveBtn.classList.toggle('saved', true);
+				setTimeout(() => {
+					saveBtn.classList.toggle('saved', false);
+				}, 5000);
 			}
 		});
 	}
@@ -145,11 +163,12 @@ define('admin/settings/navigation', [
 
 	function toggle() {
 		const btn = $(this);
-		const disabled = btn.hasClass('btn-success');
-		translator.translate(disabled ? '[[admin/settings/navigation:btn.disable]]' : '[[admin/settings/navigation:btn.enable]]', function (html) {
-			btn.toggleClass('btn-warning').toggleClass('btn-success').html(html);
-			btn.parents('li').find('[name="enabled"]').val(disabled ? 'on' : '');
-		});
+		const disabled = btn.hasClass('enable');
+		const index = btn.parents('[data-index]').attr('data-index');
+		btn.siblings('.toggle').removeClass('hidden');
+		btn.addClass('hidden');
+		btn.parents('li').find('[name="enabled"]').val(disabled ? 'on' : '');
+		$('#active-navigation [data-index="' + index + '"] a').toggleClass('text-muted', !disabled);
 		return false;
 	}
 

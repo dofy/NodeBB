@@ -9,6 +9,7 @@ const nconf = require('nconf');
 const _ = require('lodash');
 
 const utils = require('./utils');
+const { paths } = require('./constants');
 
 const install = module.exports;
 const questions = {};
@@ -46,22 +47,58 @@ questions.optional = [
 	},
 ];
 
-function checkSetupFlag() {
+function checkSetupFlagEnv() {
 	let setupVal = install.values;
 
+	const envConfMap = {
+		NODEBB_URL: 'url',
+		NODEBB_PORT: 'port',
+		NODEBB_ADMIN_USERNAME: 'admin:username',
+		NODEBB_ADMIN_PASSWORD: 'admin:password',
+		NODEBB_ADMIN_EMAIL: 'admin:email',
+		NODEBB_DB: 'database',
+		NODEBB_DB_HOST: 'host',
+		NODEBB_DB_PORT: 'port',
+		NODEBB_DB_USER: 'username',
+		NODEBB_DB_PASSWORD: 'password',
+		NODEBB_DB_NAME: 'database',
+		NODEBB_DB_SSL: 'ssl',
+	};
+
+	// Set setup values from env vars (if set)
+	const envKeys = Object.keys(process.env);
+	if (Object.keys(envConfMap).some(key => envKeys.includes(key))) {
+		winston.info('[install/checkSetupFlagEnv] checking env vars for setup info...');
+		setupVal = setupVal || {};
+
+		Object.entries(process.env).forEach(([evName, evValue]) => { // get setup values from env
+			if (evName.startsWith('NODEBB_DB_')) {
+				setupVal[`${process.env.NODEBB_DB}:${envConfMap[evName]}`] = evValue;
+			} else if (evName.startsWith('NODEBB_')) {
+				setupVal[envConfMap[evName]] = evValue;
+			}
+		});
+
+		setupVal['admin:password:confirm'] = setupVal['admin:password'];
+	}
+
+	// try to get setup values from json, if successful this overwrites all values set by env
+	// TODO: better behaviour would be to support overrides per value, i.e. in order of priority (generic pattern):
+	//       flag, env, config file, default
 	try {
 		if (nconf.get('setup')) {
-			setupVal = JSON.parse(nconf.get('setup'));
+			const setupJSON = JSON.parse(nconf.get('setup'));
+			setupVal = { ...setupVal, ...setupJSON };
 		}
 	} catch (err) {
-		winston.error('Invalid json in nconf.get(\'setup\'), ignoring setup values');
+		winston.error('[install/checkSetupFlagEnv] invalid json in nconf.get(\'setup\'), ignoring setup values from json');
 	}
 
 	if (setupVal && typeof setupVal === 'object') {
 		if (setupVal['admin:username'] && setupVal['admin:password'] && setupVal['admin:password:confirm'] && setupVal['admin:email']) {
 			install.values = setupVal;
 		} else {
-			winston.error('Required values are missing for automated setup:');
+			winston.error('[install/checkSetupFlagEnv] required values are missing for automated setup:');
 			if (!setupVal['admin:username']) {
 				winston.error('  admin:username');
 			}
@@ -95,7 +132,7 @@ function checkCIFlag() {
 		if (ciVals.hasOwnProperty('host') && ciVals.hasOwnProperty('port') && ciVals.hasOwnProperty('database')) {
 			install.ciVals = ciVals;
 		} else {
-			winston.error('Required values are missing for automated CI integration:');
+			winston.error('[install/checkCIFlag] required values are missing for automated CI integration:');
 			if (!ciVals.hasOwnProperty('host')) {
 				winston.error('  host');
 			}
@@ -214,12 +251,41 @@ async function enableDefaultTheme() {
 		return;
 	}
 
-	const defaultTheme = nconf.get('defaultTheme') || 'nodebb-theme-persona';
+	const defaultTheme = nconf.get('defaultTheme') || 'nodebb-theme-harmony';
 	console.log(`Enabling default theme: ${defaultTheme}`);
 	await meta.themes.set({
 		type: 'local',
 		id: defaultTheme,
 	});
+}
+
+async function createDefaultUserGroups() {
+	const groups = require('./groups');
+	async function createGroup(name) {
+		await groups.create({
+			name: name,
+			hidden: 1,
+			private: 1,
+			system: 1,
+			disableLeave: 1,
+			disableJoinRequests: 1,
+		});
+	}
+
+	const [verifiedExists, unverifiedExists, bannedExists] = await groups.exists([
+		'verified-users', 'unverified-users', 'banned-users',
+	]);
+	if (!verifiedExists) {
+		await createGroup('verified-users');
+	}
+
+	if (!unverifiedExists) {
+		await createGroup('unverified-users');
+	}
+
+	if (!bannedExists) {
+		await createGroup('banned-users');
+	}
 }
 
 async function createAdministrator() {
@@ -277,6 +343,14 @@ async function createAdmin() {
 		try {
 			User.isPasswordValid(results.password);
 		} catch (err) {
+			const [namespace, key] = err.message.slice(2, -2).split(':', 2);
+			if (namespace && key && err.message.startsWith('[[') && err.message.endsWith(']]')) {
+				const lang = require(path.join(__dirname, `../public/language/en-GB/${namespace}`));
+				if (lang && lang[key]) {
+					err.message = lang[key];
+				}
+			}
+
 			winston.warn(`Password error, please try again. ${err.message}`);
 			return await retryPassword(results);
 		}
@@ -428,7 +502,7 @@ async function enableDefaultPlugins() {
 	];
 	let customDefaults = nconf.get('defaultplugins') || nconf.get('defaultPlugins');
 
-	winston.info('[install/defaultPlugins] customDefaults', customDefaults);
+	winston.info(`[install/defaultPlugins] customDefaults ${String(customDefaults)}`);
 
 	if (customDefaults && customDefaults.length) {
 		try {
@@ -457,7 +531,7 @@ async function setCopyrightWidget() {
 	]);
 
 	if (!footer && footerJSON) {
-		await db.setObjectField('widgets:global', 'footer', footerJSON);
+		await db.setObjectField('widgets:global', 'sidebar-footer', footerJSON);
 	}
 }
 
@@ -490,14 +564,25 @@ async function checkUpgrade() {
 	}
 }
 
+async function installPlugins() {
+	const pluginInstall = require('./plugins');
+	const nbbVersion = require(paths.currentPackage).version;
+	await Promise.all((await pluginInstall.getActive()).map(async (id) => {
+		if (await pluginInstall.isInstalled(id)) return;
+		const version = await pluginInstall.suggest(id, nbbVersion);
+		await pluginInstall.toggleInstall(id, version.version);
+	}));
+}
+
 install.setup = async function () {
 	try {
-		checkSetupFlag();
+		checkSetupFlagEnv();
 		checkCIFlag();
 		await setupConfig();
 		await setupDefaultConfigs();
 		await enableDefaultTheme();
 		await createCategories();
+		await createDefaultUserGroups();
 		const adminInfo = await createAdministrator();
 		await createGlobalModeratorsGroup();
 		await giveGlobalPrivileges();
@@ -506,6 +591,7 @@ install.setup = async function () {
 		await enableDefaultPlugins();
 		await setCopyrightWidget();
 		await copyFavicon();
+		if (nconf.get('plugins:autoinstall')) await installPlugins();
 		await checkUpgrade();
 
 		const data = {

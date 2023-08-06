@@ -9,11 +9,13 @@ const categories = require('../categories');
 const plugins = require('../plugins');
 const translator = require('../translator');
 const languages = require('../languages');
+const { generateToken } = require('../middleware/csrf');
 
 const apiController = module.exports;
 
 const relative_path = nconf.get('relative_path');
 const upload_url = nconf.get('upload_url');
+const asset_base_url = nconf.get('asset_base_url');
 const socketioTransports = nconf.get('socket.io:transports') || ['polling', 'websocket'];
 const socketioOrigins = nconf.get('socket.io:origins');
 const websocketAddress = nconf.get('socket.io:address') || '';
@@ -22,7 +24,8 @@ apiController.loadConfig = async function (req) {
 	const config = {
 		relative_path,
 		upload_url,
-		assetBaseUrl: `${relative_path}/assets`,
+		asset_base_url,
+		assetBaseUrl: asset_base_url, // deprecate in 1.20.x
 		siteTitle: validator.escape(String(meta.config.title || meta.config.browserTitle || 'NodeBB')),
 		browserTitle: validator.escape(String(meta.config.browserTitle || meta.config.title || 'NodeBB')),
 		titleLayout: (meta.config.titleLayout || '{pageTitle} | {browserTitle}').replace(/{/g, '&#123;').replace(/}/g, '&#125;'),
@@ -62,10 +65,11 @@ apiController.loadConfig = async function (req) {
 		'cache-buster': meta.config['cache-buster'] || '',
 		topicPostSort: meta.config.topicPostSort || 'oldest_to_newest',
 		categoryTopicSort: meta.config.categoryTopicSort || 'newest_to_oldest',
-		csrf_token: req.uid >= 0 && req.csrfToken && req.csrfToken(),
+		csrf_token: req.uid >= 0 ? generateToken(req) : false,
 		searchEnabled: plugins.hooks.hasListeners('filter:search.query'),
 		searchDefaultInQuick: meta.config.searchDefaultInQuick || 'titles',
 		bootswatchSkin: meta.config.bootswatchSkin || '',
+		'composer:showHelpTab': meta.config['composer:showHelpTab'] === 1,
 		enablePostHistory: meta.config.enablePostHistory === 1,
 		timeagoCutoff: meta.config.timeagoCutoff !== '' ? Math.max(0, parseInt(meta.config.timeagoCutoff, 10)) : meta.config.timeagoCutoff,
 		timeagoCodes: languages.timeagoCodes,
@@ -94,7 +98,7 @@ apiController.loadConfig = async function (req) {
 	}
 
 	// Handle old skin configs
-	const oldSkins = ['noskin', 'default'];
+	const oldSkins = ['default'];
 	settings.bootswatchSkin = oldSkins.includes(settings.bootswatchSkin) ? '' : settings.bootswatchSkin;
 
 	config.usePagination = settings.usePagination;
@@ -108,7 +112,15 @@ apiController.loadConfig = async function (req) {
 	config.topicPostSort = settings.topicPostSort || config.topicPostSort;
 	config.categoryTopicSort = settings.categoryTopicSort || config.categoryTopicSort;
 	config.topicSearchEnabled = settings.topicSearchEnabled || false;
-	config.bootswatchSkin = (meta.config.disableCustomUserSkins !== 1 && settings.bootswatchSkin && settings.bootswatchSkin !== '') ? settings.bootswatchSkin : '';
+	config.disableCustomUserSkins = meta.config.disableCustomUserSkins === 1;
+	config.defaultBootswatchSkin = config.bootswatchSkin;
+	if (!config.disableCustomUserSkins && settings.bootswatchSkin) {
+		if (settings.bootswatchSkin === 'noskin') {
+			config.bootswatchSkin = '';
+		} else if (settings.bootswatchSkin !== '' && await meta.css.isSkinValid(settings.bootswatchSkin)) {
+			config.bootswatchSkin = settings.bootswatchSkin;
+		}
+	}
 
 	// Overrides based on privilege
 	config.disableChatMessageEditing = isAdminOrGlobalMod ? false : config.disableChatMessageEditing;

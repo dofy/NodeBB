@@ -1,10 +1,10 @@
 'use strict';
 
-const colors = require('colors/safe');
 const nconf = require('nconf');
 const validator = require('validator');
 const querystring = require('querystring');
 const _ = require('lodash');
+const chalk = require('chalk');
 
 const translator = require('../translator');
 const user = require('../user');
@@ -13,6 +13,7 @@ const categories = require('../categories');
 const plugins = require('../plugins');
 const meta = require('../meta');
 const middlewareHelpers = require('../middleware/helpers');
+const utils = require('../utils');
 
 const helpers = module.exports;
 
@@ -57,9 +58,10 @@ helpers.buildQueryString = function (query, key, value) {
 
 helpers.addLinkTags = function (params) {
 	params.res.locals.linkTags = params.res.locals.linkTags || [];
+	const page = params.page > 1 ? `?page=${params.page}` : '';
 	params.res.locals.linkTags.push({
 		rel: 'canonical',
-		href: `${url}/${params.url}`,
+		href: `${url}/${params.url}${page}`,
 	});
 
 	params.tags.forEach((rel) => {
@@ -122,6 +124,11 @@ helpers.buildTerms = function (url, term, query) {
 
 helpers.notAllowed = async function (req, res, error) {
 	({ error } = await plugins.hooks.fire('filter:helpers.notAllowed', { req, res, error }));
+
+	await plugins.hooks.fire('response:helpers.notAllowed', { req, res, error });
+	if (res.headersSent) {
+		return;
+	}
 
 	if (req.loggedIn || req.uid === -1) {
 		if (res.locals.isAPI) {
@@ -222,7 +229,7 @@ helpers.buildBreadcrumbs = function (crumbs) {
 	crumbs.forEach((crumb) => {
 		if (crumb) {
 			if (crumb.url) {
-				crumb.url = relative_path + crumb.url;
+				crumb.url = `${utils.isRelativeUrl(crumb.url) ? relative_path : ''}${crumb.url}`;
 			}
 			breadcrumbs.push(crumb);
 		}
@@ -232,10 +239,11 @@ helpers.buildBreadcrumbs = function (crumbs) {
 };
 
 helpers.buildTitle = function (pageTitle) {
-	const titleLayout = meta.config.titleLayout || '{pageTitle} | {browserTitle}';
+	pageTitle = pageTitle || '';
+	const titleLayout = meta.config.titleLayout || `${pageTitle ? '{pageTitle} | ' : ''}{browserTitle}`;
 
 	const browserTitle = validator.escape(String(meta.config.browserTitle || meta.config.title || 'NodeBB'));
-	pageTitle = pageTitle || '';
+
 	const title = titleLayout.replace('{pageTitle}', () => pageTitle).replace('{browserTitle}', () => browserTitle);
 	return title;
 };
@@ -350,22 +358,47 @@ helpers.getSelectedCategory = async function (cids) {
 	};
 };
 
+helpers.getSelectedTag = function (tags) {
+	if (tags && !Array.isArray(tags)) {
+		tags = [tags];
+	}
+	tags = tags || [];
+	const tagData = tags.map(t => validator.escape(String(t)));
+	let selectedTag = null;
+	if (tagData.length) {
+		selectedTag = {
+			label: tagData.join(', '),
+		};
+	}
+	return {
+		selectedTags: tagData,
+		selectedTag: selectedTag,
+	};
+};
+
 helpers.trimChildren = function (category) {
-	if (Array.isArray(category.children)) {
+	if (category && Array.isArray(category.children)) {
 		category.children = category.children.slice(0, category.subCategoriesPerPage);
 		category.children.forEach((child) => {
-			child.children = undefined;
+			if (category.isSection) {
+				helpers.trimChildren(child);
+			} else {
+				child.children = undefined;
+			}
 		});
 	}
 };
 
 helpers.setCategoryTeaser = function (category) {
 	if (Array.isArray(category.posts) && category.posts.length && category.posts[0]) {
+		const post = category.posts[0];
 		category.teaser = {
-			url: `${nconf.get('relative_path')}/post/${category.posts[0].pid}`,
-			timestampISO: category.posts[0].timestampISO,
-			pid: category.posts[0].pid,
-			topic: category.posts[0].topic,
+			url: `${nconf.get('relative_path')}/post/${post.pid}`,
+			timestampISO: post.timestampISO,
+			pid: post.pid,
+			index: post.index,
+			topic: post.topic,
+			user: post.user,
 		};
 	}
 };
@@ -420,11 +453,26 @@ helpers.formatApiResponse = async (statusCode, res, payload) => {
 	}
 
 	if (String(statusCode).startsWith('2')) {
+		if (res.req.loggedIn) {
+			res.set('cache-control', 'private');
+		}
+
+		let code = 'ok';
+		let message = 'OK';
+		switch (statusCode) {
+			case 202:
+				code = 'accepted';
+				message = 'Accepted';
+				break;
+
+			case 204:
+				code = 'no-content';
+				message = 'No Content';
+				break;
+		}
+
 		res.status(statusCode).json({
-			status: {
-				code: 'ok',
-				message: 'OK',
-			},
+			status: { code, message },
 			response: payload || {},
 		});
 	} else if (payload instanceof Error) {
@@ -432,7 +480,7 @@ helpers.formatApiResponse = async (statusCode, res, payload) => {
 		const response = {};
 
 		// Update status code based on some common error codes
-		switch (payload.message) {
+		switch (message) {
 			case '[[error:user-banned]]':
 				Object.assign(response, await generateBannedResponse(res));
 				// intentional fall through
@@ -444,20 +492,29 @@ helpers.formatApiResponse = async (statusCode, res, payload) => {
 			case '[[error:invalid-uid]]':
 				statusCode = 401;
 				break;
+
+			case '[[error:no-topic]]':
+				statusCode = 404;
+				break;
 		}
 
-		const returnPayload = await helpers.generateError(statusCode, message);
+		if (message.startsWith('[[error:required-parameters-missing, ')) {
+			const params = message.slice('[[error:required-parameters-missing, '.length, -2).split(' ');
+			Object.assign(response, { params });
+		}
+
+		const returnPayload = await helpers.generateError(statusCode, message, res);
 		returnPayload.response = response;
 
 		if (global.env === 'development') {
 			returnPayload.stack = payload.stack;
-			process.stdout.write(`[${colors.yellow('api')}] Exception caught, error with stack trace follows:\n`);
+			process.stdout.write(`[${chalk.yellow('api')}] Exception caught, error with stack trace follows:\n`);
 			process.stdout.write(payload.stack);
 		}
 		res.status(statusCode).json(returnPayload);
 	} else if (!payload) {
 		// Non-2xx statusCode, generate predefined error
-		const returnPayload = await helpers.generateError(statusCode);
+		const returnPayload = await helpers.generateError(statusCode, null, res);
 		res.status(statusCode).json(returnPayload);
 	}
 };
@@ -481,15 +538,21 @@ async function generateBannedResponse(res) {
 	return response;
 }
 
-helpers.generateError = async (statusCode, message) => {
+helpers.generateError = async (statusCode, message, res) => {
+	async function translateMessage(message) {
+		const { req } = res;
+		const settings = req.query.lang ? null : await user.getSettings(req.uid);
+		const language = String(req.query.lang || settings.userLang || meta.config.defaultLang);
+		return await translator.translate(message, language);
+	}
 	if (message && message.startsWith('[[')) {
-		message = await translator.translate(message);
+		message = await translateMessage(message);
 	}
 
 	const payload = {
 		status: {
 			code: 'internal-server-error',
-			message: message || await translator.translate(`[[error:api.${statusCode}]]`),
+			message: message || await translateMessage(`[[error:api.${statusCode}]]`),
 		},
 		response: {},
 	};

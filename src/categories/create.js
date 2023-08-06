@@ -40,7 +40,7 @@ module.exports = function (Categories) {
 			order: order,
 			link: data.link || '',
 			numRecentReplies: 1,
-			class: (data.class ? data.class : 'col-md-3 col-xs-6'),
+			class: (data.class ? data.class : 'col-md-3 col-6'),
 			imageClass: 'cover',
 			isSection: 0,
 			subCategoriesPerPage: 10,
@@ -88,18 +88,16 @@ module.exports = function (Categories) {
 		await db.sortedSetAddBulk([
 			['categories:cid', category.order, category.cid],
 			[`cid:${parentCid}:children`, category.order, category.cid],
-			['categories:name', 0, `${data.name.substr(0, 200).toLowerCase()}:${category.cid}`],
+			['categories:name', 0, `${data.name.slice(0, 200).toLowerCase()}:${category.cid}`],
 		]);
 
 		await privileges.categories.give(result.defaultPrivileges, category.cid, 'registered-users');
 		await privileges.categories.give(result.modPrivileges, category.cid, ['administrators', 'Global Moderators']);
 		await privileges.categories.give(result.guestPrivileges, category.cid, ['guests', 'spiders']);
 
-		cache.del([
-			'categories:cid',
-			`cid:${parentCid}:children`,
-			`cid:${parentCid}:children:all`,
-		]);
+		cache.del('categories:cid');
+		await clearParentCategoryCache(parentCid);
+
 		if (data.cloneFromCid && parseInt(data.cloneFromCid, 10)) {
 			category = await Categories.copySettingsFrom(data.cloneFromCid, category.cid, !data.parentCid);
 		}
@@ -111,6 +109,22 @@ module.exports = function (Categories) {
 		plugins.hooks.fire('action:category.create', { category: category });
 		return category;
 	};
+
+	async function clearParentCategoryCache(parentCid) {
+		while (parseInt(parentCid, 10) >= 0) {
+			cache.del([
+				`cid:${parentCid}:children`,
+				`cid:${parentCid}:children:all`,
+			]);
+
+			if (parseInt(parentCid, 10) === 0) {
+				return;
+			}
+			// clear all the way to root
+			// eslint-disable-next-line no-await-in-loop
+			parentCid = await Categories.getCategoryField(parentCid, 'parentCid');
+		}
+	}
 
 	async function duplicateCategoriesChildren(parentCid, cid, uid) {
 		let children = await Categories.getChildren([cid], uid);

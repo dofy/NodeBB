@@ -15,7 +15,6 @@ const search = module.exports;
 
 search.search = async function (data) {
 	const start = process.hrtime();
-	data.searchIn = data.searchIn || 'titlesposts';
 	data.sortBy = data.sortBy || 'relevance';
 
 	let result;
@@ -27,6 +26,10 @@ search.search = async function (data) {
 		result = await categories.search(data);
 	} else if (data.searchIn === 'tags') {
 		result = await topics.searchAndLoadTags(data);
+	} else if (data.searchIn) {
+		result = await plugins.hooks.fire('filter:search.searchIn', {
+			data,
+		});
 	} else {
 		throw new Error('[[error:unknown-search-filter]]');
 	}
@@ -72,10 +75,6 @@ async function searchInContent(data) {
 		]);
 	}
 
-	if (data.returnIds) {
-		return { pids: pids, tids: tids };
-	}
-
 	const mainPids = await topics.getMainPids(tids);
 
 	let allPids = mainPids.concat(pids).filter(Boolean);
@@ -85,7 +84,17 @@ async function searchInContent(data) {
 
 	const metadata = await plugins.hooks.fire('filter:search.inContent', {
 		pids: allPids,
+		data: data,
 	});
+
+	if (data.returnIds) {
+		const mainPidsSet = new Set(mainPids);
+		const mainPidToTid = _.zipObject(mainPids, tids);
+		const pidsSet = new Set(pids);
+		const returnPids = allPids.filter(pid => pidsSet.has(pid));
+		const returnTids = allPids.filter(pid => mainPidsSet.has(pid)).map(pid => mainPidToTid[pid]);
+		return { pids: returnPids, tids: returnTids };
+	}
 
 	const itemsPerPage = Math.min(data.itemsPerPage || 10, 100);
 	const returnData = {
@@ -102,6 +111,7 @@ async function searchInContent(data) {
 	returnData.posts = await posts.getPostSummaryByPids(metadata.pids, data.uid, {});
 	await plugins.hooks.fire('filter:search.contentGetResult', { result: returnData, data: data });
 	delete metadata.pids;
+	delete metadata.data;
 	return Object.assign(returnData, metadata);
 }
 

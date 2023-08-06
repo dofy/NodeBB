@@ -163,7 +163,7 @@ module.exports = function (Categories) {
 			if (!topic.scheduled && topic.deleted && !topic.isOwner) {
 				topic.title = '[[topic:topic_is_deleted]]';
 				if (topic.hasOwnProperty('titleRaw')) {
-					topics.titleRaw = '[[topic:topic_is_deleted]]';
+					topic.titleRaw = '[[topic:topic_is_deleted]]';
 				}
 				topic.slug = topic.tid;
 				topic.teaser = null;
@@ -186,6 +186,20 @@ module.exports = function (Categories) {
 		}
 		await Promise.all(promises);
 		await Categories.updateRecentTidForCid(cid);
+	};
+
+	Categories.onTopicsMoved = async (cids) => {
+		await Promise.all(cids.map(async (cid) => {
+			await Promise.all([
+				Categories.setCategoryField(
+					cid, 'topic_count', await db.sortedSetCard(`cid:${cid}:tids:lastposttime`)
+				),
+				Categories.setCategoryField(
+					cid, 'post_count', await db.sortedSetCard(`cid:${cid}:pids`)
+				),
+				Categories.updateRecentTidForCid(cid),
+			]);
+		}));
 	};
 
 	async function filterScheduledTids(tids) {

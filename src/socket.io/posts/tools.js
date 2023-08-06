@@ -1,5 +1,7 @@
 'use strict';
 
+const nconf = require('nconf');
+
 const db = require('../../database');
 const posts = require('../../posts');
 const flags = require('../../flags');
@@ -12,15 +14,15 @@ const utils = require('../../utils');
 
 module.exports = function (SocketPosts) {
 	SocketPosts.loadPostTools = async function (socket, data) {
-		if (!data || !data.pid || !data.cid) {
+		if (!data || !data.pid) {
 			throw new Error('[[error:invalid-data]]');
 		}
-
+		const cid = await posts.getCidByPid(data.pid);
 		const results = await utils.promiseParallel({
 			posts: posts.getPostFields(data.pid, ['deleted', 'bookmarks', 'uid', 'ip', 'flagId']),
 			isAdmin: user.isAdministrator(socket.uid),
 			isGlobalMod: user.isGlobalModerator(socket.uid),
-			isModerator: user.isModerator(socket.uid, data.cid),
+			isModerator: user.isModerator(socket.uid, cid),
 			canEdit: privileges.posts.canEdit(data.pid, socket.uid),
 			canDelete: privileges.posts.canDelete(data.pid, socket.uid),
 			canPurge: privileges.posts.canPurge(data.pid, socket.uid),
@@ -33,6 +35,7 @@ module.exports = function (SocketPosts) {
 		});
 
 		const postData = results.posts;
+		postData.absolute_url = `${nconf.get('url')}/post/${data.pid}`;
 		postData.bookmarked = results.bookmarked;
 		postData.selfPost = socket.uid && socket.uid === postData.uid;
 		postData.display_edit_tools = results.canEdit.flag;
@@ -55,13 +58,14 @@ module.exports = function (SocketPosts) {
 		if (!results.isAdmin && !results.canViewInfo) {
 			postData.ip = undefined;
 		}
-		const tools = await plugins.hooks.fire('filter:post.tools', {
+		const { tools } = await plugins.hooks.fire('filter:post.tools', {
 			pid: data.pid,
 			post: postData,
 			uid: socket.uid,
 			tools: [],
 		});
-		postData.tools = tools.tools;
+		postData.tools = tools;
+
 		return results;
 	};
 

@@ -5,11 +5,11 @@ const path = require('path');
 const winston = require('winston');
 const semver = require('semver');
 const nconf = require('nconf');
+const chalk = require('chalk');
 const request = require('request-promise-native');
 
 const user = require('../user');
 const posts = require('../posts');
-const meta = require('../meta');
 
 const { pluginNamePattern, themeNamePattern, paths } = require('../constants');
 
@@ -32,8 +32,8 @@ Plugins.libraries = {};
 Plugins.loadedHooks = {};
 Plugins.staticDirs = {};
 Plugins.cssFiles = [];
-Plugins.lessFiles = [];
-Plugins.acpLessFiles = [];
+Plugins.scssFiles = [];
+Plugins.acpScssFiles = [];
 Plugins.clientScripts = [];
 Plugins.acpScripts = [];
 Plugins.libraryPaths = [];
@@ -97,8 +97,8 @@ Plugins.reload = async function () {
 	Plugins.staticDirs = {};
 	Plugins.versionWarning = [];
 	Plugins.cssFiles.length = 0;
-	Plugins.lessFiles.length = 0;
-	Plugins.acpLessFiles.length = 0;
+	Plugins.scssFiles.length = 0;
+	Plugins.acpScssFiles.length = 0;
 	Plugins.clientScripts.length = 0;
 	Plugins.acpScripts.length = 0;
 	Plugins.libraryPaths.length = 0;
@@ -117,14 +117,24 @@ Plugins.reload = async function () {
 		console.log('');
 		winston.warn('[plugins/load] The following plugins may not be compatible with your version of NodeBB. This may cause unintended behaviour or crashing. In the event of an unresponsive NodeBB caused by this plugin, run `./nodebb reset -p PLUGINNAME` to disable it.');
 		for (let x = 0, numPlugins = Plugins.versionWarning.length; x < numPlugins; x += 1) {
-			console.log('  * '.yellow + Plugins.versionWarning[x]);
+			console.log(`${chalk.yellow('  * ') + Plugins.versionWarning[x]}`);
 		}
 		console.log('');
 	}
 
 	// Core hooks
 	posts.registerHooks();
-	meta.configs.registerHooks();
+
+	// Deprecation notices
+	Plugins.hooks._deprecated.forEach((deprecation, hook) => {
+		if (!deprecation.affected || !deprecation.affected.size) {
+			return;
+		}
+
+		const replacement = deprecation.hasOwnProperty('new') ? `Please use ${chalk.yellow(deprecation.new)} instead.` : 'There is no alternative.';
+		winston.warn(`[plugins/load] ${chalk.white.bgRed.bold('DEPRECATION')} The hook ${chalk.yellow(hook)} has been deprecated as of ${deprecation.since}, and slated for removal in ${deprecation.until}. ${replacement} The following plugins are still listening for this hook:`);
+		deprecation.affected.forEach(id => console.log(`  ${chalk.yellow('*')} ${id}`));
+	});
 
 	// Lower priority runs earlier
 	Object.keys(Plugins.loadedHooks).forEach((hook) => {
@@ -221,6 +231,13 @@ Plugins.normalise = async function (apiReturn) {
 		}
 		pluginMap[plugin.id].outdated = semver.gt(pluginMap[plugin.id].latest, pluginMap[plugin.id].version);
 	});
+
+	if (nconf.get('plugins:active')) {
+		nconf.get('plugins:active').forEach((id) => {
+			pluginMap[id] = pluginMap[id] || {};
+			pluginMap[id].active = true;
+		});
+	}
 
 	const pluginArray = Object.values(pluginMap);
 

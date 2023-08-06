@@ -6,6 +6,7 @@ const topics = require('../../topics');
 const categories = require('../../categories');
 const privileges = require('../../privileges');
 const socketHelpers = require('../helpers');
+const events = require('../../events');
 
 module.exports = function (SocketTopics) {
 	SocketTopics.move = async function (socket, data) {
@@ -19,13 +20,16 @@ module.exports = function (SocketTopics) {
 		}
 
 		const uids = await user.getUidsFromSet('users:online', 0, -1);
-
+		const cids = [parseInt(data.cid, 10)];
 		await async.eachLimit(data.tids, 10, async (tid) => {
 			const canMove = await privileges.topics.isAdminOrMod(tid, socket.uid);
 			if (!canMove) {
 				throw new Error('[[error:no-privileges]]');
 			}
 			const topicData = await topics.getTopicFields(tid, ['tid', 'cid', 'slug', 'deleted']);
+			if (!cids.includes(topicData.cid)) {
+				cids.push(topicData.cid);
+			}
 			data.uid = socket.uid;
 			await topics.tools.move(tid, data);
 
@@ -34,7 +38,18 @@ module.exports = function (SocketTopics) {
 			if (!topicData.deleted) {
 				socketHelpers.sendNotificationToTopicOwner(tid, socket.uid, 'move', 'notifications:moved_your_topic');
 			}
+
+			await events.log({
+				type: `topic-move`,
+				uid: socket.uid,
+				ip: socket.ip,
+				tid: tid,
+				fromCid: topicData.cid,
+				toCid: data.cid,
+			});
 		});
+
+		await categories.onTopicsMoved(cids);
 	};
 
 
@@ -51,6 +66,14 @@ module.exports = function (SocketTopics) {
 		data.uid = socket.uid;
 		await async.eachLimit(tids, 50, async (tid) => {
 			await topics.tools.move(tid, data);
+		});
+		await categories.onTopicsMoved([data.currentCid, data.cid]);
+		await events.log({
+			type: `topic-move-all`,
+			uid: socket.uid,
+			ip: socket.ip,
+			fromCid: data.currentCid,
+			toCid: data.cid,
 		});
 	};
 };

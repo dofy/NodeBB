@@ -165,7 +165,8 @@ module.exports = function (User) {
 		if (!data.signature) {
 			return;
 		}
-		if (data.signature !== undefined && data.signature.length > meta.config.maximumSignatureLength) {
+		const signature = data.signature.replace(/\r\n/g, '\n');
+		if (signature.length > meta.config.maximumSignatureLength) {
 			throw new Error(`[[error:signature-too-long, ${meta.config.maximumSignatureLength}]]`);
 		}
 		await User.checkMinReputation(callerUid, data.uid, 'min:rep:signature');
@@ -226,17 +227,18 @@ module.exports = function (User) {
 		}
 		const reputation = await User.getUserField(uid, 'reputation');
 		if (reputation < meta.config[setting]) {
-			throw new Error(`[[error:not-enough-reputation-${setting.replace(/:/g, '-')}]]`);
+			throw new Error(`[[error:not-enough-reputation-${setting.replace(/:/g, '-')}, ${meta.config[setting]}]]`);
 		}
 	};
 
 	async function updateEmail(uid, newEmail) {
-		let oldEmail = await User.getUserField(uid, 'email');
+		let oldEmail = await db.getObjectField(`user:${uid}`, 'email');
 		oldEmail = oldEmail || '';
 		if (oldEmail === newEmail) {
 			return;
 		}
 
+		// 👉 Looking for email change logic? src/user/email.js (UserEmail.confirmByUid)
 		if (newEmail) {
 			await User.email.sendValidationEmail(uid, {
 				email: newEmail,
@@ -249,7 +251,7 @@ module.exports = function (User) {
 		if (!newUsername) {
 			return;
 		}
-		const userData = await User.getUserFields(uid, ['username', 'userslug']);
+		const userData = await db.getObjectFields(`user:${uid}`, ['username', 'userslug']);
 		if (userData.username === newUsername) {
 			return;
 		}
@@ -276,7 +278,7 @@ module.exports = function (User) {
 	}
 
 	async function updateFullname(uid, newFullname) {
-		const fullname = await User.getUserField(uid, 'fullname');
+		const fullname = await db.getObjectField(`user:${uid}`, 'fullname');
 		await updateUidMapping('fullname', uid, newFullname, fullname);
 		if (newFullname !== fullname) {
 			if (fullname) {
@@ -325,6 +327,7 @@ module.exports = function (User) {
 			User.reset.cleanByUid(data.uid),
 			User.reset.updateExpiry(data.uid),
 			User.auth.revokeAllSessions(data.uid),
+			User.email.expireValidation(data.uid),
 		]);
 
 		plugins.hooks.fire('action:password.change', { uid: uid, targetUid: data.uid });

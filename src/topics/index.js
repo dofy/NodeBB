@@ -185,6 +185,14 @@ Topics.getTopicWithPosts = async function (topicData, set, uid, start, stop, rev
 	topicData.thumbs = thumbs[0];
 	topicData.posts = posts;
 	topicData.events = events;
+	topicData.posts.forEach((p) => {
+		p.events = events.filter(
+			event => event.timestamp >= p.eventStart && event.timestamp < p.eventEnd
+		);
+		p.eventStart = undefined;
+		p.eventEnd = undefined;
+	});
+
 	topicData.category = category;
 	topicData.tagWhitelist = tagWhitelist[0];
 	topicData.minTags = category.minTags;
@@ -252,7 +260,8 @@ Topics.getMainPosts = async function (tids, uid) {
 };
 
 async function getMainPosts(mainPids, uid) {
-	const postData = await posts.getPostsByPids(mainPids, uid);
+	let postData = await posts.getPostsByPids(mainPids, uid);
+	postData = await user.blocks.filter(uid, postData);
 	postData.forEach((post) => {
 		if (post) {
 			post.index = 0;
@@ -267,6 +276,9 @@ Topics.isLocked = async function (tid) {
 };
 
 Topics.search = async function (tid, term) {
+	if (!tid || !term) {
+		throw new Error('[[error:invalid-data]]');
+	}
 	const result = await plugins.hooks.fire('filter:topic.search', {
 		tid: tid,
 		term: term,

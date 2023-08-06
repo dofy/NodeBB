@@ -457,6 +457,11 @@ SELECT o."_key" k
 		return data && data[0];
 	};
 
+	module.getSortedSetMembersWithScores = async function (key) {
+		const data = await module.getSortedSetsMembersWithScores([key]);
+		return data && data[0];
+	};
+
 	module.getSortedSetsMembers = async function (keys) {
 		if (!Array.isArray(keys) || !keys.length) {
 			return [];
@@ -467,6 +472,23 @@ SELECT o."_key" k
 			text: `
 SELECT "_key" k,
        "nodebb_get_sorted_set_members"("_key") m
+  FROM UNNEST($1::TEXT[]) "_key";`,
+			values: [keys],
+		});
+
+		return keys.map(k => (res.rows.find(r => r.k === k) || {}).m || []);
+	};
+
+	module.getSortedSetsMembersWithScores = async function (keys) {
+		if (!Array.isArray(keys) || !keys.length) {
+			return [];
+		}
+
+		const res = await module.pool.query({
+			name: 'getSortedSetsMembersWithScores',
+			text: `
+SELECT "_key" k,
+       "nodebb_get_sorted_set_members_withscores"("_key") m
   FROM UNNEST($1::TEXT[]) "_key";`,
 			values: [keys],
 		});
@@ -577,11 +599,11 @@ DELETE FROM "legacy_zset" z
 
 		if (min !== '-') {
 			if (min.match(/^\(/)) {
-				q.values.push(min.substr(1));
+				q.values.push(min.slice(1));
 				q.suffix += 'GT';
 				q.where += ` AND z."value" > $${q.values.length}::TEXT COLLATE "C"`;
 			} else if (min.match(/^\[/)) {
-				q.values.push(min.substr(1));
+				q.values.push(min.slice(1));
 				q.suffix += 'GE';
 				q.where += ` AND z."value" >= $${q.values.length}::TEXT COLLATE "C"`;
 			} else {
@@ -593,11 +615,11 @@ DELETE FROM "legacy_zset" z
 
 		if (max !== '+') {
 			if (max.match(/^\(/)) {
-				q.values.push(max.substr(1));
+				q.values.push(max.slice(1));
 				q.suffix += 'LT';
 				q.where += ` AND z."value" < $${q.values.length}::TEXT COLLATE "C"`;
 			} else if (max.match(/^\[/)) {
-				q.values.push(max.substr(1));
+				q.values.push(max.slice(1));
 				q.suffix += 'LE';
 				q.where += ` AND z."value" <= $${q.values.length}::TEXT COLLATE "C"`;
 			} else {

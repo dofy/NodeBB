@@ -4,8 +4,7 @@ const async = require('async');
 const _ = require('lodash');
 const path = require('path');
 const nconf = require('nconf');
-const util = require('util');
-const rimrafAsync = util.promisify(require('rimraf'));
+const { rimraf } = require('rimraf');
 
 const db = require('../database');
 const posts = require('../posts');
@@ -15,14 +14,12 @@ const groups = require('../groups');
 const messaging = require('../messaging');
 const plugins = require('../plugins');
 const batch = require('../batch');
-const file = require('../file');
 
 module.exports = function (User) {
 	const deletesInProgress = {};
 
 	User.delete = async (callerUid, uid) => {
 		await User.deleteContent(callerUid, uid);
-		await removeFromSortedSets(uid);
 		return await User.deleteAccount(uid);
 	};
 
@@ -36,17 +33,15 @@ module.exports = function (User) {
 		deletesInProgress[uid] = 'user.delete';
 		await deletePosts(callerUid, uid);
 		await deleteTopics(callerUid, uid);
-		await deleteUploads(uid);
+		await deleteUploads(callerUid, uid);
 		await deleteQueued(uid);
 		delete deletesInProgress[uid];
 	};
 
 	async function deletePosts(callerUid, uid) {
-		await batch.processSortedSet(`uid:${uid}:posts`, async (ids) => {
-			await async.eachSeries(ids, async (pid) => {
-				await posts.purge(pid, callerUid);
-			});
-		}, { alwaysStartAt: 0 });
+		await batch.processSortedSet(`uid:${uid}:posts`, async (pids) => {
+			await posts.purge(pids, callerUid);
+		}, { alwaysStartAt: 0, batch: 500 });
 	}
 
 	async function deleteTopics(callerUid, uid) {
@@ -57,13 +52,9 @@ module.exports = function (User) {
 		}, { alwaysStartAt: 0 });
 	}
 
-	async function deleteUploads(uid) {
-		await batch.processSortedSet(`uid:${uid}:uploads`, async (uploadNames) => {
-			await async.each(uploadNames, async (uploadName) => {
-				await file.delete(path.join(nconf.get('upload_path'), uploadName));
-			});
-			await db.sortedSetRemove(`uid:${uid}:uploads`, uploadNames);
-		}, { alwaysStartAt: 0 });
+	async function deleteUploads(callerUid, uid) {
+		const uploads = await db.getSortedSetMembers(`uid:${uid}:uploads`);
+		await User.deleteUpload(callerUid, uid, uploads);
 	}
 
 	async function deleteQueued(uid) {
@@ -87,6 +78,7 @@ module.exports = function (User) {
 			'users:online',
 			'digest:day:uids',
 			'digest:week:uids',
+			'digest:biweek:uids',
 			'digest:month:uids',
 		], uid);
 	}
@@ -114,8 +106,11 @@ module.exports = function (User) {
 			`uid:${uid}:notifications:read`,
 			`uid:${uid}:notifications:unread`,
 			`uid:${uid}:bookmarks`,
+			`uid:${uid}:tids_read`,
+			`uid:${uid}:tids_unread`,
 			`uid:${uid}:followed_tids`,
 			`uid:${uid}:ignored_tids`,
+			`uid:${uid}:blocked_uids`,
 			`user:${uid}:settings`,
 			`user:${uid}:usernames`,
 			`user:${uid}:emails`,
@@ -149,12 +144,12 @@ module.exports = function (User) {
 			db.deleteAll(keys),
 			db.setRemove('invitation:uids', uid),
 			deleteUserIps(uid),
-			deleteBans(uid),
 			deleteUserFromFollowers(uid),
 			deleteImages(uid),
 			groups.leaveAllGroups(uid),
 			flags.resolveFlag('user', uid, uid),
 			User.reset.cleanByUid(uid),
+			User.email.expireValidation(uid),
 		]);
 		await db.deleteAll([`followers:${uid}`, `following:${uid}`, `user:${uid}`]);
 		delete deletesInProgress[uid];
@@ -188,12 +183,6 @@ module.exports = function (User) {
 		await db.delete(`uid:${uid}:ip`);
 	}
 
-	async function deleteBans(uid) {
-		const bans = await db.getSortedSetRange(`uid:${uid}:bans:timestamp`, 0, -1);
-		await db.deleteAll(bans);
-		await db.delete(`uid:${uid}:bans:timestamp`);
-	}
-
 	async function deleteUserFromFollowers(uid) {
 		const [followers, following] = await Promise.all([
 			db.getSortedSetRange(`followers:${uid}`, 0, -1),
@@ -220,9 +209,6 @@ module.exports = function (User) {
 
 	async function deleteImages(uid) {
 		const folder = path.join(nconf.get('upload_path'), 'profile');
-		await Promise.all([
-			rimrafAsync(path.join(folder, `${uid}-profilecover*`)),
-			rimrafAsync(path.join(folder, `${uid}-profileavatar*`)),
-		]);
+		await rimraf(`${uid}-profile{avatar,cover}*`, { glob: { cwd: folder } });
 	}
 };

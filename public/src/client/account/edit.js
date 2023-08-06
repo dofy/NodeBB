@@ -16,16 +16,10 @@ define('forum/account/edit', [
 
 		$('#submitBtn').on('click', updateProfile);
 
-		app.loadJQueryUI(function () {
-			$('#inputBirthday').datepicker({
-				changeMonth: true,
-				changeYear: true,
-				yearRange: '1900:-5y',
-				defaultDate: '-13y',
-			});
-		});
+		if (ajaxify.data.groupTitleArray.length === 1 && ajaxify.data.groupTitleArray[0] === '') {
+			$('#groupTitle option[value=""]').attr('selected', true);
+		}
 
-		handleImageChange();
 		handleAccountDelete();
 		handleEmailConfirm();
 		updateSignature();
@@ -36,6 +30,7 @@ define('forum/account/edit', [
 	function updateProfile() {
 		const userData = $('form[component="profile/edit/form"]').serializeObject();
 		userData.uid = ajaxify.data.uid;
+		userData.groupTitle = userData.groupTitle || '';
 		userData.groupTitle = JSON.stringify(
 			Array.isArray(userData.groupTitle) ? userData.groupTitle : [userData.groupTitle]
 		);
@@ -55,12 +50,7 @@ define('forum/account/edit', [
 		return false;
 	}
 
-	function handleImageChange() {
-		$('#changePictureBtn').on('click', function () {
-			picture.openChangeModal();
-			return false;
-		});
-	}
+
 
 	function handleAccountDelete() {
 		$('#deleteAccountBtn').on('click', function () {
@@ -73,8 +63,7 @@ define('forum/account/edit', [
 					const confirmBtn = modal.find('.btn-primary');
 					confirmBtn.html('<i class="fa fa-spinner fa-spin"></i>');
 					confirmBtn.prop('disabled', true);
-
-					socket.emit('user.deleteAccount', {
+					api.del(`/users/${ajaxify.data.uid}/account`, {
 						password: $('#confirm-password').val(),
 					}, function (err) {
 						function restoreButton() {
@@ -90,9 +79,7 @@ define('forum/account/edit', [
 						}
 
 						confirmBtn.html('<i class="fa fa-check"></i>');
-						require(['logout'], function (logout) {
-							logout();
-						});
+						window.location.href = `${config.relative_path}/`;
 					});
 
 					return false;

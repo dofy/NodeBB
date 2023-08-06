@@ -113,6 +113,13 @@ module.exports = function (Topics) {
 			await db.sortedSetAdd('tags:topic:count', 0, tag);
 			cache.del('tags:topic:count');
 		}
+		const allCids = await categories.getAllCidsFromSet('categories:cid');
+		const isMembers = await db.isMemberOfSortedSets(
+			allCids.map(cid => `cid:${cid}:tags`), tag
+		);
+		const bulkAdd = allCids.filter((cid, index) => !isMembers[index])
+			.map(cid => ([`cid:${cid}:tags`, 0, tag]));
+		await db.sortedSetAddBulk(bulkAdd);
 	};
 
 	Topics.renameTags = async function (data) {
@@ -225,10 +232,15 @@ module.exports = function (Topics) {
 			if (!tids.length) {
 				return;
 			}
+			let topicsTags = await Topics.getTopicsTags(tids);
+			topicsTags = topicsTags.map(
+				topicTags => topicTags.filter(topicTag => topicTag && topicTag !== tag)
+			);
 
-			await db.deleteObjectFields(
-				tids.map(tid => `topic:${tid}`),
-				['tags'],
+			await db.setObjectBulk(
+				tids.map((tid, index) => ([
+					`topic:${tid}`, { tags: topicsTags[index].join(',') },
+				]))
 			);
 		});
 	}
@@ -276,15 +288,16 @@ module.exports = function (Topics) {
 		const payload = await plugins.hooks.fire('filter:tags.getAll', {
 			tags: tags,
 		});
-		return await Topics.getTagData(payload.tags);
+		return Topics.getTagData(payload.tags);
 	}
 
-	Topics.getTagData = async function (tags) {
-		if (!tags.length) {
+	Topics.getTagData = function (tags) {
+		if (!tags || !tags.length) {
 			return [];
 		}
 		tags.forEach((tag) => {
 			tag.valueEscaped = validator.escape(String(tag.value));
+			tag.valueEncoded = encodeURIComponent(tag.valueEscaped);
 			tag.class = tag.valueEscaped.replace(/\s/g, '-');
 		});
 		return tags;
@@ -310,7 +323,7 @@ module.exports = function (Topics) {
 		const uniqueTopicTags = _.uniq(_.flatten(topicTags));
 
 		const tags = uniqueTopicTags.map(tag => ({ value: tag }));
-		const tagData = await Topics.getTagData(tags);
+		const tagData = Topics.getTagData(tags);
 		const tagDataMap = _.zipObject(uniqueTopicTags, tagData);
 
 		topicTags.forEach((tags, index) => {
@@ -486,7 +499,7 @@ module.exports = function (Topics) {
 		}
 		const tags = await Topics.searchTags(data);
 
-		const tagData = await Topics.getTagData(tags.map(tag => ({ value: tag.value })));
+		const tagData = Topics.getTagData(tags.map(tag => ({ value: tag.value })));
 
 		tagData.forEach((tag, index) => {
 			tag.score = tags[index].score;

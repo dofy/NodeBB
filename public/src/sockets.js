@@ -1,8 +1,11 @@
 'use strict';
 
+// eslint-disable-next-line no-redeclare
+const io = require('socket.io-client');
+// eslint-disable-next-line no-redeclare
+const $ = require('jquery');
 
 app = window.app || {};
-socket = window.socket;
 
 (function () {
 	let reconnecting = false;
@@ -12,9 +15,12 @@ socket = window.socket;
 		reconnectionDelay: config.reconnectionDelay,
 		transports: config.socketioTransports,
 		path: config.relative_path + '/socket.io',
+		query: {
+			_csrf: config.csrf_token,
+		},
 	};
 
-	socket = io(config.websocketAddress, ioParams);
+	window.socket = io(config.websocketAddress, ioParams);
 
 	const oEmit = socket.emit;
 	socket.emit = function (event, data, callback) {
@@ -159,7 +165,7 @@ socket = window.socket;
 			const reconnectEl = $('#reconnect');
 			const reconnectAlert = $('#reconnect-alert');
 
-			reconnectEl.tooltip('destroy');
+			reconnectEl.tooltip('dispose');
 			reconnectEl.html('<i class="fa fa-check text-success"></i>');
 			reconnectAlert.addClass('hide');
 			reconnecting = false;
@@ -196,6 +202,7 @@ socket = window.socket;
 
 		reconnectEl.addClass('active').removeClass('hide').tooltip({
 			placement: 'bottom',
+			animation: false,
 		});
 	}
 

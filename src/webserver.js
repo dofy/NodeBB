@@ -7,6 +7,7 @@ const path = require('path');
 const os = require('os');
 const nconf = require('nconf');
 const express = require('express');
+const chalk = require('chalk');
 
 const app = express();
 app.renderAsync = util.promisify((tpl, data, callback) => app.render(tpl, data, callback));
@@ -31,10 +32,11 @@ const logger = require('./logger');
 const plugins = require('./plugins');
 const flags = require('./flags');
 const topicEvents = require('./topics/events');
+const privileges = require('./privileges');
 const routes = require('./routes');
 const auth = require('./routes/authentication');
 
-const helpers = require('../public/src/modules/helpers');
+const helpers = require('./helpers');
 
 if (nconf.get('ssl')) {
 	server = require('https').createServer({
@@ -81,7 +83,7 @@ exports.listen = async function () {
 	helpers.register();
 	logger.init(app);
 	await initializeNodeBB();
-	winston.info('NodeBB Ready');
+	winston.info('🎉 NodeBB Ready');
 
 	require('./socket.io').server.emit('event:nodebb.ready', {
 		'cache-buster': meta.config['cache-buster'],
@@ -103,6 +105,7 @@ async function initializeNodeBB() {
 		middleware: middleware,
 	});
 	await routes(app, middleware);
+	await privileges.init();
 	await meta.blacklist.load();
 	await flags.init();
 	await analytics.init();
@@ -173,8 +176,12 @@ function setupExpressApp(app) {
 	app.use(middleware.processRender);
 	auth.initialize(app, middleware);
 	const als = require('./als');
+	const apiHelpers = require('./api/helpers');
 	app.use((req, res, next) => {
-		als.run({ uid: req.uid }, next);
+		als.run({
+			uid: req.uid,
+			req: apiHelpers.buildReqObject(req),
+		}, next);
 	});
 	app.use(middleware.autoLocale); // must be added after auth middlewares are added
 
@@ -184,22 +191,26 @@ function setupExpressApp(app) {
 }
 
 function setupHelmet(app) {
-	app.use(helmet.dnsPrefetchControl());
-	app.use(helmet.expectCt());
-	app.use(helmet.frameguard());
-	app.use(helmet.hidePoweredBy());
-	app.use(helmet.ieNoOpen());
-	app.use(helmet.noSniff());
-	app.use(helmet.permittedCrossDomainPolicies());
-	app.use(helmet.xssFilter());
+	const options = {
+		contentSecurityPolicy: false, // defaults are too restrive and break plugins that load external assets... 🔜
+		crossOriginOpenerPolicy: { policy: meta.config['cross-origin-opener-policy'] },
+		crossOriginResourcePolicy: { policy: meta.config['cross-origin-resource-policy'] },
+		referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+		crossOriginEmbedderPolicy: !!meta.config['cross-origin-embedder-policy'],
+	};
 
-	app.use(helmet.referrerPolicy({ policy: 'strict-origin-when-cross-origin' }));
 	if (meta.config['hsts-enabled']) {
-		app.use(helmet.hsts({
-			maxAge: meta.config['hsts-maxage'],
+		options.hsts = {
+			maxAge: Math.max(0, meta.config['hsts-maxage']),
 			includeSubDomains: !!meta.config['hsts-subdomains'],
 			preload: !!meta.config['hsts-preload'],
-		}));
+		};
+	}
+
+	try {
+		app.use(helmet(options));
+	} catch (err) {
+		winston.error(`[startup] unable to initialize helmet \n${err.stack}`);
 	}
 }
 
@@ -252,7 +263,7 @@ async function listen() {
 	}
 	port = parseInt(port, 10);
 	if ((port !== 80 && port !== 443) || nconf.get('trust_proxy') === true) {
-		winston.info('Enabling \'trust proxy\'');
+		winston.info('🤝 Enabling \'trust proxy\'');
 		app.enable('trust proxy');
 	}
 
@@ -278,11 +289,12 @@ async function listen() {
 		server.listen(...args.concat([function (err) {
 			const onText = `${isSocket ? socketPath : `${bind_address}:${port}`}`;
 			if (err) {
-				winston.error(`[startup] NodeBB was unable to listen on: ${onText}`);
+				winston.error(`[startup] NodeBB was unable to listen on: ${chalk.yellow(onText)}`);
 				reject(err);
 			}
 
-			winston.info(`NodeBB is now listening on: ${onText}`);
+			winston.info(`📡 NodeBB is now listening on: ${chalk.yellow(onText)}`);
+			winston.info(`🔗 Canonical URL: ${chalk.yellow(nconf.get('url'))}`);
 			if (oldUmask) {
 				process.umask(oldUmask);
 			}

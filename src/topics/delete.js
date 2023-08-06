@@ -11,60 +11,47 @@ const batch = require('../batch');
 
 module.exports = function (Topics) {
 	Topics.delete = async function (tid, uid) {
-		await Promise.all([
-			Topics.setTopicFields(tid, {
-				deleted: 1,
-				deleterUid: uid,
-				deletedTimestamp: Date.now(),
-			}),
-			removeTopicPidsFromCid(tid),
-		]);
+		const cid = await Topics.getTopicField(tid, 'cid');
+		await removeTopicPidsFromCid(tid, cid);
+		await Topics.setTopicFields(tid, {
+			deleted: 1,
+			deleterUid: uid,
+			deletedTimestamp: Date.now(),
+		});
+		await categories.updateRecentTidForCid(cid);
 	};
 
-	async function removeTopicPidsFromCid(tid) {
-		const [cid, pids] = await Promise.all([
-			Topics.getTopicField(tid, 'cid'),
-			Topics.getPids(tid),
-		]);
+	async function removeTopicPidsFromCid(tid, cid) {
+		const pids = await Topics.getPids(tid);
 		await db.sortedSetRemove(`cid:${cid}:pids`, pids);
-		await categories.updateRecentTidForCid(cid);
 	}
 
-	async function addTopicPidsToCid(tid) {
-		const [cid, pids] = await Promise.all([
-			Topics.getTopicField(tid, 'cid'),
-			Topics.getPids(tid),
-		]);
+	async function addTopicPidsToCid(tid, cid) {
+		const pids = await Topics.getPids(tid);
 		let postData = await posts.getPostsFields(pids, ['pid', 'timestamp', 'deleted']);
 		postData = postData.filter(post => post && !post.deleted);
-		const pidsToAdd = [];
-		const scores = [];
-		postData.forEach((post) => {
-			pidsToAdd.push(post.pid);
-			scores.push(post.timestamp);
-		});
+		const pidsToAdd = postData.map(post => post.pid);
+		const scores = postData.map(post => post.timestamp);
 		await db.sortedSetAdd(`cid:${cid}:pids`, scores, pidsToAdd);
-		await categories.updateRecentTidForCid(cid);
 	}
 
 	Topics.restore = async function (tid) {
-		await Topics.deleteTopicFields(tid, [
-			'deleterUid', 'deletedTimestamp',
-		]);
+		const cid = await Topics.getTopicField(tid, 'cid');
 		await Promise.all([
-			Topics.setTopicField(tid, 'deleted', 0),
-			addTopicPidsToCid(tid),
+			Topics.deleteTopicFields(tid, [
+				'deleterUid', 'deletedTimestamp',
+			]),
+			addTopicPidsToCid(tid, cid),
 		]);
+		await Topics.setTopicField(tid, 'deleted', 0);
+		await categories.updateRecentTidForCid(cid);
 	};
 
 	Topics.purgePostsAndTopic = async function (tid, uid) {
 		const mainPid = await Topics.getTopicField(tid, 'mainPid');
 		await batch.processSortedSet(`tid:${tid}:posts`, async (pids) => {
-			for (const pid of pids) {
-				// eslint-disable-next-line no-await-in-loop
-				await posts.purge(pid, uid);
-			}
-		}, { alwaysStartAt: 0 });
+			await posts.purge(pids, uid);
+		}, { alwaysStartAt: 0, batch: 500 });
 		await posts.purge(mainPid, uid);
 		await Topics.purge(tid, uid);
 	};
@@ -100,6 +87,7 @@ module.exports = function (Topics) {
 			deleteTopicFromCategoryAndUser(tid),
 			Topics.deleteTopicTags(tid),
 			Topics.events.purge(tid),
+			Topics.thumbs.deleteAll(tid),
 			reduceCounters(tid),
 		]);
 		plugins.hooks.fire('action:topic.purge', { topic: deletedTopic, uid: uid });

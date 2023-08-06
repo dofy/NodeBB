@@ -20,14 +20,14 @@ Digest.execute = async function (payload) {
 	const digestsDisabled = meta.config.disableEmailSubscriptions === 1;
 	if (digestsDisabled) {
 		winston.info(`[user/jobs] Did not send digests (${payload.interval}) because subscription system is disabled.`);
-		return;
+		return false;
 	}
 	let { subscribers } = payload;
 	if (!subscribers) {
 		subscribers = await Digest.getSubscribers(payload.interval);
 	}
 	if (!subscribers.length) {
-		return;
+		return false;
 	}
 	try {
 		winston.info(`[user/jobs] Digest (${payload.interval}) scheduling completed (${subscribers.length} subscribers). Sending emails; this may take some time...`);
@@ -36,6 +36,7 @@ Digest.execute = async function (payload) {
 			subscribers: subscribers,
 		});
 		winston.info(`[user/jobs] Digest (${payload.interval}) complete.`);
+		return true;
 	} catch (err) {
 		winston.error(`[user/jobs] Could not send digests (${payload.interval})\n${err.stack}`);
 		throw err;
@@ -43,33 +44,15 @@ Digest.execute = async function (payload) {
 };
 
 Digest.getUsersInterval = async (uids) => {
-	// Checks whether user specifies digest setting, or null/false for system default setting
+	// Checks whether user specifies digest setting, or false for system default setting
 	let single = false;
 	if (!Array.isArray(uids) && !isNaN(parseInt(uids, 10))) {
 		uids = [uids];
 		single = true;
 	}
 
-	const settings = await Promise.all([
-		db.isSortedSetMembers('digest:day:uids', uids),
-		db.isSortedSetMembers('digest:week:uids', uids),
-		db.isSortedSetMembers('digest:biweek:uids', uids),
-		db.isSortedSetMembers('digest:month:uids', uids),
-	]);
-
-	const interval = uids.map((uid, index) => {
-		if (settings[0][index]) {
-			return 'day';
-		} else if (settings[1][index]) {
-			return 'week';
-		} else if (settings[2][index]) {
-			return 'biweek';
-		} else if (settings[3][index]) {
-			return 'month';
-		}
-		return false;
-	});
-
+	const settings = await db.getObjects(uids.map(uid => `user:${uid}:settings`));
+	const interval = uids.map((uid, index) => (settings[index] && settings[index].dailyDigestFreq) || false);
 	return single ? interval[0] : interval;
 };
 
@@ -158,20 +141,22 @@ Digest.send = async function (data) {
 		batch: 100,
 	});
 	winston.info(`[user/jobs] Digest (${data.interval}) sending completed. ${emailsSent} emails sent.`);
+	return emailsSent;
 };
 
 Digest.getDeliveryTimes = async (start, stop) => {
 	const count = await db.sortedSetCard('users:joindate');
 	const uids = await user.getUidsFromSet('users:joindate', start, stop);
-	if (!uids) {
+	if (!uids.length) {
 		return [];
 	}
 
-	// Grab the last time a digest was successfully delivered to these uids
-	const scores = await db.sortedSetScores('digest:delivery', uids);
-
-	// Get users' digest settings
-	const settings = await Digest.getUsersInterval(uids);
+	const [scores, settings] = await Promise.all([
+		// Grab the last time a digest was successfully delivered to these uids
+		db.sortedSetScores('digest:delivery', uids),
+		// Get users' digest settings
+		Digest.getUsersInterval(uids),
+	]);
 
 	// Populate user data
 	let userData = await user.getUsersFields(uids, ['username', 'picture']);

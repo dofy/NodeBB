@@ -1,7 +1,7 @@
 'use strict';
 
 
-define('forum/topic/merge', ['search', 'alerts'], function (search, alerts) {
+define('forum/topic/merge', ['search', 'alerts', 'api'], function (search, alerts, api) {
 	const Merge = {};
 	let modal;
 	let mergeBtn;
@@ -13,14 +13,14 @@ define('forum/topic/merge', ['search', 'alerts'], function (search, alerts) {
 		if (modal) {
 			return;
 		}
-		app.parseAndTranslate('partials/merge_topics_modal', {}, function (html) {
+		app.parseAndTranslate('modals/merge-topic', {}, function (html) {
 			modal = html;
 
 			$('body').append(modal);
 
 			mergeBtn = modal.find('#merge_topics_confirm');
 
-			modal.find('.close,#merge_topics_cancel').on('click', closeModal);
+			modal.find('#merge_topics_cancel').on('click', closeModal);
 
 			$('#content').on('click', '[component="topic/select"]', onTopicClicked);
 
@@ -52,10 +52,7 @@ define('forum/topic/merge', ['search', 'alerts'], function (search, alerts) {
 
 	Merge.addTopic = function (tid, callback) {
 		callback = callback || function () {};
-		socket.emit('topics.getTopic', tid, function (err, topicData) {
-			if (err) {
-				return alerts.error(err);
-			}
+		api.get(`/topics/${tid}`, {}).then(function (topicData) {
 			const title = topicData ? topicData.title : 'No title';
 			if (selectedTids[tid]) {
 				delete selectedTids[tid];
@@ -65,7 +62,7 @@ define('forum/topic/merge', ['search', 'alerts'], function (search, alerts) {
 			checkButtonEnable();
 			showTopicsSelected();
 			callback();
-		});
+		}).catch(alerts.error);
 	};
 
 	function onTopicClicked(ev) {
@@ -114,7 +111,7 @@ define('forum/topic/merge', ['search', 'alerts'], function (search, alerts) {
 		});
 
 		if (tids.length) {
-			app.parseAndTranslate('partials/merge_topics_modal', {
+			app.parseAndTranslate('modals/merge-topic', {
 				config: config,
 				topics: topics,
 			}, function (html) {
