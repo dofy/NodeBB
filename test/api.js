@@ -281,7 +281,7 @@ describe('API', async () => {
 		await flags.create('post', 2, unprivUid, 'sample reasons', Date.now()); // for testing flag notes (since flag 1 deleted)
 
 		// Create a new chat room
-		await messaging.newRoom(1, [2]);
+		await messaging.newRoom(1, { uids: [2] });
 
 		// Create an empty file to test DELETE /files and thumb deletion
 		fs.closeSync(fs.openSync(path.resolve(nconf.get('upload_path'), 'files/test.txt'), 'w'));
@@ -544,6 +544,11 @@ describe('API', async () => {
 							assert(response.headers[header.toLowerCase()]);
 							assert.strictEqual(response.headers[header.toLowerCase()], expectedHeaders[header]);
 						}
+						return;
+					}
+
+					if (response.statusCode === 400 && context[method].responses['400']) {
+						// TODO: check 400 schema to response.body?
 						return;
 					}
 

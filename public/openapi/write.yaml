@@ -146,6 +146,8 @@ paths:
     $ref: 'write/topics/tid/read.yaml'
   /topics/{tid}/bump:
     $ref: 'write/topics/tid/bump.yaml'
+  /tags/{tag}/follow:
+    $ref: 'write/tags/tag/follow.yaml'
   /posts/{pid}:
     $ref: 'write/posts/pid.yaml'
   /posts/{pid}/index:
@@ -184,10 +186,14 @@ paths:
     $ref: 'write/chats/roomId/messages.yaml'
   /chats/{roomId}/messages/{mid}:
     $ref: 'write/chats/roomId/messages/mid.yaml'
+  /chats/{roomId}/messages/{mid}/pin:
+    $ref: 'write/chats/roomId/messages/mid/pin.yaml'
   /flags/:
     $ref: 'write/flags.yaml'
   /flags/{flagId}:
     $ref: 'write/flags/flagId.yaml'
+  /flags/{flagId}/report:
+    $ref: 'write/flags/flagId/report.yaml'
   /flags/{flagId}/notes:
     $ref: 'write/flags/flagId/notes.yaml'
   /flags/{flagId}/notes/{datetime}:
@@ -198,6 +204,8 @@ paths:
     $ref: 'write/admin/analytics.yaml'
   /admin/analytics/{set}:
     $ref: 'write/admin/analytics/set.yaml'
+  /admin/chats/{roomId}:
+    $ref: 'write/admin/chats/roomId.yaml'
   /admin/tokens:
     $ref: 'write/admin/tokens.yaml'
   /admin/tokens/{token}:

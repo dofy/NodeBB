@@ -105,9 +105,11 @@ topicsController.get = async function getTopic(req, res, next) {
 	topicData.allowMultipleBadges = meta.config.allowMultipleBadges === 1;
 	topicData.privateUploads = meta.config.privateUploads === 1;
 	topicData.showPostPreviewsOnHover = meta.config.showPostPreviewsOnHover === 1;
-	topicData.rssFeedUrl = `${relative_path}/topic/${topicData.tid}.rss`;
-	if (req.loggedIn) {
-		topicData.rssFeedUrl += `?uid=${req.uid}&token=${rssToken}`;
+	if (!meta.config['feeds:disableRSS']) {
+		topicData.rssFeedUrl = `${relative_path}/topic/${topicData.tid}.rss`;
+		if (req.loggedIn) {
+			topicData.rssFeedUrl += `?uid=${req.uid}&token=${rssToken}`;
+		}
 	}
 
 	topicData.postIndex = postIndex;
@@ -182,7 +184,7 @@ async function buildBreadcrumbs(topicData) {
 	const breadcrumbs = [
 		{
 			text: topicData.category.name,
-			url: `${relative_path}/category/${topicData.category.slug}`,
+			url: `${url}/category/${topicData.category.slug}`,
 			cid: topicData.category.cid,
 		},
 		{
@@ -206,13 +208,13 @@ async function addTags(topicData, req, res, currentPage) {
 	const postAtIndex = topicData.posts.find(p => parseInt(p.index, 10) === parseInt(Math.max(0, postIndex - 1), 10));
 	let description = '';
 	if (postAtIndex && postAtIndex.content) {
-		description = utils.stripHTMLTags(utils.decodeHTMLEntities(postAtIndex.content));
+		description = utils.stripHTMLTags(utils.decodeHTMLEntities(postAtIndex.content)).trim();
 	}
 
-	if (description.length > 255) {
-		description = `${description.slice(0, 255)}...`;
+	if (description.length > 160) {
+		description = `${description.slice(0, 157)}...`;
 	}
-	description = description.replace(/\n/g, ' ');
+	description = description.replace(/\n/g, ' ').trim();
 
 	let mainPost = topicData.posts.find(p => parseInt(p.index, 10) === 0);
 	if (!mainPost) {
@@ -225,16 +227,8 @@ async function addTags(topicData, req, res, currentPage) {
 			content: topicData.titleRaw,
 		},
 		{
-			name: 'description',
-			content: description,
-		},
-		{
 			property: 'og:title',
 			content: topicData.titleRaw,
-		},
-		{
-			property: 'og:description',
-			content: description,
 		},
 		{
 			property: 'og:type',
@@ -253,6 +247,19 @@ async function addTags(topicData, req, res, currentPage) {
 			content: topicData.category ? topicData.category.name : '',
 		},
 	];
+
+	if (description && description.length) {
+		res.locals.metaTags.push(
+			{
+				name: 'description',
+				content: description,
+			},
+			{
+				property: 'og:description',
+				content: description,
+			},
+		);
+	}
 
 	await addOGImageTags(res, topicData, postAtIndex);
 

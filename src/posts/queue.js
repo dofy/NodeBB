@@ -38,6 +38,11 @@ module.exports = function (Posts) {
 			postData.forEach((postData, index) => {
 				if (postData) {
 					postData.user = userData[index];
+					if (postData.user.uid === 0 && postData.data.handle) {
+						postData.user.username = validator.escape(String(postData.data.handle));
+						postData.user.displayname = postData.user.username;
+						postData.user.fullname = postData.user.username;
+					}
 					postData.data.rawContent = validator.escape(String(postData.data.content));
 					postData.data.title = validator.escape(String(postData.data.title || ''));
 				}
@@ -80,16 +85,44 @@ module.exports = function (Posts) {
 		postData.data.content = result.postData.content;
 	}
 
-	Posts.shouldQueue = async function (uid, data) {
-		const [userData, isMemberOfExempt, categoryQueueEnabled] = await Promise.all([
-			user.getUserFields(uid, ['uid', 'reputation', 'postcount']),
-			groups.isMemberOfAny(uid, meta.config.groupsExemptFromPostQueue),
-			isCategoryQueueEnabled(data),
+	Posts.canUserPostContentWithLinks = async function (uid, content) {
+		if (!content) {
+			return true;
+		}
+		const [reputation, isPrivileged] = await Promise.all([
+			user.getUserField(uid, 'reputation'),
+			user.isPrivileged(uid),
 		]);
 
-		const shouldQueue = meta.config.postQueue && categoryQueueEnabled &&
-			!isMemberOfExempt &&
-			(!userData.uid || userData.reputation < meta.config.postQueueReputationThreshold || userData.postcount <= 0);
+		if (!isPrivileged && reputation < meta.config['min:rep:post-links']) {
+			const parsed = await plugins.hooks.fire('filter:parse.raw', String(content));
+			if (parsed.match(/<a[^>]*>([^<]+)<\/a>/g)) {
+				return false;
+			}
+		}
+		return true;
+	};
+
+	Posts.shouldQueue = async function (uid, data) {
+		let shouldQueue = meta.config.postQueue;
+		if (shouldQueue) {
+			const [userData, isPrivileged, isMemberOfExempt, categoryQueueEnabled] = await Promise.all([
+				user.getUserFields(uid, ['uid', 'reputation', 'postcount']),
+				user.isPrivileged(uid),
+				groups.isMemberOfAny(uid, meta.config.groupsExemptFromPostQueue),
+				isCategoryQueueEnabled(data),
+			]);
+			shouldQueue = categoryQueueEnabled &&
+				!isPrivileged &&
+				!isMemberOfExempt &&
+				(
+					!userData.uid ||
+					userData.reputation < meta.config.postQueueReputationThreshold ||
+					userData.postcount <= 0 ||
+					!await Posts.canUserPostContentWithLinks(uid, data.content)
+				);
+		}
+
 		const result = await plugins.hooks.fire('filter:post.shouldQueue', {
 			shouldQueue: !!shouldQueue,
 			uid: uid,
@@ -102,7 +135,7 @@ module.exports = function (Posts) {
 		const type = getType(data);
 		const cid = await getCid(type, data);
 		if (!cid) {
-			throw new Error('[[error:invalid-cid]]');
+			return true;
 		}
 		return await categories.getCategoryField(cid, 'postQueue');
 	}
@@ -163,7 +196,7 @@ module.exports = function (Posts) {
 			type: 'post-queue',
 			nid: `post-queue-${id}`,
 			mergeId: 'post-queue',
-			bodyShort: '[[notifications:post_awaiting_review]]',
+			bodyShort: '[[notifications:post-awaiting-review]]',
 			bodyLong: bodyLong,
 			path: `/post-queue/${id}`,
 		});

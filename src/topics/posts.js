@@ -189,14 +189,18 @@ module.exports = function (Topics) {
 		const usersMap = _.zipObject(parentUids, userData);
 		const parents = {};
 		parentPosts.forEach((post, i) => {
-			parents[parentPids[i]] = {
-				username: usersMap[post.uid].username,
-				displayname: usersMap[post.uid].displayname,
-			};
+			if (usersMap[post.uid]) {
+				parents[parentPids[i]] = {
+					username: usersMap[post.uid].username,
+					displayname: usersMap[post.uid].displayname,
+				};
+			}
 		});
 
 		postData.forEach((post) => {
-			post.parent = parents[post.toPid];
+			if (parents[post.toPid]) {
+				post.parent = parents[post.toPid];
+			}
 		});
 	};
 
@@ -349,7 +353,7 @@ module.exports = function (Topics) {
 				hasMore: false,
 				hasSingleImmediateReply: false,
 				users: [],
-				text: replyPids.length > 1 ? `[[topic:replies_to_this_post, ${replyPids.length}]]` : '[[topic:one_reply_to_this_post]]',
+				text: replyPids.length > 1 ? `[[topic:replies-to-this-post, ${replyPids.length}]]` : '[[topic:one-reply-to-this-post]]',
 				count: replyPids.length,
 				timestampISO: replyPids.length ? utils.toISOString(pidMap[replyPids[0]].timestamp) : undefined,
 			};

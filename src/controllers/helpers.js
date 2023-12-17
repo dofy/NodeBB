@@ -197,7 +197,7 @@ helpers.buildCategoryBreadcrumbs = async function (cid) {
 		if (!data.disabled && !data.isSection) {
 			breadcrumbs.unshift({
 				text: String(data.name),
-				url: `${relative_path}/category/${data.slug}`,
+				url: `${url}/category/${data.slug}`,
 				cid: cid,
 			});
 		}
@@ -206,13 +206,13 @@ helpers.buildCategoryBreadcrumbs = async function (cid) {
 	if (meta.config.homePageRoute && meta.config.homePageRoute !== 'categories') {
 		breadcrumbs.unshift({
 			text: '[[global:header.categories]]',
-			url: `${relative_path}/categories`,
+			url: `${url}/categories`,
 		});
 	}
 
 	breadcrumbs.unshift({
-		text: '[[global:home]]',
-		url: `${relative_path}/`,
+		text: meta.config.homePageTitle || '[[global:home]]',
+		url: url,
 	});
 
 	return breadcrumbs;
@@ -221,15 +221,15 @@ helpers.buildCategoryBreadcrumbs = async function (cid) {
 helpers.buildBreadcrumbs = function (crumbs) {
 	const breadcrumbs = [
 		{
-			text: '[[global:home]]',
-			url: `${relative_path}/`,
+			text: meta.config.homePageTitle || '[[global:home]]',
+			url: url,
 		},
 	];
 
 	crumbs.forEach((crumb) => {
 		if (crumb) {
 			if (crumb.url) {
-				crumb.url = `${utils.isRelativeUrl(crumb.url) ? relative_path : ''}${crumb.url}`;
+				crumb.url = `${utils.isRelativeUrl(crumb.url) ? `${url}/` : ''}${crumb.url}`;
 			}
 			breadcrumbs.push(crumb);
 		}
@@ -475,8 +475,8 @@ helpers.formatApiResponse = async (statusCode, res, payload) => {
 			status: { code, message },
 			response: payload || {},
 		});
-	} else if (payload instanceof Error) {
-		const { message } = payload;
+	} else if (payload instanceof Error || typeof payload === 'string') {
+		const message = payload instanceof Error ? payload.message : payload;
 		const response = {};
 
 		// Update status code based on some common error codes
@@ -512,9 +512,10 @@ helpers.formatApiResponse = async (statusCode, res, payload) => {
 			process.stdout.write(payload.stack);
 		}
 		res.status(statusCode).json(returnPayload);
-	} else if (!payload) {
+	} else {
 		// Non-2xx statusCode, generate predefined error
-		const returnPayload = await helpers.generateError(statusCode, null, res);
+		const message = payload ? String(payload) : null;
+		const returnPayload = await helpers.generateError(statusCode, message, res);
 		res.status(statusCode).json(returnPayload);
 	}
 };

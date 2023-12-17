@@ -1,5 +1,6 @@
 'use strict';
 
+const _ = require('lodash');
 const os = require('os');
 const nconf = require('nconf');
 const winston = require('winston');
@@ -12,6 +13,7 @@ const user = require('../user');
 const logger = require('../logger');
 const plugins = require('../plugins');
 const ratelimit = require('../middleware/ratelimit');
+const blacklist = require('../meta/blacklist');
 
 const Namespaces = Object.create(null);
 
@@ -75,6 +77,7 @@ Sockets.init = async function (server) {
 
 function onConnection(socket) {
 	socket.uid = socket.request.uid;
+	socket.data.uid = socket.uid; // socket.data is shared between nodes via fetchSockets
 	socket.ip = (
 		socket.request.headers['x-forwarded-for'] ||
 		socket.request.connection.remoteAddress || ''
@@ -92,6 +95,19 @@ function onConnection(socket) {
 			req: apiHelpers.buildReqObject(socket, payload),
 			socket: { ...payload },
 		}, onMessage, socket, payload);
+	});
+
+	socket.on('disconnecting', () => {
+		for (const room of socket.rooms) {
+			if (room && room.match(/^chat_room_\d+$/)) {
+				Sockets.server.in(room).emit('event:chats.typing', {
+					roomId: room.split('_').pop(),
+					uid: socket.uid,
+					username: '',
+					typing: false,
+				});
+			}
+		}
 	});
 
 	socket.on('disconnect', () => {
@@ -178,6 +194,7 @@ async function onMessage(socket, payload) {
 			return socket.disconnect();
 		}
 
+		await blacklist.test(socket.ip);
 		await checkMaintenance(socket);
 		await validateSession(socket, '[[error:revalidate-failure]]');
 
@@ -194,7 +211,7 @@ async function onMessage(socket, payload) {
 			});
 		}
 	} catch (err) {
-		winston.error(`${event}\n${err.stack ? err.stack : err.message}`);
+		winston.debug(`${event}\n${err.stack ? err.stack : err.message}`);
 		callback({ message: err.message });
 	}
 }
@@ -224,10 +241,6 @@ async function checkMaintenance(socket) {
 	throw new Error(`[[pages:maintenance.text, ${validator.escape(String(meta.config.title || 'NodeBB'))}]]`);
 }
 
-const getSessionAsync = util.promisify(
-	(sid, callback) => db.sessionStore.get(sid, (err, sessionObj) => callback(err, sessionObj || null))
-);
-
 async function validateSession(socket, errorMsg) {
 	const req = socket.request;
 	const { sessionId } = await plugins.hooks.fire('filter:sockets.sessionId', {
@@ -239,8 +252,7 @@ async function validateSession(socket, errorMsg) {
 		return;
 	}
 
-	const sessionData = await getSessionAsync(sessionId);
-
+	const sessionData = await db.sessionStoreGet(sessionId);
 	if (!sessionData) {
 		throw new Error(errorMsg);
 	}
@@ -266,7 +278,7 @@ async function authorize(request, callback) {
 		request: request,
 	});
 
-	const sessionData = await getSessionAsync(sessionId);
+	const sessionData = await db.sessionStoreGet(sessionId);
 	request.session = sessionData;
 	let uid = 0;
 	if (sessionData && sessionData.passport && sessionData.passport.user) {
@@ -290,6 +302,24 @@ Sockets.getCountInRoom = function (room) {
 	}
 	const roomMap = Sockets.server.sockets.adapter.rooms.get(room);
 	return roomMap ? roomMap.size : 0;
+};
+
+// works across multiple nodes
+Sockets.getUidsInRoom = async function (room) {
+	if (!Sockets.server) {
+		return [];
+	}
+	const ioRoom = Sockets.server.in(room);
+	const uids = [];
+	if (ioRoom) {
+		const sockets = await ioRoom.fetchSockets();
+		for (const s of sockets) {
+			if (s && s.data && s.data.uid > 0) {
+				uids.push(s.data.uid);
+			}
+		}
+	}
+	return _.uniq(uids);
 };
 
 Sockets.warnDeprecated = (socket, replacement) => {

@@ -177,12 +177,12 @@
 							<div id="homePageCustom" class="mb-3" style="display: none;">
 								<label class="form-label" for="homePageCustomInput">[[admin/settings/homepage:custom-route]]</label>
 								<input id="homePageCustomInput" type="text" class="form-control" data-field="homePageCustom"/>
-								<p class="form-text">[[user:custom_route_help]]</p>
+								<p class="form-text">[[user:custom-route-help]]</p>
 							</div>
 
 							<div class="form-check form-switch mb-3">
-								<input class="form-check-input" type="checkbox" data-field="allowUserHomePage">
-								<label class="form-check-label">[[admin/settings/homepage:allow-user-home-pages]]</label>
+								<input class="form-check-input" type="checkbox" id="allowUserHomePage" data-field="allowUserHomePage">
+								<label for="allowUserHomePage" class="form-check-label">[[admin/settings/homepage:allow-user-home-pages]]</label>
 							</div>
 							<div>
 								<label class="form-label" for="homePageTitle">[[admin/settings/homepage:home-page-title]]</label>

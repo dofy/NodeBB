@@ -84,7 +84,9 @@ module.exports = function (module) {
 
 		let result = [];
 		async function doQuery(_key, fields, skip, limit) {
-			return await module.client.collection('objects').find({ ...query, ...{ _key: _key } }, { projection: fields })
+			return await module.client.collection('objects').find({
+				...query, ...{ _key: _key },
+			}, { projection: fields })
 				.sort({ score: sort })
 				.skip(skip)
 				.limit(limit)
@@ -433,6 +435,7 @@ module.exports = function (module) {
 				$inc: data,
 			}, {
 				returnDocument: 'after',
+				includeResultMetadata: true,
 				upsert: true,
 			});
 			return result && result.value ? result.value.score : null;
@@ -441,7 +444,8 @@ module.exports = function (module) {
 			// https://github.com/NodeBB/NodeBB/issues/4467
 			// https://jira.mongodb.org/browse/SERVER-14322
 			// https://docs.mongodb.org/manual/reference/command/findAndModify/#upsert-and-unique-index
-			if (err && err.message.startsWith('E11000 duplicate key error')) {
+			if (err && err.message.includes('E11000 duplicate key error')) {
+				console.log(new Error('e11000').stack, key, increment, value);
 				return await module.sortedSetIncrBy(key, increment, value);
 			}
 			throw err;
@@ -560,18 +564,18 @@ module.exports = function (module) {
 		let done = false;
 		const ids = [];
 		const project = { _id: 0, _key: 0 };
-
+		const sort = options.reverse ? -1 : 1;
 		if (!options.withScores) {
 			project.score = 0;
 		}
 		const cursor = await module.client.collection('objects').find({ _key: setKey }, { projection: project })
-			.sort({ score: 1 })
+			.sort({ score: sort })
 			.batchSize(options.batch);
 
 		if (processFn && processFn.constructor && processFn.constructor.name !== 'AsyncFunction') {
 			processFn = util.promisify(processFn);
 		}
-
+		let iteration = 1;
 		while (!done) {
 			/* eslint-disable no-await-in-loop */
 			const item = await cursor.next();
@@ -582,12 +586,12 @@ module.exports = function (module) {
 			}
 
 			if (ids.length >= options.batch || (done && ids.length !== 0)) {
-				await processFn(ids);
-
-				ids.length = 0;
-				if (options.interval) {
+				if (iteration > 1 && options.interval) {
 					await sleep(options.interval);
 				}
+				await processFn(ids);
+				iteration += 1;
+				ids.length = 0;
 			}
 		}
 	};

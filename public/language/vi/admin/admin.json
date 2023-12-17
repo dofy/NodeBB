@@ -1,6 +1,6 @@
 {
 	"alert.confirm-rebuild-and-restart": "Bạn có chắc chắn muốn xây lại và khởi động lại NodeBB?",
-	"alert.confirm-restart": "Bạn có thật sự muốn khởi động lại NodeBB",
+	"alert.confirm-restart": "Bạn có chắc muốn khởi động lại NodeBB",
 
 	"acp-title": "%1 | Bảng Điểu Khiển Quản Trị Viên NodeBB",
 	"settings-header-contents": "Nội dung",
@@ -12,5 +12,7 @@
 	"min": "Min:",
 	"max": "Max:",
 	"view": "View",
-	"edit": "Edit"
+	"edit": "Edit",
+	"add": "Add",
+	"select-icon": "Select Icon"
 }

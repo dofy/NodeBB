@@ -35,7 +35,7 @@ postsAPI.get = async function (caller, data) {
 
 	const selfPost = caller.uid && caller.uid === parseInt(post.uid, 10);
 	if (post.deleted && !(userPrivilege.isAdminOrMod || selfPost)) {
-		post.content = '[[topic:post_is_deleted]]';
+		post.content = '[[topic:post-is-deleted]]';
 	}
 
 	return post;
@@ -99,6 +99,8 @@ postsAPI.edit = async function (caller, data) {
 		throw new Error(`[[error:content-too-short, ${meta.config.minimumPostLength}]]`);
 	} else if (contentLen > meta.config.maximumPostLength) {
 		throw new Error(`[[error:content-too-long, ${meta.config.maximumPostLength}]]`);
+	} else if (!await posts.canUserPostContentWithLinks(caller.uid, data.content)) {
+		throw new Error(`[[error:not-enough-reputation-to-post-links, ${meta.config['min:rep:post-links']}]]`);
 	}
 
 	data.uid = caller.uid;
@@ -293,7 +295,7 @@ postsAPI.move = async function (caller, data) {
 };
 
 postsAPI.upvote = async function (caller, data) {
-	return await apiHelpers.postCommand(caller, 'upvote', 'voted', 'notifications:upvoted_your_post_in', data);
+	return await apiHelpers.postCommand(caller, 'upvote', 'voted', 'notifications:upvoted-your-post-in', data);
 };
 
 postsAPI.downvote = async function (caller, data) {

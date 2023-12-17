@@ -21,6 +21,7 @@ const translator = require('../src/translator');
 const privileges = require('../src/privileges');
 const plugins = require('../src/plugins');
 const utils = require('../src/utils');
+const slugify = require('../src/slugify');
 const helpers = require('./helpers');
 
 const sleep = util.promisify(setTimeout);
@@ -401,7 +402,7 @@ describe('Controllers', () => {
 				});
 
 				assert(!res.body.errors.includes('[[error:invalid-email]]'));
-				assert(!res.body.errors.includes('[[error:gdpr_consent_denied]]'));
+				assert(!res.body.errors.includes('[[error:gdpr-consent-denied]]'));
 
 				meta.config.requireEmailAddress = 1;
 			});
@@ -453,22 +454,6 @@ describe('Controllers', () => {
 					email: 'interstiuser2@nodebb.org',
 				});
 				assert.strictEqual(result.req.session.emailChanged, 1);
-			});
-
-			it('should set email if admin is changing it', async () => {
-				const uid = await user.create({ username: 'interstiuser3' });
-				const result = await user.interstitials.email({
-					userData: { uid: uid, updateEmail: true },
-					req: { uid: adminUid },
-					interstitials: [],
-				});
-
-				await result.interstitials[0].callback({ uid: uid }, {
-					email: 'interstiuser3@nodebb.org',
-				});
-				const userData = await user.getUserData(uid);
-				assert.strictEqual(userData.email, 'interstiuser3@nodebb.org');
-				assert.strictEqual(userData['email:confirmed'], 1);
 			});
 
 			it('should throw error if user tries to edit other users email', async () => {
@@ -587,14 +572,26 @@ describe('Controllers', () => {
 			describe('blocking access for unconfirmed emails', () => {
 				let jar;
 				let token;
+				const username = utils.generateUUID().slice(0, 10);
 
 				before(async () => {
 					jar = await helpers.registerUser({
-						username: utils.generateUUID().slice(0, 10),
+						username,
 						password: utils.generateUUID(),
 					});
 					token = await helpers.getCsrfToken(jar);
 				});
+
+				async function abortInterstitial() {
+					await requestAsync(`${nconf.get('url')}/register/abort`, {
+						method: 'post',
+						jar,
+						simple: false,
+						headers: {
+							'x-csrf-token': token,
+						},
+					});
+				}
 
 				it('should not apply if requireEmailAddress is not enabled', async () => {
 					meta.config.requireEmailAddress = 0;
@@ -616,12 +613,29 @@ describe('Controllers', () => {
 						},
 					});
 
+					console.log(res.headers.location);
 					assert.strictEqual(res.headers.location, `${nconf.get('relative_path')}/`);
 					meta.config.requireEmailAddress = 1;
 				});
 
-				it('should continue to redirect back to interstitial after an email is entered, as it is not confirmed', async () => {
+				it('should allow access to regular resources after an email is entered, even if unconfirmed', async () => {
 					const res = await requestAsync(`${nconf.get('url')}/recent`, {
+						jar,
+						json: true,
+						resolveWithFullResponse: true,
+						followRedirect: false,
+						simple: false,
+					});
+
+					assert.strictEqual(res.statusCode, 200);
+				});
+
+				it('should redirect back to interstitial for categories requiring validated email', async () => {
+					const name = utils.generateUUID();
+					const { cid } = await categories.create({ name });
+					await privileges.categories.rescind(['groups:read'], cid, ['registered-users']);
+					await privileges.categories.give(['groups:read'], cid, ['verified-users']);
+					const res = await requestAsync(`${nconf.get('url')}/category/${cid}/${slugify(name)}`, {
 						jar,
 						json: true,
 						resolveWithFullResponse: true,
@@ -631,6 +645,38 @@ describe('Controllers', () => {
 
 					assert.strictEqual(res.statusCode, 307);
 					assert.strictEqual(res.headers.location, `${nconf.get('relative_path')}/register/complete`);
+					await abortInterstitial();
+				});
+
+				it('should redirect back to interstitial for topics requiring validated email', async () => {
+					const name = utils.generateUUID();
+					const { cid } = await categories.create({ name });
+					await privileges.categories.rescind(['groups:topics:read'], cid, 'registered-users');
+					await privileges.categories.give(['groups:topics:read'], cid, 'verified-users');
+					const res = await requestAsync(`${nconf.get('url')}/category/${cid}/${slugify(name)}`, {
+						jar,
+						json: true,
+						resolveWithFullResponse: true,
+						followRedirect: false,
+						simple: false,
+					});
+
+					assert.strictEqual(res.statusCode, 200);
+
+					const title = utils.generateUUID();
+					const uid = await user.getUidByUsername(username);
+					const { topicData } = await topics.post({ uid, cid, title, content: utils.generateUUID() });
+					const res2 = await requestAsync(`${nconf.get('url')}/topic/${topicData.tid}/${slugify(title)}`, {
+						jar,
+						json: true,
+						resolveWithFullResponse: true,
+						followRedirect: false,
+						simple: false,
+					});
+					assert.strictEqual(res2.statusCode, 307);
+					assert.strictEqual(res2.headers.location, `${nconf.get('relative_path')}/register/complete`);
+					await abortInterstitial();
+					await topics.purge(topicData.tid, uid);
 				});
 			});
 		});
@@ -1670,14 +1716,14 @@ describe('Controllers', () => {
 		it('should load notifications page', (done) => {
 			const notifications = require('../src/notifications');
 			const notifData = {
-				bodyShort: '[[notifications:user_posted_to, test1, test2]]',
+				bodyShort: '[[notifications:user-posted-to, test1, test2]]',
 				bodyLong: 'some post content',
 				pid: 1,
 				path: `/post/${1}`,
 				nid: `new_post:tid:${1}:pid:${1}:uid:${fooUid}`,
 				tid: 1,
 				from: fooUid,
-				mergeId: `notifications:user_posted_to|${1}`,
+				mergeId: `notifications:user-posted-to|${1}`,
 				topicTitle: 'topic title',
 			};
 			async.waterfall([
@@ -2037,8 +2083,8 @@ describe('Controllers', () => {
 			request(`${nconf.get('url')}/api/post/${pid}`, { json: true }, (err, res, body) => {
 				assert.ifError(err);
 				assert.equal(res.statusCode, 200);
-				assert.equal(res.headers['x-redirect'], '/topic/1/test-topic-title/1');
-				assert.equal(body, '/topic/1/test-topic-title/1');
+				assert.equal(res.headers['x-redirect'], '/topic/1/test-topic-title');
+				assert.equal(body, '/topic/1/test-topic-title');
 				done();
 			});
 		});
@@ -2060,7 +2106,7 @@ describe('Controllers', () => {
 				assert.ok(parsed.cookies);
 				assert.equal(translator.escape('[[global:cookies.message]]'), parsed.cookies.message);
 				assert.equal(translator.escape('[[global:cookies.accept]]'), parsed.cookies.dismiss);
-				assert.equal(translator.escape('[[global:cookies.learn_more]]'), parsed.cookies.link);
+				assert.equal(translator.escape('[[global:cookies.learn-more]]'), parsed.cookies.link);
 
 				done();
 			});
