@@ -1,6 +1,5 @@
 'use strict';
 
-const validator = require('validator');
 const _ = require('lodash');
 
 const db = require('../database');
@@ -12,14 +11,12 @@ const plugins = require('../plugins');
 const pubsub = require('../pubsub');
 const utils = require('../utils');
 const slugify = require('../slugify');
-const translator = require('../translator');
 
 module.exports = function (Posts) {
-	pubsub.on('post:edit', (pid) => {
-		require('./cache').del(pid);
-	});
+	pubsub.on('post:edit', pid => Posts.clearCachedPost(pid));
 
 	Posts.edit = async function (data) {
+		const { _activitypub } = data;
 		const canEdit = await privileges.posts.canEdit(data.pid, data.uid);
 		if (!canEdit.flag) {
 			throw new Error(canEdit.message);
@@ -30,12 +27,13 @@ module.exports = function (Posts) {
 		}
 
 		const topicData = await topics.getTopicFields(postData.tid, [
-			'cid', 'mainPid', 'title', 'timestamp', 'scheduled', 'slug', 'tags',
+			'cid', 'mainPid', 'title', 'timestamp', 'scheduled', 'slug', 'tags', 'thumbs',
 		]);
 
 		await scheduledTopicCheck(data, topicData);
 
-		const oldContent = postData.content; // for diffing purposes
+		data.content = data.content === null ? postData.content : data.content;
+		const oldContent = postData.sourceContent || postData.content; // for diffing purposes
 		const editPostData = getEditPostData(data, topicData, postData);
 
 		if (data.handle) {
@@ -49,13 +47,15 @@ module.exports = function (Posts) {
 			uid: data.uid,
 		});
 
+		// needs to be before editMainPost, otherwise scheduled topics use wrong timestamp
+		await Posts.setPostFields(data.pid, result.post);
+
 		const [editor, topic] = await Promise.all([
 			user.getUserFields(data.uid, ['username', 'userslug']),
 			editMainPost(data, postData, topicData),
 		]);
-
-		await Posts.setPostFields(data.pid, result.post);
-		const contentChanged = data.content !== oldContent ||
+		const newContent = data.sourceContent || data.content;
+		const contentChanged = (newContent !== oldContent) ||
 			topic.renamed ||
 			topic.tagsupdated;
 
@@ -64,7 +64,7 @@ module.exports = function (Posts) {
 				pid: data.pid,
 				uid: data.uid,
 				oldContent: oldContent,
-				newContent: data.content,
+				newContent: newContent,
 				edited: editPostData.edited,
 				topic,
 			});
@@ -78,23 +78,28 @@ module.exports = function (Posts) {
 		returnPostData.cid = topic.cid;
 		returnPostData.topic = topic;
 		returnPostData.editedISO = utils.toISOString(editPostData.edited);
-		returnPostData.changed = contentChanged;
+		returnPostData.changed = newContent !== oldContent;
 		returnPostData.oldContent = oldContent;
 		returnPostData.newContent = data.content;
+		delete returnPostData.ip;
 
-		await topics.notifyFollowers(returnPostData, data.uid, {
-			type: 'post-edit',
-			bodyShort: translator.compile('notifications:user-edited-post', editor.username, topic.title),
-			nid: `edit_post:${data.pid}:uid:${data.uid}`,
-		});
 		await topics.syncBacklinks(returnPostData);
 
-		plugins.hooks.fire('action:post.edit', { post: _.clone(returnPostData), data: data, uid: data.uid });
+		plugins.hooks.fire('action:post.edit', {
+			post: { ...returnPostData, _activitypub },
+			data: data,
+			uid: data.uid,
+		});
 
-		require('./cache').del(String(postData.pid));
+		Posts.clearCachedPost(String(postData.pid));
 		pubsub.publish('post:edit', String(postData.pid));
 
 		await Posts.parsePost(returnPostData);
+
+		await topics.notifyFollowers(returnPostData, data.uid, {
+			type: 'post-edit',
+			nid: `edit_post:${data.pid}:uid:${data.uid}`,
+		});
 
 		return {
 			topic: topic,
@@ -107,7 +112,7 @@ module.exports = function (Posts) {
 		const { tid } = postData;
 		const title = data.title ? data.title.trim() : '';
 
-		const isMain = parseInt(data.pid, 10) === parseInt(topicData.mainPid, 10);
+		const isMain = String(data.pid) === String(topicData.mainPid);
 		if (!isMain) {
 			return {
 				tid: tid,
@@ -142,6 +147,15 @@ module.exports = function (Posts) {
 			await topics.validateTags(data.tags, topicData.cid, data.uid, tid);
 		}
 
+		const thumbs = topics.thumbs.filterThumbs(data.thumbs);
+		const thumbsupdated = Array.isArray(data.thumbs) &&
+			!_.isEqual(data.thumbs, topicData.thumbs);
+
+		if (thumbsupdated) {
+			newTopicData.thumbs = JSON.stringify(thumbs);
+			newTopicData.numThumbs = thumbs.length;
+		}
+
 		const results = await plugins.hooks.fire('filter:topic.edit', {
 			req: data.req,
 			topic: newTopicData,
@@ -159,19 +173,20 @@ module.exports = function (Posts) {
 
 		newTopicData.tags = data.tags;
 		newTopicData.oldTitle = topicData.title;
-		const renamed = title && translator.escape(validator.escape(String(title))) !== topicData.title;
+		const renamed = title && String(title) !== topicData.title;
 		plugins.hooks.fire('action:topic.edit', { topic: newTopicData, uid: data.uid });
 		return {
 			tid: tid,
 			cid: newTopicData.cid,
 			uid: postData.uid,
-			title: validator.escape(String(title)),
+			title: title,
 			oldTitle: topicData.title,
 			slug: newTopicData.slug || topicData.slug,
 			isMainPost: true,
 			renamed: renamed,
 			tagsupdated: tagsupdated,
 			tags: tags,
+			thumbsupdated: thumbsupdated,
 			oldTags: topicData.tags,
 			rescheduled: rescheduling(data, topicData),
 		};
@@ -194,6 +209,7 @@ module.exports = function (Posts) {
 	function getEditPostData(data, topicData, postData) {
 		const editPostData = {
 			content: data.content,
+			sourceContent: data.sourceContent,
 			editor: data.uid,
 		};
 

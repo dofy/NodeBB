@@ -11,11 +11,14 @@ const nconf = require('nconf');
 const file = require('../file');
 const user = require('../user');
 const groups = require('../groups');
+const categories = require('../categories');
 const topics = require('../topics');
 const posts = require('../posts');
 const messaging = require('../messaging');
 const flags = require('../flags');
 const slugify = require('../slugify');
+const utils = require('../utils');
+const activitypub = require('../activitypub');
 
 const helpers = require('./helpers');
 const controllerHelpers = require('../controllers/helpers');
@@ -23,17 +26,31 @@ const controllerHelpers = require('../controllers/helpers');
 const Assert = module.exports;
 
 Assert.user = helpers.try(async (req, res, next) => {
-	if (!await user.exists(req.params.uid)) {
-		return controllerHelpers.formatApiResponse(404, res, new Error('[[error:no-user]]'));
+	const uid = req.params.uid || res.locals.uid;
+
+	if (
+		uid !== -2 && // exposeUid middleware was in chain (means route is local user only) and resolved to fediverse user
+		(((utils.isNumber(uid) || activitypub.helpers.isUri(uid)) && await user.exists(uid)) ||
+		(uid.indexOf('@') !== -1 && await user.existsBySlug(uid)))
+	) {
+		return next();
 	}
 
-	next();
+	await controllerHelpers.formatApiResponse(404, res, new Error('[[error:no-user]]'));
 });
 
 Assert.group = helpers.try(async (req, res, next) => {
 	const name = await groups.getGroupNameByGroupSlug(req.params.slug);
 	if (!name || !await groups.exists(name)) {
 		return controllerHelpers.formatApiResponse(404, res, new Error('[[error:no-group]]'));
+	}
+
+	next();
+});
+
+Assert.category = helpers.try(async (req, res, next) => {
+	if (!await categories.exists(req.params.cid)) {
+		return controllerHelpers.formatApiResponse(404, res, new Error('[[error:no-category]]'));
 	}
 
 	next();
@@ -65,21 +82,27 @@ Assert.flag = helpers.try(async (req, res, next) => {
 });
 
 Assert.path = helpers.try(async (req, res, next) => {
+	// Get path from either query or body
+	let _path = req.body.path;
+	if (!_path && req.query.path) {
+		_path = req.query.path;
+	}
+
 	// file: URL support
-	if (req.body.path.startsWith('file:///')) {
-		req.body.path = new URL(req.body.path).pathname;
+	if (_path.startsWith('file:///')) {
+		_path = new URL(_path).pathname;
 	}
 
 	// Strip upload_url if found
-	if (req.body.path.startsWith(nconf.get('upload_url'))) {
-		req.body.path = req.body.path.slice(nconf.get('upload_url').length);
+	if (_path.startsWith(nconf.get('upload_url'))) {
+		_path = _path.slice(nconf.get('upload_url').length);
 	}
 
-	const pathToFile = path.join(nconf.get('upload_path'), req.body.path);
+	const pathToFile = path.join(nconf.get('upload_path'), _path);
 	res.locals.cleanedPath = pathToFile;
 
 	// Guard against path traversal
-	if (!pathToFile.startsWith(nconf.get('upload_path'))) {
+	if (!file.isPathInside(nconf.get('upload_path'), pathToFile)) {
 		return controllerHelpers.formatApiResponse(403, res, new Error('[[error:invalid-path]]'));
 	}
 
@@ -129,10 +152,14 @@ Assert.room = helpers.try(async (req, res, next) => {
 });
 
 Assert.message = helpers.try(async (req, res, next) => {
+	let roomId;
+	if (!req.params.roomId) {
+		roomId = await messaging.getMessageField(req.params.mid, 'roomId');
+	}
+
 	if (
-		!isFinite(req.params.mid) ||
 		!(await messaging.messageExists(req.params.mid)) ||
-		!(await messaging.canViewMessage(req.params.mid, req.params.roomId, req.uid))
+        !(await messaging.canViewMessage(req.params.mid, roomId || req.params.roomId, req.uid))
 	) {
 		return controllerHelpers.formatApiResponse(400, res, new Error('[[error:invalid-mid]]'));
 	}

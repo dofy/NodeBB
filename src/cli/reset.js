@@ -3,7 +3,7 @@
 const path = require('path');
 const winston = require('winston');
 const fs = require('fs');
-const chalk = require('chalk');
+const chalk = require('chalk').default;
 const nconf = require('nconf');
 
 const db = require('../database');
@@ -49,7 +49,7 @@ exports.reset = async function (options) {
 		all: async function () {
 			await resetWidgets();
 			await resetThemes();
-			await resetPlugin();
+			await resetPlugins();
 			await resetSettings();
 		},
 	};

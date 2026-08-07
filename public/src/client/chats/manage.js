@@ -2,8 +2,8 @@
 
 
 define('forum/chats/manage', [
-	'api', 'alerts', 'translator', 'autocomplete', 'forum/chats/user-list',
-], function (api, alerts, translator, autocomplete, userList) {
+	'api', 'alerts', 'autocomplete', 'forum/chats/user-list', 'modals', 'benchpress',
+], function (api, alerts, autocomplete, userList, modals, Benchpress) {
 	const manage = {};
 
 	manage.init = function (roomId, buttonEl) {
@@ -12,7 +12,12 @@ define('forum/chats/manage', [
 		buttonEl.on('click', async function () {
 			let groups = [];
 			if (app.user.isAdmin) {
-				groups = await socket.emit('groups.getChatGroups', {});
+				({ groups } = await api.get('/admin/groups'));
+				groups.sort((a, b) => b.system - a.system).map((g) => {
+					const { name, displayName } = g;
+					return { name, displayName };
+				});
+
 				if (Array.isArray(ajaxify.data.groups)) {
 					groups.forEach((g) => {
 						g.selected = ajaxify.data.groups.includes(g.name);
@@ -20,13 +25,14 @@ define('forum/chats/manage', [
 				}
 			}
 
-			const html = await app.parseAndTranslate('modals/manage-room', {
+			const html = await Benchpress.render('modals/manage-room', {
 				groups,
 				user: app.user,
 				room: ajaxify.data,
 			});
-			modal = bootbox.dialog({
+			modal = await modals.dialog({
 				title: '[[modules:chat.manage-room]]',
+				size: 'large',
 				message: html,
 				onEscape: true,
 			});
@@ -61,20 +67,22 @@ define('forum/chats/manage', [
 					refreshParticipantsList(roomId, modal, body);
 					searchInput.val('');
 				}).catch((err) => {
-					translator.translate(err.message, function (translated) {
-						errorEl.text(translated);
-					});
+					errorEl.translateText(err.message);
 				});
 			});
 
 			modal.find('[component="chat/manage/save"]').on('click', () => {
 				const notifSettingEl = modal.find('[component="chat/room/notification/setting"]');
+				const joinLeaveMessagesEl = modal.find('[component="chat/room/join-leave-messages"]');
+
 				api.put(`/chats/${roomId}`, {
 					groups: modal.find('[component="chat/room/groups"]').val(),
 					notificationSetting: notifSettingEl.val(),
+					joinLeaveMessages: joinLeaveMessagesEl.is(':checked') ? 1 : 0,
 				}).then((payload) => {
 					ajaxify.data.groups = payload.groups;
 					ajaxify.data.notificationSetting = payload.notificationSetting;
+					ajaxify.data.joinLeaveMessages = payload.joinLeaveMessages;
 					const roomDefaultOption = payload.notificationOptions[0];
 					$('[component="chat/notification/setting"] [data-icon]').first().attr(
 						'data-icon', roomDefaultOption.icon
@@ -96,7 +104,7 @@ define('forum/chats/manage', [
 
 	function addKickHandler(roomId, modal) {
 		modal.on('click', '[data-action="kick"]', function () {
-			const uid = parseInt(this.getAttribute('data-uid'), 10);
+			const uid = encodeURIComponent(this.getAttribute('data-uid'));
 
 			api.del(`/chats/${roomId}/users/${uid}`, {}).then((body) => {
 				refreshParticipantsList(roomId, modal, body);
@@ -106,12 +114,16 @@ define('forum/chats/manage', [
 
 	function addToggleOwnerHandler(roomId, modal) {
 		modal.on('click', '[data-action="toggleOwner"]', async function () {
-			const uid = parseInt(this.getAttribute('data-uid'), 10);
-			const $this = $(this);
-			await socket.emit('modules.chats.toggleOwner', { roomId: roomId, uid: uid });
-			$this.parents('[data-uid]')
-				.find('[component="chat/manage/user/owner/icon"]')
-				.toggleClass('hidden');
+			const uid = String(this.getAttribute('data-uid'));
+			const iconEl = modal.get(0).querySelector(`[component="chat/manage/user/list"] > [data-uid="${uid}"] [component="chat/manage/user/owner/icon"]`);
+			const current = !iconEl.classList.contains('hidden');
+
+			if (!utils.isNumber(uid)) {
+				return alerts.error('[[error:invalid-uid]]');
+			}
+
+			await api[current ? 'del' : 'put'](`/chats/${roomId}/owners/${uid}`);
+			iconEl.classList.toggle('hidden');
 		});
 	}
 
@@ -122,7 +134,8 @@ define('forum/chats/manage', [
 			try {
 				data = await api.get(`/chats/${roomId}/users`, {});
 			} catch (err) {
-				listEl.find('li').text(await translator.translate('[[error:invalid-data]]'));
+				console.error(err);
+				listEl.find('li').translateText('[[error:invalid-data]]');
 			}
 		}
 		listEl.find('[data-bs-toggle="tooltip"]').tooltip('dispose');

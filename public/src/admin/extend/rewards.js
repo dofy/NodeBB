@@ -1,9 +1,11 @@
 'use strict';
 
 
-define('admin/extend/rewards', ['alerts'], function (alerts) {
+define('admin/extend/rewards', [
+	'alerts',
+	'jquery-ui/widgets/sortable',
+], function (alerts) {
 	const rewards = {};
-
 
 	let available;
 	let active;
@@ -15,10 +17,6 @@ define('admin/extend/rewards', ['alerts'], function (alerts) {
 		active = ajaxify.data.active;
 		conditions = ajaxify.data.conditions;
 		conditionals = ajaxify.data.conditionals;
-
-		$('[data-selected]').each(function () {
-			select($(this));
-		});
 
 		$('#active')
 			.on('change', '[data-selected]', function () {
@@ -45,20 +43,28 @@ define('admin/extend/rewards', ['alerts'], function (alerts) {
 				btn.addClass('hidden');
 				// send disable api call
 				return false;
+			})
+			.sortable({
+				handle: '[component="sort/handle"]',
+				axis: 'y',
+				zIndex: 9999,
 			});
 
 		$('#new').on('click', newReward);
 		$('#save').on('click', saveRewards);
 
-		populateInputs();
+		Promise.all(
+			$('[data-selected]').toArray().map(el => select($(el)))
+		).then(populateInputs);
 	};
 
 	function select(el) {
 		el.val(el.attr('data-selected'));
 		switch (el.attr('name')) {
 			case 'rid':
-				selectReward(el);
-				break;
+				return selectReward(el);
+			default:
+				return Promise.resolve();
 		}
 	}
 
@@ -66,47 +72,27 @@ define('admin/extend/rewards', ['alerts'], function (alerts) {
 		el.attr('data-selected', el.val());
 		switch (el.attr('name')) {
 			case 'rid':
-				selectReward(el);
-				break;
+				return selectReward(el);
+			default:
+				return Promise.resolve();
 		}
 	}
 
-	function selectReward(el) {
+	async function selectReward(el) {
 		const parent = el.parents('[data-rid]');
 		const div = parent.find('.inputs');
 		let inputs;
-		let html = '';
 
-		for (const reward in available) {
-			if (available.hasOwnProperty(reward)) {
-				if (available[reward].rid === el.attr('data-selected')) {
-					inputs = available[reward].inputs;
-					parent.attr('data-rid', available[reward].rid);
-					break;
-				}
-			}
+		const selectedReward = available.find(reward => reward.rid === el.attr('data-selected'));
+		if (selectedReward) {
+			inputs = selectedReward.inputs;
+			parent.attr('data-rid', selectedReward.rid);
 		}
 
 		if (!inputs) {
-			return alerts.error('[[admin/extend/rewards:alert.no-inputs-found]] ' + el.attr('data-selected'));
+			return alerts.error(`[[admin/extend/rewards:alert.no-inputs-found, ${el.attr('data-selected')}`);
 		}
-
-		inputs.forEach(function (input) {
-			html += `<label class="form-label text-nowrap" for="${input.name}">${input.label}<br />`;
-			switch (input.type) {
-				case 'select':
-					html += `<select class="form-select form-select-sm" name="${input.name}" >`;
-					input.values.forEach(function (value) {
-						html += `<option value="${value.value}">${value.name}</option>`;
-					});
-					break;
-				case 'text':
-					html += `<input type="text" class="form-control form-control-sm" name="${input.name}"  />`;
-					break;
-			}
-			html += '</label>';
-		});
-
+		const html = await app.parseAndTranslate('admin/partials/rewards/inputs', { inputs });
 		div.html(html);
 	}
 
@@ -115,10 +101,8 @@ define('admin/extend/rewards', ['alerts'], function (alerts) {
 			const div = $(this).find('.inputs');
 			const rewards = active[i].rewards;
 
-			for (const reward in rewards) {
-				if (rewards.hasOwnProperty(reward)) {
-					div.find('[name="' + reward + '"]').val(rewards[reward]);
-				}
+			for (const [reward, value] of Object.entries(rewards)) {
+				div.find('[name="' + reward + '"]').val(value);
 			}
 		});
 	}

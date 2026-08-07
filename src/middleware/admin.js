@@ -10,21 +10,29 @@ const privileges = require('../privileges');
 const helpers = require('./helpers');
 
 const controllers = {
-	api: require('../controllers/api'),
+	admin: require('../controllers/admin'),
 	helpers: require('../controllers/helpers'),
 };
 
 const middleware = module.exports;
 
 middleware.buildHeader = helpers.try(async (req, res, next) => {
-	res.locals.renderAdminHeader = true;
+	await doBuildHeader(req, res);
+	next();
+});
+
+middleware.buildHeaderAsync = async (req, res) => {
+	await doBuildHeader(req, res);
+};
+
+async function doBuildHeader(req, res) {
+	res.locals.renderHeaderType = 'admin';
 	if (req.method === 'GET') {
 		await require('./index').applyCSRFasync(req, res);
 	}
-
-	res.locals.config = await controllers.api.loadConfig(req);
-	next();
-});
+	await plugins.hooks.fire('filter:middleware.buildAdminHeader', { req: req, locals: res.locals });
+	res.locals.config = await controllers.admin.loadConfig(req);
+}
 
 middleware.checkPrivileges = helpers.try(async (req, res, next) => {
 	// Kick out guests, obviously
@@ -47,7 +55,6 @@ middleware.checkPrivileges = helpers.try(async (req, res, next) => {
 		}
 	}
 
-	// If user does not have password
 	const hasPassword = await user.hasPassword(req.uid);
 	if (!hasPassword) {
 		return next();

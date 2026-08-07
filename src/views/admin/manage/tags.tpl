@@ -31,10 +31,10 @@
 
 					<div class="tag-list">
 						{{{ each tags }}}
-						<div class="tag-row p-2 me-3 mb-1" data-tag="{tags.valueEscaped}">
+						<div class="tag-row p-2 me-3 mb-1" data-tag="{tags.value}">
 							<div>
 								<button disabled class="rounded-3 btn btn-light border position-relative">
-									{tags.valueEscaped}
+									{tags.value}
 									<span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-secondary">{tags.score} <span class="visually-hidden">[[tags:tags]]</span>
 								</button>
 							</div>
@@ -45,12 +45,12 @@
 			</div>
 		</div>
 
-		<div class="modal fade" id="create-modal">
+		<div class="modal fade" id="create-modal" tabindex="-1" aria-hidden="true">
 			<div class="modal-dialog">
 				<div class="modal-content">
 					<div class="modal-header">
 						<h4 class="modal-title">[[admin/manage/tags:create]]</h4>
-						<button type="button" class="btn-close" data-bs-dismiss="modal" aria-hidden="true"></button>
+						<button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="[[global:buttons.close]]"></button>
 					</div>
 					<div class="modal-body">
 						<form>

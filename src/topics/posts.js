@@ -2,17 +2,18 @@
 'use strict';
 
 const _ = require('lodash');
-const validator = require('validator');
 const nconf = require('nconf');
 
 const db = require('../database');
 const user = require('../user');
 const posts = require('../posts');
 const meta = require('../meta');
+const activitypub = require('../activitypub');
 const plugins = require('../plugins');
 const utils = require('../utils');
+const privileges = require('../privileges');
 
-const backlinkRegex = new RegExp(`(?:${nconf.get('url').replace('/', '\\/')}|\b|\\s)\\/topic\\/(\\d+)(?:\\/\\w+)?`, 'g');
+const backlinkRegex = new RegExp(`(?:${nconf.get('url').replace('/', '\\/')}|\b|\\s)\\/topic\\/([a-fA-F0-9-]+)(?=\\/|$|\\s)`, 'g');
 
 module.exports = function (Topics) {
 	Topics.onNewPostMade = async function (postData) {
@@ -110,7 +111,9 @@ module.exports = function (Topics) {
 		const pids = postData.map(post => post && post.pid);
 
 		async function getPostUserData(field, method) {
-			const uids = _.uniq(postData.filter(p => p && parseInt(p[field], 10) >= 0).map(p => p[field]));
+			const uids = _.uniq(postData
+				.filter(p => p && (activitypub.helpers.isUri(p[field]) || parseInt(p[field], 10) >= 0))
+				.map(p => p[field]));
 			const userData = await method(uids);
 			return _.zipObject(uids, userData);
 		}
@@ -126,7 +129,7 @@ module.exports = function (Topics) {
 			getPostUserData('uid', async uids => await posts.getUserInfoForPosts(uids, uid)),
 			getPostUserData('editor', async uids => await user.getUsersFields(uids, ['uid', 'username', 'userslug'])),
 			getPostReplies(postData, uid),
-			Topics.addParentPosts(postData),
+			Topics.addParentPosts(postData, uid),
 		]);
 
 		postData.forEach((postObj, i) => {
@@ -142,7 +145,7 @@ module.exports = function (Topics) {
 
 				// Username override for guests, if enabled
 				if (meta.config.allowGuestHandles && postObj.uid === 0 && postObj.handle) {
-					postObj.user.username = validator.escape(String(postObj.handle));
+					postObj.user.username = String(postObj.handle);
 					postObj.user.displayname = postObj.user.username;
 				}
 			}
@@ -168,37 +171,62 @@ module.exports = function (Topics) {
 					(post.selfPost && !topicData.locked && !post.deleted) ||
 					(post.selfPost && post.deleted && parseInt(post.deleterUid, 10) === parseInt(topicPrivileges.uid, 10)) ||
 					((loggedIn || topicData.postSharing.length) && !post.deleted);
-				post.ip = topicPrivileges.isAdminOrMod ? post.ip : undefined;
 
 				posts.modifyPostByPrivilege(post, topicPrivileges);
 			}
 		});
 	};
 
-	Topics.addParentPosts = async function (postData) {
-		let parentPids = postData.map(postObj => (postObj && postObj.hasOwnProperty('toPid') ? parseInt(postObj.toPid, 10) : null)).filter(Boolean);
+	Topics.addParentPosts = async function (postData, callerUid) {
+		let parentPids = postData
+			.filter(p => p && p.hasOwnProperty('toPid') && (activitypub.helpers.isUri(p.toPid) || utils.isNumber(p.toPid)))
+			.map(postObj => postObj.toPid);
 
 		if (!parentPids.length) {
 			return;
 		}
 		parentPids = _.uniq(parentPids);
-		const parentPosts = await posts.getPostsFields(parentPids, ['uid']);
+		const postPrivileges = await privileges.posts.get(parentPids, callerUid);
+		const pidToPrivs = _.zipObject(parentPids, postPrivileges);
+
+		parentPids = parentPids.filter(p => pidToPrivs[p]['topics:read']);
+		const parentPosts = await posts.getPostsFields(parentPids, ['uid', 'pid', 'timestamp', 'content', 'sourceContent', 'deleted']);
 		const parentUids = _.uniq(parentPosts.map(postObj => postObj && postObj.uid));
-		const userData = await user.getUsersFields(parentUids, ['username']);
+		const userData = await user.getUsersFields(parentUids, ['username', 'userslug', 'picture']);
 
 		const usersMap = _.zipObject(parentUids, userData);
+
+		await Promise.all(parentPosts.map(async (parentPost) => {
+			const postPrivs = pidToPrivs[parentPost.pid];
+			if (parentPost.deleted && String(parentPost.uid) !== String(callerUid, 10) && !postPrivs['posts:view_deleted']) {
+				parentPost.content = `[[topic:post-is-deleted]]`;
+				parentPost.txContent = true;
+				return;
+			}
+			const foundPost = postData.find(p => String(p.pid) === String(parentPost.pid));
+			if (foundPost) {
+				parentPost.content = foundPost.content;
+				return;
+			}
+			await posts.parsePost(parentPost);
+		}));
+
 		const parents = {};
 		parentPosts.forEach((post, i) => {
 			if (usersMap[post.uid]) {
 				parents[parentPids[i]] = {
-					username: usersMap[post.uid].username,
-					displayname: usersMap[post.uid].displayname,
+					uid: post.uid,
+					pid: post.pid,
+					content: post.content,
+					user: usersMap[post.uid],
+					timestamp: post.timestamp,
+					timestampISO: post.timestampISO,
 				};
 			}
 		});
 
 		postData.forEach((post) => {
-			if (parents[post.toPid]) {
+			if (parents[post.toPid] && parents[post.toPid].content) {
 				post.parent = parents[post.toPid];
 			}
 		});
@@ -223,7 +251,7 @@ module.exports = function (Topics) {
 	};
 
 	Topics.getLatestUndeletedReply = async function (tid) {
-		let isDeleted = false;
+		let isDeleted;
 		let index = 0;
 		do {
 			/* eslint-disable no-await-in-loop */
@@ -233,7 +261,7 @@ module.exports = function (Topics) {
 			}
 			isDeleted = await posts.getPostField(pids[0], 'deleted');
 			if (!isDeleted) {
-				return parseInt(pids[0], 10);
+				return pids[0];
 			}
 			index += 1;
 		} while (isDeleted);
@@ -241,7 +269,7 @@ module.exports = function (Topics) {
 
 	Topics.addPostToTopic = async function (tid, postData) {
 		const mainPid = await Topics.getTopicField(tid, 'mainPid');
-		if (!parseInt(mainPid, 10)) {
+		if (!mainPid) {
 			await Topics.setTopicField(tid, 'mainPid', postData.pid);
 		} else {
 			const upvotes = parseInt(postData.upvotes, 10) || 0;
@@ -276,29 +304,46 @@ module.exports = function (Topics) {
 			Topics.getTopicField(tid, 'mainPid'),
 			db.getSortedSetRange(`tid:${tid}:posts`, 0, -1),
 		]);
-		if (parseInt(mainPid, 10)) {
+		if (mainPid) {
 			pids = [mainPid].concat(pids);
 		}
 		return pids;
 	};
 
 	Topics.increasePostCount = async function (tid) {
-		incrementFieldAndUpdateSortedSet(tid, 'postcount', 1, 'topics:posts');
+		await incrementFieldAndUpdateSortedSet(tid, 'postcount', 1, 'topics:posts');
 	};
 
 	Topics.decreasePostCount = async function (tid) {
-		incrementFieldAndUpdateSortedSet(tid, 'postcount', -1, 'topics:posts');
-	};
-
-	Topics.increaseViewCount = async function (tid) {
-		const cid = await Topics.getTopicField(tid, 'cid');
-		incrementFieldAndUpdateSortedSet(tid, 'viewcount', 1, ['topics:views', `cid:${cid}:tids:views`]);
+		await incrementFieldAndUpdateSortedSet(tid, 'postcount', -1, 'topics:posts');
 	};
 
 	async function incrementFieldAndUpdateSortedSet(tid, field, by, set) {
+		const cid = await Topics.getTopicField(tid, 'cid');
 		const value = await db.incrObjectFieldBy(`topic:${tid}`, field, by);
-		await db[Array.isArray(set) ? 'sortedSetsAdd' : 'sortedSetAdd'](set, value, tid);
+		const isRemoteCid = !utils.isNumber(cid) || cid === -1;
+		if (!isRemoteCid) {
+			await db.sortedSetAdd(set, value, tid);
+		}
 	}
+
+	Topics.increaseViewCount = async function (req, tid) {
+		const allow = req.uid > 0 || (meta.config.guestsIncrementTopicViews && req.uid === 0);
+		if (allow) {
+			req.session.tids_viewed = req.session.tids_viewed || {};
+			const now = Date.now();
+			const interval = meta.config.incrementTopicViewsInterval * 60000;
+			if (!req.session.tids_viewed[tid] || req.session.tids_viewed[tid] < now - interval) {
+				const cid = await Topics.getTopicField(tid, 'cid');
+				const isRemoteCid = !utils.isNumber(cid) || cid === -1;
+				const value = await db.incrObjectFieldBy(`topic:${tid}`, 'viewcount', 1);
+				await db.sortedSetsAdd(
+					isRemoteCid ? [`cid:${cid}:tids:views`] : ['topics:views', `cid:${cid}:tids:views`], value, tid
+				);
+				req.session.tids_viewed[tid] = now;
+			}
+		}
+	};
 
 	Topics.getTitleByPid = async function (pid) {
 		return await Topics.getTopicFieldByPid('title', pid);
@@ -358,7 +403,7 @@ module.exports = function (Topics) {
 				timestampISO: replyPids.length ? utils.toISOString(pidMap[replyPids[0]].timestamp) : undefined,
 			};
 
-			replyPids.sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+			replyPids.sort((a, b) => pidMap[a].timestamp - pidMap[b].timestamp);
 
 			replyPids.forEach((replyPid) => {
 				const replyData = pidMap[replyPid];
@@ -401,38 +446,36 @@ module.exports = function (Topics) {
 			throw new Error('[[error:invalid-data]]');
 		}
 
-
-		let { content } = postData;
+		let { pid, uid, content } = postData;
 		// ignore lines that start with `>`
-		content = content.split('\n').filter(line => !line.trim().startsWith('>')).join('\n');
+		content = (content || '').split('\n').filter(line => !line.trim().startsWith('>')).join('\n');
 		// Scan post content for topic links
 		const matches = [...content.matchAll(backlinkRegex)];
-		if (!matches) {
-			return 0;
-		}
 
-		const { pid, uid, tid } = postData;
-		let add = _.uniq(matches.map(match => match[1]).map(tid => parseInt(tid, 10)));
+		let add = _.uniq(matches.map(match => match[1]));
 
-		const now = Date.now();
-		const topicsExist = await Topics.exists(add);
-		const current = (await db.getSortedSetMembers(`pid:${pid}:backlinks`)).map(tid => parseInt(tid, 10));
+		const [topicsExist, current] = await Promise.all([
+			Topics.exists(add),
+			db.getSortedSetMembers(`pid:${pid}:backlinks`),
+		]);
 		const remove = current.filter(tid => !add.includes(tid));
-		add = add.filter((_tid, idx) => topicsExist[idx] && !current.includes(_tid) && tid !== _tid);
+		const postTid = String(postData.tid);
+		add = add.filter((_tid, idx) => topicsExist[idx] && !current.includes(_tid) && postTid !== _tid);
 
 		// Remove old backlinks
 		await db.sortedSetRemove(`pid:${pid}:backlinks`, remove);
 
 		// Add new backlinks
+		const now = Date.now();
 		await db.sortedSetAdd(`pid:${pid}:backlinks`, add.map(() => now), add);
 		await Promise.all(add.map(async (tid) => {
 			await Topics.events.log(tid, {
 				uid,
 				type: 'backlink',
-				href: `/post/${pid}`,
+				href: `/post/${encodeURIComponent(pid)}`,
 			});
 		}));
 
-		return add.length + (current - remove);
+		return add.length + (current.length - remove.length);
 	};
 };

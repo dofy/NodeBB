@@ -2,15 +2,10 @@
 'use strict';
 
 const fs = require('fs');
-const util = require('util');
 const path = require('path');
 const nconf = require('nconf');
 const express = require('express');
-const chalk = require('chalk');
-
-const app = express();
-app.renderAsync = util.promisify((tpl, data, callback) => app.render(tpl, data, callback));
-let server;
+const chalk = require('chalk').default;
 const winston = require('winston');
 const flash = require('connect-flash');
 const bodyParser = require('body-parser');
@@ -18,12 +13,13 @@ const cookieParser = require('cookie-parser');
 const session = require('express-session');
 const useragent = require('express-useragent');
 const favicon = require('serve-favicon');
-const detector = require('spider-detector');
+const detector = require('@nodebb/spider-detector');
 const helmet = require('helmet');
 
 const Benchpress = require('benchpressjs');
 const db = require('./database');
 const analytics = require('./analytics');
+const errors = require('./meta/errors');
 const file = require('./file');
 const emailer = require('./emailer');
 const meta = require('./meta');
@@ -34,9 +30,32 @@ const topicEvents = require('./topics/events');
 const privileges = require('./privileges');
 const routes = require('./routes');
 const auth = require('./routes/authentication');
-
 const helpers = require('./helpers');
+const user = require('./user');
+const languages = require('./languages');
+const als = require('./als');
 
+const app = express();
+
+app.renderAsync = async (tpl, data) => {
+	if (!Object.hasOwn(data, '_i18n')) {
+		const store = als.getStore();
+		if (!store) {
+			winston.warn(`[app.renderAsync] No ALS store found, unable to determine user language for template rendering, using default language instead.`);
+		}
+		const uid = store?.uid || 0;
+		const { userLang, acpLang } = await user.getSettings(uid);
+		data._i18n = languages.getFull(tpl.startsWith('admin/') ? acpLang : userLang);
+	}
+	return new Promise((resolve, reject) => {
+		app.render(tpl, data, (err, html) => {
+			if (err) return reject(err);
+			resolve(html);
+		});
+	});
+};
+
+let server;
 if (nconf.get('ssl')) {
 	server = require('https').createServer({
 		key: fs.readFileSync(nconf.get('ssl').key),
@@ -69,11 +88,20 @@ server.on('connection', (conn) => {
 	});
 });
 
-exports.destroy = function (callback) {
-	server.close(callback);
-	for (const connection of Object.values(connections)) {
-		connection.destroy();
-	}
+exports.destroy = function () {
+	return new Promise((resolve, reject) => {
+		server.close((err) => {
+			if (err) reject(err);
+			else resolve();
+		});
+		for (const connection of Object.values(connections)) {
+			connection.destroy();
+		}
+	});
+};
+
+exports.getConnectionCount = function () {
+	return Object.keys(connections).length;
 };
 
 exports.listen = async function () {
@@ -105,6 +133,7 @@ async function initializeNodeBB() {
 	await meta.blacklist.load();
 	await flags.init();
 	await analytics.init();
+	await errors.init();
 	await topicEvents.init();
 	if (nconf.get('runJobs')) {
 		await require('./widgets').moveMissingAreasToDrafts();
@@ -125,12 +154,18 @@ function setupExpressApp(app) {
 	});
 	app.set('view engine', 'tpl');
 	app.set('views', viewsDir);
-	app.set('json spaces', global.env === 'development' ? 4 : 0);
+	app.set('json spaces', process.env.NODE_ENV === 'development' ? 4 : 0);
+
+	// https://github.com/NodeBB/NodeBB/issues/13918
+	const qs = require('qs');
+	app.set('query parser', str => qs.parse(str, {
+		arrayLimit: Math.min(100, nconf.get('queryParser:arrayLimit') || 50),
+	}));
 	app.use(flash());
 
 	app.enable('view cache');
 
-	if (global.env !== 'development') {
+	if (process.env.NODE_ENV !== 'development') {
 		app.enable('cache');
 		app.enable('minification');
 	}
@@ -182,7 +217,6 @@ function setupExpressApp(app) {
 			req: apiHelpers.buildReqObject(req),
 		}, next);
 	});
-	app.use(middleware.autoLocale); // must be added after auth middlewares are added
 
 	const toobusy = require('toobusy-js');
 	toobusy.maxLag(meta.config.eventLoopLagThreshold);
@@ -199,11 +233,13 @@ function setupHelmet(app) {
 	};
 
 	if (meta.config['hsts-enabled']) {
-		options.hsts = {
+		options.strictTransportSecurity = {
 			maxAge: Math.max(0, meta.config['hsts-maxage']),
 			includeSubDomains: !!meta.config['hsts-subdomains'],
 			preload: !!meta.config['hsts-preload'],
 		};
+	} else {
+		options.strictTransportSecurity = false;
 	}
 
 	try {
@@ -217,6 +253,9 @@ function setupHelmet(app) {
 function setupFavicon(app) {
 	let faviconPath = meta.config['brand:favicon'] || 'favicon.ico';
 	faviconPath = path.join(nconf.get('base_dir'), 'public', faviconPath.replace(/assets\/uploads/, 'uploads'));
+	if (!file.isPathInside(nconf.get('upload_path'), faviconPath)) {
+		faviconPath = path.join(nconf.get('base_dir'), 'public', 'favicon.ico');
+	}
 	if (file.existsSync(faviconPath)) {
 		app.use(nconf.get('relative_path'), favicon(faviconPath));
 	}
@@ -229,7 +268,17 @@ function configureBodyParser(app) {
 	}
 	app.use(bodyParser.urlencoded(urlencodedOpts));
 
-	const jsonOpts = nconf.get('bodyParser:json') || {};
+	const jsonOpts = {
+		type: [
+			'application/json',
+			'application/ld+json',
+			'application/activity+json',
+		],
+		verify: (req, res, buf) => {
+			req.rawBody = buf;
+		},
+		...nconf.get('bodyParser:json'),
+	};
 	app.use(bodyParser.json(jsonOpts));
 }
 
@@ -261,9 +310,16 @@ async function listen() {
 		}
 	}
 	port = parseInt(port, 10);
-	if ((port !== 80 && port !== 443) || nconf.get('trust_proxy') === true) {
-		winston.info('🤝 Enabling \'trust proxy\'');
-		app.enable('trust proxy');
+
+	let trust_proxy = nconf.get('trust_proxy');
+	if (trust_proxy == null) {
+		trust_proxy = false;
+		winston.warn("[startup] 'trust_proxy' is not configured, so Express proxy trust is disabled by default. Set 'trust_proxy' in config.json only when NodeBB is behind a reverse proxy that strips or overwrites X-Forwarded-For from untrusted clients.");
+	}
+	if (trust_proxy != null) {
+		const trustProxyPrefix = trust_proxy === true ? '🤝' : '❌';
+		winston.info(`${trustProxyPrefix} Setting 'trust proxy' to ${JSON.stringify(trust_proxy)}`);
+		app.set('trust proxy', trust_proxy);
 	}
 
 	if ((port === 80 || port === 443) && process.env.NODE_ENV !== 'development') {

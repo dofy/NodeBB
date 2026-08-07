@@ -12,12 +12,11 @@ require('timeago');
 const Benchpress = require('benchpressjs');
 
 Benchpress.setGlobal('config', config);
+Benchpress.setGlobal('_i18n', window._i18n);
 
 require('./sockets');
 require('./overrides');
 require('./ajaxify');
-
-app = window.app || {};
 
 Object.defineProperty(app, 'isFocused', {
 	get() {
@@ -192,7 +191,6 @@ if (document.readyState === 'loading') {
 		const pageParams = utils.params();
 		function queryMatch(search) {
 			const mySearchParams = new URLSearchParams(search);
-			// eslint-disable-next-line no-restricted-syntax
 			for (const [key, value] of mySearchParams) {
 				if (pageParams[key] === value) {
 					return true;
@@ -220,7 +218,7 @@ if (document.readyState === 'loading') {
 		if (!isTouchDevice) {
 			els = els || $('body');
 			els.tooltip({
-				selector: '.avatar.avatar-tooltip',
+				selector: '.avatar-tooltip',
 				placement: placement || 'top',
 				container: '#content',
 				animation: false,
@@ -268,14 +266,9 @@ if (document.readyState === 'loading') {
 		if (!el.length) {
 			return;
 		}
-
-		require(['translator'], function (translator) {
-			translator.translate('[[global:' + status + ']]', function (translated) {
-				el.removeClass('online offline dnd away')
-					.addClass(status)
-					.attr('data-new-title', translated);
-			});
-		});
+		el.removeClass('online offline dnd away')
+			.addClass(status)
+			.translateAttr('data-new-title', `[[global:${status}]]`);
 	};
 
 	app.newTopic = function (params) {
@@ -308,8 +301,8 @@ if (document.readyState === 'loading') {
 
 		const [hooks, api] = await app.require(['hooks', 'api']);
 		params.title = (ajaxify.data.template.topic ?
-			ajaxify.data.titleRaw :
-			(await api.get(`/topics/${params.tid}`)).titleRaw);
+			ajaxify.data.title :
+			(await api.get(`/topics/${params.tid}`)).title);
 
 		hooks.fire('action:composer.post.new', params);
 	};
@@ -319,10 +312,8 @@ if (document.readyState === 'loading') {
 			return callback();
 		}
 		require([
-			'jquery-ui/widgets/datepicker',
 			'jquery-ui/widgets/autocomplete',
 			'jquery-ui/widgets/sortable',
-			'jquery-ui/widgets/resizable',
 			'jquery-ui/widgets/draggable',
 		], function () {
 			callback();
@@ -339,12 +330,24 @@ if (document.readyState === 'loading') {
 		return new Promise((resolve, reject) => {
 			require(['translator', 'benchpress'], function (translator, Benchpress) {
 				Benchpress.render(template, data, blockName)
+					// TODO: remove once all tx tokens are migrated to tx("") helper
 					.then(rendered => translator.translate(rendered))
 					.then(translated => translator.unescape(translated))
 					.then(resolve, reject);
 			});
 		}).then((html) => {
-			html = $(html);
+			try {
+				html = $(html);
+			} catch (err) {
+				// handle cases where the template parsed has multiple elements at the root level
+				// this breaks the jquery selector so we wrap it in a div
+				if (err.startsWith('Syntax error, unrecognized expression')) {
+					html = $(`<div>${html}</div>`);
+				} else {
+					throw err;
+				}
+			}
+
 			if (callback && typeof callback === 'function') {
 				setTimeout(callback, 0, html);
 			}
@@ -354,10 +357,23 @@ if (document.readyState === 'loading') {
 	};
 
 	function registerServiceWorker() {
-		// Do not register for Safari browsers
-		if (!config.useragent.isSafari && 'serviceWorker' in navigator) {
+		if ('serviceWorker' in navigator) {
 			navigator.serviceWorker.register(config.relative_path + '/service-worker.js', { scope: config.relative_path + '/' })
 				.then(function () {
+					navigator.serviceWorker.addEventListener('message', (event) => {
+						const { action, url } = event.data;
+						switch (action) {
+							case 'ajaxify': {
+								const check = ajaxify.check(url);
+								if (check) {
+									ajaxify.go(url);
+								} else {
+									window.location.href = url;
+								}
+							}
+						}
+					});
+
 					console.info('ServiceWorker registration succeeded.');
 				}).catch(function (err) {
 					console.info('ServiceWorker registration failed: ', err);

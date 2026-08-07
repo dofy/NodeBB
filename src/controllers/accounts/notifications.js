@@ -13,6 +13,7 @@ notificationsController.get = async function (req, res, next) {
 		{ name: '[[global:topics]]', filter: 'new-topic' },
 		{ name: '[[notifications:replies]]', filter: 'new-reply' },
 		{ name: '[[notifications:tags]]', filter: 'new-topic-with-tag' },
+		{ name: '[[notifications:categories]]', filter: 'new-topic-in-category' },
 		{ name: '[[notifications:chat]]', filter: 'new-chat' },
 		{ name: '[[notifications:group-chat]]', filter: 'new-group-chat' },
 		{ name: '[[notifications:public-chat]]', filter: 'new-public-chat' },
@@ -60,6 +61,7 @@ notificationsController.get = async function (req, res, next) {
 	const data = await user.notifications.getAllWithCounts(req.uid, selectedFilter.filter);
 	let notifications = await user.notifications.getNotifications(data.nids, req.uid);
 
+	const unreadNids = notifications.filter(n => n && n.nid && !n.read).map(n => n.nid);
 	allFilters.forEach((filterData) => {
 		if (filterData && filterData.filter) {
 			filterData.count = data.counts[filterData.filter] || 0;
@@ -71,6 +73,7 @@ notificationsController.get = async function (req, res, next) {
 
 	res.render('notifications', {
 		notifications: notifications,
+		unreadNids,
 		pagination: pagination.create(page, pageCount, req.query),
 		filters: allFilters,
 		regularFilters: regularFilters,

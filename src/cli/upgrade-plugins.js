@@ -1,12 +1,12 @@
 'use strict';
 
 const prompt = require('prompt');
-const request = require('request-promise-native');
 const cproc = require('child_process');
 const semver = require('semver');
 const fs = require('fs');
 const path = require('path');
-const chalk = require('chalk');
+const chalk = require('chalk').default;
+
 
 const { paths, pluginNamePattern } = require('../constants');
 const pkgInstall = require('./package-install');
@@ -74,11 +74,12 @@ async function getCurrentVersion() {
 }
 
 async function getSuggestedModules(nbbVersion, toCheck) {
-	let body = await request({
-		method: 'GET',
-		url: `https://packages.nodebb.org/api/v1/suggest?version=${nbbVersion}&package[]=${toCheck.join('&package[]=')}`,
-		json: true,
-	});
+	const request = require('../request');
+	let { response, body } = await request.get(`https://packages.nodebb.org/api/v1/suggest?version=${nbbVersion}&package[]=${toCheck.join('&package[]=')}`);
+	if (!response.ok) {
+		console.warn(`Unable to get suggested module for NodeBB(${nbbVersion}) ${toCheck.join(',')}`);
+		return [];
+	}
 	if (!Array.isArray(body) && toCheck.length === 1) {
 		body = [body];
 	}
@@ -119,7 +120,26 @@ async function checkPlugins() {
 	return upgradable;
 }
 
-async function upgradePlugins() {
+async function getUpgradeConfirmation(unattended) {
+	if (unattended) {
+		return true;
+	}
+	if (!process.stdin.isTTY) {
+		return false;
+	}
+	prompt.message = '';
+	prompt.delimiter = '';
+
+	prompt.start();
+	const result = await prompt.get({
+		name: 'upgrade',
+		description: '\nProceed with upgrade (y|n)?',
+		type: 'string',
+	});
+	return ['y', 'Y', 'yes', 'YES'].includes(result.upgrade);
+}
+
+async function upgradePlugins(unattended = false) {
 	try {
 		const found = await checkPlugins();
 		if (found && found.length) {
@@ -132,21 +152,14 @@ async function upgradePlugins() {
 			return;
 		}
 
-		prompt.message = '';
-		prompt.delimiter = '';
-
-		prompt.start();
-		const result = await prompt.get({
-			name: 'upgrade',
-			description: '\nProceed with upgrade (y|n)?',
-			type: 'string',
-		});
-
-		if (['y', 'Y', 'yes', 'YES'].includes(result.upgrade)) {
+		if (await getUpgradeConfirmation(unattended)) {
 			console.log('\nUpgrading packages...');
 			const args = packageManagerInstallArgs.concat(found.map(suggestObj => `${suggestObj.name}@${suggestObj.suggested}`));
-
-			cproc.execFileSync(packageManagerExecutable, args, { stdio: 'ignore' });
+			const options = { stdio: 'ignore' };
+			if (process.platform === 'win32') {
+				options.shell = true;
+			}
+			cproc.execFileSync(packageManagerExecutable, args, options);
 		} else {
 			console.log(`${chalk.yellow('Package upgrades skipped')}. Check for upgrades at any time by running "${chalk.green('./nodebb upgrade -p')}".`);
 		}
@@ -156,4 +169,5 @@ async function upgradePlugins() {
 	}
 }
 
+exports.getUpgradeConfirmation = getUpgradeConfirmation;
 exports.upgradePlugins = upgradePlugins;

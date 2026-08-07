@@ -51,11 +51,13 @@ define('userFilter', ['api', 'hooks', 'slugify', 'benchpress'], function (api, h
 					try {
 						const userData = await api.get(`/api/user/${slugify(query)}`);
 						result.users.push(userData);
-					} catch (err) {}
+					} catch (err) {
+						console.error(err);
+					}
 				}
 			}
 			if (!result.users.length) {
-				el.find('[component="user/filter/results"]').translateHtml(
+				el.find('[component="user/filter/results"]').translateText(
 					'[[users:no-users-found]]'
 				);
 				return;

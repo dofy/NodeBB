@@ -15,16 +15,18 @@ define('forum/topic', [
 	'hooks',
 	'api',
 	'alerts',
-	'bootbox',
+	'modals',
+	'benchpress',
 	'clipboard',
+	'modules/intents',
 ], function (
 	infinitescroll, threadTools, postTools,
 	events, posts, navigator, sort, quickreply,
 	components, storage, hooks, api, alerts,
-	bootbox, clipboard
+	modals, Benchpress, clipboard, intents
 ) {
 	const Topic = {};
-	let tid = 0;
+	let tid = '0';
 	let currentUrl = '';
 
 	$(window).on('action:ajaxify.start', function (ev, data) {
@@ -38,8 +40,8 @@ define('forum/topic', [
 	});
 
 	Topic.init = async function () {
-		const tidChanged = !tid || parseInt(tid, 10) !== parseInt(ajaxify.data.tid, 10);
-		tid = ajaxify.data.tid;
+		const tidChanged = tid === '0' || String(tid) !== String(ajaxify.data.tid);
+		tid = String(ajaxify.data.tid);
 		currentUrl = ajaxify.currentPage;
 		hooks.fire('action:topic.loading');
 
@@ -69,10 +71,13 @@ define('forum/topic', [
 		setupQuickReply();
 		handleBookmark(tid);
 		handleThumbs();
+		addCrosspostsHandler();
 
 		$(window).on('scroll', utils.debounce(updateTopicTitle, 250));
 
 		handleTopicSearch();
+
+		intents.addHandlers();
 
 		hooks.fire('action:topic.loaded', ajaxify.data);
 	};
@@ -152,7 +157,7 @@ define('forum/topic', [
 		updateUserBookmark(postIndex);
 		if (navigator.shouldScrollToPost(postIndex)) {
 			return navigator.scrollToPostIndex(postIndex - 1, true, 0);
-		} else if (bookmark && (
+		} else if (bookmark && parseInt(bookmark, 10) > postIndex && (
 			!config.usePagination ||
 			(config.usePagination && ajaxify.data.pagination.currentPage === 1)
 		) && ajaxify.data.postcount > ajaxify.data.bookmarkThreshold) {
@@ -181,29 +186,67 @@ define('forum/topic', [
 			const clickedThumb = e.target.closest('a');
 			if (clickedThumb) {
 				const clickedThumbIndex = Array.from(clickedThumb.parentNode.children).indexOf(clickedThumb);
+				e.stopPropagation();
 				e.preventDefault();
 				const thumbs = ajaxify.data.thumbs.map(t => ({ ...t }));
 				thumbs.forEach((t, i) => {
 					t.selected = i === clickedThumbIndex;
 				});
-				const html = await app.parseAndTranslate('modals/topic-thumbs-view', {
+				const html = await Benchpress.render('modals/topic-thumbs-view', {
 					src: clickedThumb.href,
 					thumbs: thumbs,
 				});
 
-				const modal = bootbox.dialog({
+				const modal = await modals.dialog({
 					size: 'lg',
 					onEscape: true,
 					backdrop: true,
 					message: html,
 				});
+				function selectThumbByIndex(index) {
+					const thumbEls = modal.find('[component="topic/thumb/select"]');
+					if (thumbEls.length) {
+						const normalizedIndex = (((index % thumbEls.length) + thumbEls.length) % thumbEls.length);
+						const selectedThumb = thumbEls.eq(normalizedIndex);
+						thumbEls.removeClass('border-primary');
+						selectedThumb.addClass('border-primary');
+						const newSrc = selectedThumb.find('img').attr('src');
+						modal.find('[component="topic/thumb/current"]')
+							.attr('src', newSrc)
+							.parent().attr('href', newSrc);
+					}
+				}
+
 				modal.on('click', '[component="topic/thumb/select"]', function () {
-					$('[component="topic/thumb/select"]').removeClass('border-primary');
-					$(this).addClass('border-primary');
-					$('[component="topic/thumb/current"]')
-						.attr('src', $(this).attr('src'));
+					const thumbEls = modal.find('[component="topic/thumb/select"]');
+					selectThumbByIndex(thumbEls.index(this));
+				});
+
+				const keydownEventName = `keydown.topic-thumbs-${Date.now()}`;
+				const onThumbKeydown = function (ev) {
+					if (ev.key !== 'ArrowLeft' && ev.key !== 'ArrowRight') {
+						return;
+					}
+
+					ev.preventDefault();
+					const thumbEls = modal.find('[component="topic/thumb/select"]');
+					const selectedIndex = thumbEls.index(thumbEls.filter('.border-primary').first());
+					const currentIndex = selectedIndex >= 0 ? selectedIndex : 0;
+					const direction = ev.key === 'ArrowRight' ? 1 : -1;
+					selectThumbByIndex(currentIndex + direction);
+				};
+
+				$(document).on(keydownEventName, onThumbKeydown);
+				modal.on('hidden.bs.modal', function () {
+					$(document).off(keydownEventName, onThumbKeydown);
 				});
 			}
+		});
+
+		$('[component="topic/thumb/list/expand"]').on('click', function () {
+			const btn = $(this);
+			btn.parents('[component="topic/thumb/list"]').removeClass('thumbs-collapsed');
+			btn.remove();
 		});
 	}
 
@@ -213,7 +256,7 @@ define('forum/topic', [
 			const toggle = $(this);
 			blockQuote.toggleClass('uncollapsed');
 			const collapsed = !blockQuote.hasClass('uncollapsed');
-			toggle.toggleClass('fa-angle-down', collapsed).toggleClass('fa-angle-up', !collapsed);
+			toggle.find('i').toggleClass('fa-angle-down', collapsed).toggleClass('fa-angle-up', !collapsed);
 		});
 	}
 
@@ -224,7 +267,7 @@ define('forum/topic', [
 				btn.find('i').removeClass('fa-copy').addClass('fa-check');
 				setTimeout(() => btn.find('i').removeClass('fa-check').addClass('fa-copy'), 2000);
 				const codeEl = btn.parent().find('code');
-				if (codeEl.attr('data-lines')) {
+				if (codeEl.attr('data-lines') && codeEl.find('.hljs-ln-code[data-line-number]').length) {
 					return codeEl.find('.hljs-ln-code[data-line-number]')
 						.map((i, e) => e.textContent).get().join('\n');
 				}
@@ -262,16 +305,35 @@ define('forum/topic', [
 		hooks.registerPage('action:posts.edited', addCopyCodeButton);
 	}
 
+	function gotoPost(event, toPid) {
+		const toPost = $(`[component="topic"]>[component="post"][data-pid="${toPid}"]`);
+		if (toPost.length) {
+			event.preventDefault();
+			navigator.scrollToIndex(toPost.attr('data-index'), true);
+			return false;
+		}
+	}
+
 	function addParentHandler() {
 		components.get('topic').on('click', '[component="post/parent"]', function (e) {
-			const toPid = $(this).attr('data-topid');
-
-			const toPost = $('[component="topic"]>[component="post"][data-pid="' + toPid + '"]');
-			if (toPost.length) {
-				e.preventDefault();
-				navigator.scrollToIndex(toPost.attr('data-index'), true);
-				return false;
+			const parentEl = $(this);
+			const contentEl = parentEl.find('[component="post/parent/content"]');
+			if (contentEl.length) {
+				const isCollapsed = parentEl.attr('data-collapsed') === 'true';
+				parentEl.attr('data-collapsed', isCollapsed ? 'false' : 'true');
+				contentEl.toggleClass('line-clamp-1');
+				parentEl.find('.timeago').toggleClass('hidden');
+				parentEl.toggleClass('flex-column').toggleClass('flex-row');
+				if (isCollapsed) {
+					return false;
+				}
+			} else {
+				return gotoPost(e, parentEl.attr('data-topid'));
 			}
+		});
+
+		components.get('topic').on('click', '[component="post/parent"] .timeago', function (e) {
+			return gotoPost(e, $(this).parents('[data-parent-pid]').attr('data-parent-pid'));
 		});
 	}
 
@@ -282,88 +344,145 @@ define('forum/topic', [
 				replies.init(btn);
 			});
 		});
+
+		$('[component="topic"]').on('click', '[component="post/replies"] .post-header a.timeago', function (e) {
+			return gotoPost(e, $(this).parents('[data-pid]').attr('data-pid'));
+		});
 	}
 
 	function addPostsPreviewHandler() {
 		if (!ajaxify.data.showPostPreviewsOnHover || utils.isMobile()) {
 			return;
 		}
-		let timeoutId = 0;
+		let renderTimeout = 0;
 		let destroyed = false;
+		let link = null;
+
 		const postCache = {};
 		function destroyTooltip() {
-			clearTimeout(timeoutId);
+			clearTimeout(renderTimeout);
+			renderTimeout = 0;
 			$('#post-tooltip').remove();
 			destroyed = true;
 		}
+
+		function onClickOutside(ev) {
+			// If the click is outside the tooltip, destroy it
+			if (!$(ev.target).closest('#post-tooltip').length) {
+				destroyTooltip();
+			}
+		}
+
 		$(window).one('action:ajaxify.start', destroyTooltip);
-		$('[component="topic"]').on('mouseenter', '[component="post"] a, [component="topic/event"] a', async function () {
-			const link = $(this);
+
+		$('[component="topic"]').on('mouseenter', 'a[component="post/parent"], [component="post/parent/content"] a,[component="post/content"] a, [component="topic/event"] a', async function () {
+			link = $(this);
+			link.removeAttr('over-tooltip');
+			link.one('mouseleave', function () {
+				clearTimeout(renderTimeout);
+				renderTimeout = 0;
+				setTimeout(() => {
+					if (!link.attr('over-tooltip') && !renderTimeout) {
+						destroyTooltip();
+					}
+				}, 100);
+			});
+			clearTimeout(renderTimeout);
 			destroyed = false;
 
-			async function renderPost(pid) {
-				const postData = postCache[pid] || await api.get(`/posts/${pid}/summary`);
-				$('#post-tooltip').remove();
-				if (postData && ajaxify.data.template.topic) {
-					postCache[pid] = postData;
-					const tooltip = await app.parseAndTranslate('partials/topic/post-preview', { post: postData });
-					if (destroyed) {
-						return;
+			renderTimeout = setTimeout(async () => {
+				async function renderPost(pid) {
+					const postData = postCache[pid] || await api.get(`/posts/${encodeURIComponent(pid)}/summary`);
+					$('#post-tooltip').remove();
+					if (postData && ajaxify.data.template.topic) {
+						postCache[pid] = postData;
+						const tooltip = await app.parseAndTranslate('partials/topic/post-preview', { post: postData });
+						if (destroyed) {
+							return;
+						}
+						tooltip.hide().find('.timeago').timeago();
+						tooltip.appendTo($('body')).fadeIn(300);
+						const postContent = link.parents('[component="topic"]').find('[component="post/content"]').first();
+						const postRect = postContent.offset();
+						const postWidth = postContent.width();
+						const { top } = link.get(0).getBoundingClientRect();
+						const dropup = top > window.innerHeight / 2;
+						tooltip.on('mouseenter', function () {
+							link.attr('over-tooltip', 1);
+						});
+						tooltip.one('mouseleave', destroyTooltip);
+						$(window).off('click', onClickOutside).one('click', onClickOutside);
+						const css = {
+							left: postRect.left,
+							width: postWidth,
+						};
+						if (dropup) {
+							css.bottom = window.innerHeight - top - window.scrollY + 5;
+						} else {
+							css.top = top + window.scrollY + 30;
+						}
+						tooltip.css(css);
 					}
-					tooltip.hide().find('.timeago').timeago();
-					tooltip.appendTo($('body')).fadeIn(300);
-					const postContent = link.parents('[component="topic"]').find('[component="post/content"]').first();
-					const postRect = postContent.offset();
-					const postWidth = postContent.width();
-					const linkRect = link.offset();
-					tooltip.css({
-						top: linkRect.top + 30,
-						left: postRect.left,
-						width: postWidth,
-					});
-				}
-			}
-
-			const href = link.attr('href');
-			const location = utils.urlToLocation(href);
-			const pathname = location.pathname;
-			const validHref = href && href !== '#' && window.location.hostname === location.hostname;
-			$('#post-tooltip').remove();
-			const postMatch = validHref && pathname && pathname.match(/\/post\/([\d]+)/);
-			const topicMatch = validHref && pathname && pathname.match(/\/topic\/([\d]+)/);
-			if (postMatch) {
-				const pid = postMatch[1];
-				if (parseInt(link.parents('[component="post"]').attr('data-pid'), 10) === parseInt(pid, 10)) {
-					return; // dont render self post
 				}
 
-				timeoutId = setTimeout(async () => {
+				const href = link.attr('href');
+				const location = utils.urlToLocation(href);
+				const pathname = location.pathname;
+				const validHref = href && href !== '#' && window.location.hostname === location.hostname;
+				$('#post-tooltip').remove();
+				const postMatch = validHref && pathname && pathname.match(/\/post\/([\d]+|(?:[\w_.~!$&'()*+,;=:@-]|%[\dA-F]{2})+)/);
+				const topicMatch = validHref && pathname && pathname.match(/\/topic\/([\da-z-]+)/);
+				if (postMatch) {
+					const pid = postMatch[1];
+					if (encodeURIComponent(link.parents('[component="post"]').attr('data-pid')) === encodeURIComponent(pid)) {
+						return; // dont render self post
+					}
 					renderPost(pid);
-				}, 300);
-			} else if (topicMatch) {
-				timeoutId = setTimeout(async () => {
+				} else if (topicMatch) {
 					const tid = topicMatch[1];
 					const topicData = await api.get('/topics/' + tid, {});
 					renderPost(topicData.mainPid);
-				}, 300);
-			}
-		}).on('mouseleave', '[component="post"] a, [component="topic/event"] a', destroyTooltip);
+				}
+			}, 300);
+		});
+	}
+
+	function addCrosspostsHandler() {
+		const anchorEl = document.getElementById('show-crossposts');
+		if (anchorEl) {
+			anchorEl.addEventListener('click', async () => {
+				const { crossposts } = ajaxify.data;
+				const html = await app.parseAndTranslate('modals/crossposts', { crossposts });
+				modals.dialog({
+					onEscape: true,
+					backdrop: true,
+					title: '[[global:crossposts]]',
+					message: html,
+				});
+			});
+		}
 	}
 
 	function setupQuickReply() {
 		if (config.enableQuickReply || (config.theme && config.theme.enableQuickReply)) {
-			quickreply.init();
+			quickreply.init({
+				route: `/topics/${ajaxify.data.tid}`,
+				body: {
+					tid: ajaxify.data.tid,
+				},
+			});
 		}
 	}
 
 	function updateTopicTitle() {
 		const span = components.get('navbar/title').find('span');
-		if ($(window).scrollTop() > 50 && span.hasClass('hidden')) {
-			span.html(ajaxify.data.title).removeClass('hidden');
-		} else if ($(window).scrollTop() <= 50 && !span.hasClass('hidden')) {
-			span.html('').addClass('hidden');
+		const scrollTop = $(window).scrollTop();
+		if (scrollTop > 50 && span.hasClass('hidden')) {
+			span.text(ajaxify.data.title).removeClass('hidden');
+		} else if (scrollTop <= 50 && !span.hasClass('hidden')) {
+			span.text('').addClass('hidden');
 		}
-		if ($(window).scrollTop() > 300) {
+		if (scrollTop > 300) {
 			alerts.remove('bookmark');
 		}
 	}
@@ -405,6 +524,7 @@ define('forum/topic', [
 
 		if (
 			ajaxify.data.postcount > ajaxify.data.bookmarkThreshold &&
+			index > ajaxify.data.bookmarkThreshold &&
 			(
 				!currentBookmark ||
 				parseInt(index, 10) > parseInt(currentBookmark, 10) ||

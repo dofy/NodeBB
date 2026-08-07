@@ -12,14 +12,14 @@ module.exports = function (SocketTopics) {
 			throw new Error('[[error:invalid-data]]');
 		}
 
+		if (!await privileges.topics.canRead(data.tid, socket.uid)) {
+			throw new Error('[[error:no-privileges]]');
+		}
+
 		const [userPrivileges, topicData] = await Promise.all([
 			privileges.topics.get(data.tid, socket.uid),
 			topics.getTopicData(data.tid),
 		]);
-
-		if (!userPrivileges['topics:read'] || !privileges.topics.canViewDeletedScheduled(topicData, userPrivileges)) {
-			throw new Error('[[error:no-privileges]]');
-		}
 
 		const set = data.topicPostSort === 'most_votes' ? `tid:${data.tid}:posts:votes` : `tid:${data.tid}:posts`;
 		const reverse = data.topicPostSort === 'newest_to_oldest' || data.topicPostSort === 'most_votes';
@@ -30,7 +30,7 @@ module.exports = function (SocketTopics) {
 			parseInt(data.count, 10) || meta.config.postsPerPage || 20
 		));
 
-		if (data.direction === -1) {
+		if (parseInt(data.direction, 10) === -1) {
 			start -= infScrollPostsPerPage;
 		}
 

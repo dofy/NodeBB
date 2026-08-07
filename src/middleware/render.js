@@ -2,7 +2,6 @@
 
 const _ = require('lodash');
 const nconf = require('nconf');
-const validator = require('validator');
 const jsesc = require('jsesc');
 const winston = require('winston');
 const semver = require('semver');
@@ -45,20 +44,28 @@ module.exports = function (middleware) {
 				options.loggedInUser = await getLoggedInUser(req);
 				options.relative_path = relative_path;
 				options.template = { name: template, [template]: true };
-				options.url = (req.baseUrl + req.path.replace(/^\/api/, ''));
+				options.url = options.url || (req.baseUrl + req.path.replace(/^\/api/, ''));
 				options.bodyClass = helpers.buildBodyClass(req, res, options);
 
 				if (req.loggedIn) {
 					res.set('cache-control', 'private');
 				}
 
-				const buildResult = await plugins.hooks.fire(`filter:${template}.build`, { req: req, res: res, templateData: options });
+				const buildResult = await plugins.hooks.fire(`filter:${template}.build`, {
+					req: req,
+					res: res,
+					templateData: options,
+				});
 				if (res.headersSent) {
 					return;
 				}
 				const templateToRender = buildResult.templateData.templateToRender || template;
 
-				const renderResult = await plugins.hooks.fire('filter:middleware.render', { req: req, res: res, templateData: buildResult.templateData });
+				const renderResult = await plugins.hooks.fire('filter:middleware.render', {
+					req: req,
+					res: res,
+					templateData: buildResult.templateData,
+				});
 				if (res.headersSent) {
 					return;
 				}
@@ -66,6 +73,7 @@ module.exports = function (middleware) {
 				options._header = {
 					tags: await meta.tags.parse(req, renderResult, res.locals.metaTags, res.locals.linkTags),
 				};
+				res.locals._i18n = languages.getFull(getLang(req, res));
 				options.widgets = await widgets.render(req.uid, {
 					template: `${template}.tpl`,
 					url: options.url,
@@ -80,25 +88,27 @@ module.exports = function (middleware) {
 					if (req.route && req.route.path === '/api/') {
 						options.title = '[[pages:home]]';
 					}
-					req.app.set('json spaces', global.env === 'development' || req.query.pretty ? 4 : 0);
+					req.app.set('json spaces', process.env.NODE_ENV === 'development' || req.query.pretty ? 4 : 0);
 					return res.json(options);
 				}
+
+
 				const optionsString = JSON.stringify(options).replace(/<\//g, '<\\/');
 				const headerFooterData = await loadHeaderFooterData(req, res, options);
-				const results = await utils.promiseParallel({
-					header: renderHeaderFooter('renderHeader', req, res, options, headerFooterData),
-					content: renderContent(render, templateToRender, req, res, options),
-					footer: renderHeaderFooter('renderFooter', req, res, options, headerFooterData),
-				});
+				const [header, content, footer] = await Promise.all([
+					renderHeaderFooter(render, 'renderHeader', req, res, options, headerFooterData),
+					renderContent(render, templateToRender, req, res, options),
+					renderHeaderFooter(render, 'renderFooter', req, res, options, headerFooterData),
+				]);
 
-				const str = `${results.header +
+				const str = `${header +
 					(res.locals.postHeader || '') +
-					results.content
+					content
 				}<script id="ajaxify-data" type="application/json">${
 					optionsString
 				}</script>${
 					res.locals.preFooter || ''
-				}${results.footer}`;
+				}${footer}`;
 
 				if (typeof fn !== 'function') {
 					self.send(str);
@@ -108,7 +118,7 @@ module.exports = function (middleware) {
 			}
 
 			try {
-				await renderMethod(template, { ...res.locals.templateValues, ...options }, fn);
+				await renderMethod(template, options, fn);
 			} catch (err) {
 				next(err);
 			}
@@ -122,7 +132,7 @@ module.exports = function (middleware) {
 			return await user.getUserData(req.uid);
 		}
 		return {
-			uid: 0,
+			uid: req.uid === -1 ? -1 : 0,
 			username: '[[global:guest]]',
 			picture: user.getDefaultAvatar(),
 			'icon:text': '?',
@@ -131,9 +141,9 @@ module.exports = function (middleware) {
 	}
 
 	async function loadHeaderFooterData(req, res, options) {
-		if (res.locals.renderHeader) {
+		if (res.locals.renderHeaderType === 'client') {
 			return await loadClientHeaderFooterData(req, res, options);
-		} else if (res.locals.renderAdminHeader) {
+		} else if (res.locals.renderHeaderType === 'admin') {
 			return await loadAdminHeaderFooterData(req, res, options);
 		}
 		return null;
@@ -142,6 +152,7 @@ module.exports = function (middleware) {
 	async function loadClientHeaderFooterData(req, res, options) {
 		const registrationType = meta.config.registrationType || 'normal';
 		res.locals.config = res.locals.config || {};
+		const userLang = res.locals.config.userLang || meta.config.userLang || 'en-GB';
 		const templateValues = {
 			title: meta.config.title || '',
 			'title:url': meta.config['title:url'] || '',
@@ -161,22 +172,20 @@ module.exports = function (middleware) {
 			widgets: options.widgets,
 		};
 
-		templateValues.configJSON = jsesc(JSON.stringify(res.locals.config), { isScriptContext: true });
+		templateValues.configJSON = jsesc(translator.escape(JSON.stringify(res.locals.config)), { isScriptContext: true });
 
-		const title = translator.unescape(utils.stripHTMLTags(options.title || ''));
 		const results = await utils.promiseParallel({
 			isAdmin: user.isAdministrator(req.uid),
 			isGlobalMod: user.isGlobalModerator(req.uid),
 			isModerator: user.isModeratorOfAnyCategory(req.uid),
 			privileges: privileges.global.get(req.uid),
 			blocks: user.blocks.list(req.uid),
-			user: user.getUserData(req.uid),
+			user: user.getUserFields(req.uid, ['uid', 'username', 'fullname', 'userslug', 'email', 'email:confirmed', 'picture', 'status', 'reputation']),
 			isEmailConfirmSent: req.uid <= 0 ? false : await user.email.isValidationPending(req.uid),
-			languageDirection: translator.translate('[[language:dir]]', res.locals.config.userLang),
-			timeagoCode: languages.userTimeagoCode(res.locals.config.userLang),
-			browserTitle: translator.translate(controllersHelpers.buildTitle(title)),
+			timeagoCode: languages.userTimeagoCode(userLang),
+			browserTitle: controllersHelpers.buildTitle(options.title, userLang, options.template.name),
 			navigation: navigation.get(req.uid),
-			roomIds: db.getSortedSetRevRange(`uid:${req.uid}:chat:rooms`, 0, 0),
+			roomIds: req.uid > 0 ? db.getSortedSetRevRange(`uid:${req.uid}:chat:rooms`, 0, 0) : [],
 		});
 
 		const unreadData = {
@@ -214,9 +223,9 @@ module.exports = function (middleware) {
 		templateValues.isAdmin = results.user.isAdmin;
 		templateValues.isGlobalMod = results.user.isGlobalMod;
 		templateValues.showModMenu = results.user.isAdmin || results.user.isGlobalMod || results.user.isMod;
-		templateValues.canChat = results.privileges.chat && meta.config.disableChat !== 1;
+		templateValues.canChat = (results.privileges.chat || results.privileges['chat:privileged']) && meta.config.disableChat !== 1;
 		templateValues.user = results.user;
-		templateValues.userJSON = jsesc(JSON.stringify(results.user), { isScriptContext: true });
+		templateValues.userJSON = jsesc(translator.escape(JSON.stringify(results.user)), { isScriptContext: true });
 		templateValues.useCustomCSS = meta.config.useCustomCSS && meta.config.customCSS;
 		templateValues.customCSS = templateValues.useCustomCSS ? (meta.config.renderedCustomCSS || '') : '';
 		templateValues.useCustomHTML = meta.config.useCustomHTML;
@@ -224,9 +233,9 @@ module.exports = function (middleware) {
 		templateValues.maintenanceHeader = meta.config.maintenanceMode && !results.isAdmin;
 		templateValues.defaultLang = meta.config.defaultLang || 'en-GB';
 		templateValues.userLang = res.locals.config.userLang;
-		templateValues.languageDirection = results.languageDirection;
+		templateValues.languageDirection = translator.languageDirection(userLang);
 		if (req.query.noScriptMessage) {
-			templateValues.noScriptMessage = validator.escape(String(req.query.noScriptMessage));
+			templateValues.noScriptMessage = req.query.noScriptMessage;
 		}
 
 		templateValues.template = { name: res.locals.template };
@@ -238,7 +247,7 @@ module.exports = function (middleware) {
 		}
 
 		if (req.route && req.route.path === '/') {
-			modifyTitle(templateValues);
+			await modifyTitle(templateValues, userLang, options.template.name);
 		}
 		return templateValues;
 	}
@@ -258,7 +267,6 @@ module.exports = function (middleware) {
 			latestVersion: getLatestVersion(),
 			privileges: privileges.admin.get(req.uid),
 			tags: meta.tags.parse(req, {}, [], []),
-			languageDirection: translator.translate('[[language:dir]]', res.locals.config.acpLang),
 		});
 
 		const { userData } = results;
@@ -275,16 +283,17 @@ module.exports = function (middleware) {
 		const version = nconf.get('version');
 
 		res.locals.config.userLang = res.locals.config.acpLang || res.locals.config.userLang;
-		res.locals.config.isRTL = results.languageDirection === 'rtl';
+		const langDirection = translator.languageDirection(res.locals.config.acpLang);
+		res.locals.config.isRTL = langDirection === 'rtl';
 		const templateValues = {
 			config: res.locals.config,
-			configJSON: jsesc(JSON.stringify(res.locals.config), { isScriptContext: true }),
+			configJSON: jsesc(translator.escape(JSON.stringify(res.locals.config)), { isScriptContext: true }),
 			relative_path: res.locals.config.relative_path,
 			adminConfigJSON: encodeURIComponent(JSON.stringify(results.configs)),
 			metaTags: results.tags.meta,
 			linkTags: results.tags.link,
 			user: userData,
-			userJSON: jsesc(JSON.stringify(userData), { isScriptContext: true }),
+			userJSON: jsesc(translator.escape(JSON.stringify(userData)), { isScriptContext: true }),
 			plugins: results.custom_header.plugins,
 			authentication: results.custom_header.authentication,
 			scripts: results.scripts,
@@ -298,7 +307,7 @@ module.exports = function (middleware) {
 			showManageMenu: results.privileges.superadmin || ['categories', 'privileges', 'users', 'admins-mods', 'groups', 'tags', 'settings'].some(priv => results.privileges[`admin:${priv}`]),
 			defaultLang: meta.config.defaultLang || 'en-GB',
 			acpLang: res.locals.config.acpLang,
-			languageDirection: results.languageDirection,
+			languageDirection: langDirection,
 		};
 
 		templateValues.template = { name: res.locals.template };
@@ -315,7 +324,7 @@ module.exports = function (middleware) {
 		});
 	}
 
-	async function renderHeader(req, res, options, headerFooterData) {
+	async function renderHeader(render, req, res, options, headerFooterData) {
 		const hookReturn = await plugins.hooks.fire('filter:middleware.renderHeader', {
 			req: req,
 			res: res,
@@ -324,10 +333,10 @@ module.exports = function (middleware) {
 			data: options,
 		});
 
-		return await req.app.renderAsync('header', hookReturn.templateData);
+		return await renderContent(render, 'header', req, res, hookReturn.templateData);
 	}
 
-	async function renderFooter(req, res, options, headerFooterData) {
+	async function renderFooter(render, req, res, options, headerFooterData) {
 		const hookReturn = await plugins.hooks.fire('filter:middleware.renderFooter', {
 			req,
 			res,
@@ -344,10 +353,10 @@ module.exports = function (middleware) {
 		hookReturn.templateData.customJS = hookReturn.templateData.useCustomJS ? meta.config.customJS : '';
 		hookReturn.templateData.isSpider = req.uid === -1;
 
-		return await req.app.renderAsync('footer', hookReturn.templateData);
+		return await renderContent(render, 'footer', req, res, hookReturn.templateData);
 	}
 
-	async function renderAdminHeader(req, res, options, headerFooterData) {
+	async function renderAdminHeader(render, req, res, options, headerFooterData) {
 		const hookReturn = await plugins.hooks.fire('filter:middleware.renderAdminHeader', {
 			req,
 			res,
@@ -356,10 +365,10 @@ module.exports = function (middleware) {
 			data: options,
 		});
 
-		return await req.app.renderAsync('admin/header', hookReturn.templateData);
+		return await renderContent(render, 'admin/header', req, res, hookReturn.templateData);
 	}
 
-	async function renderAdminFooter(req, res, options, headerFooterData) {
+	async function renderAdminFooter(render, req, res, options, headerFooterData) {
 		const hookReturn = await plugins.hooks.fire('filter:middleware.renderAdminFooter', {
 			req,
 			res,
@@ -368,48 +377,49 @@ module.exports = function (middleware) {
 			data: options,
 		});
 
-		return await req.app.renderAsync('admin/footer', hookReturn.templateData);
+		return await renderContent(render, 'admin/footer', req, res, hookReturn.templateData);
 	}
 
-	async function renderHeaderFooter(method, req, res, options, headerFooterData) {
+	async function renderHeaderFooter(render, method, req, res, options, headerFooterData) {
 		let str = '';
-		if (res.locals.renderHeader) {
+		if (res.locals.renderHeaderType === 'client') {
 			if (method === 'renderHeader') {
-				str = await renderHeader(req, res, options, headerFooterData);
+				str = await renderHeader(render, req, res, options, headerFooterData);
 			} else if (method === 'renderFooter') {
-				str = await renderFooter(req, res, options, headerFooterData);
+				str = await renderFooter(render, req, res, options, headerFooterData);
 			}
-		} else if (res.locals.renderAdminHeader) {
+		} else if (res.locals.renderHeaderType === 'admin') {
 			if (method === 'renderHeader') {
-				str = await renderAdminHeader(req, res, options, headerFooterData);
+				str = await renderAdminHeader(render, req, res, options, headerFooterData);
 			} else if (method === 'renderFooter') {
-				str = await renderAdminFooter(req, res, options, headerFooterData);
+				str = await renderAdminFooter(render, req, res, options, headerFooterData);
 			}
 		}
-		return await translate(str, getLang(req, res));
+		return str;
 	}
 
 	function getLang(req, res) {
 		let language = (res.locals.config && res.locals.config.userLang) || 'en-GB';
-		if (res.locals.renderAdminHeader) {
+		if (res.locals.renderHeaderType === 'admin') {
 			language = (res.locals.config && res.locals.config.acpLang) || 'en-GB';
 		}
-		return req.query.lang ? validator.escape(String(req.query.lang)) : language;
+		return req.query.lang ? req.query.lang : language;
 	}
 
 	async function translate(str, language) {
+		// TODO: remove once all tx tokens are migrated to tx("") helper
 		const translated = await translator.translate(str, language);
 		return translator.unescape(translated);
 	}
 
 	async function appendUnreadCounts({ uid, navigation, unreadData, query }) {
-		const originalRoutes = navigation.map(nav => nav.originalRoute);
+		const routes = navigation.map(nav => nav.route);
 		const calls = {
 			unreadData: topics.getUnreadData({ uid: uid, query: query }),
 			unreadChatCount: messaging.getUnreadCount(uid),
 			unreadNotificationCount: user.notifications.getUnreadCount(uid),
 			unreadFlagCount: (async function () {
-				if (originalRoutes.includes('/flags') && await user.isPrivileged(uid)) {
+				if (routes.includes('/flags') && await user.isPrivileged(uid)) {
 					return flags.getCount({
 						uid,
 						query,
@@ -446,7 +456,7 @@ module.exports = function (middleware) {
 		const { tidsByFilter } = results.unreadData;
 		navigation = navigation.map((item) => {
 			function modifyNavItem(item, route, filter, content) {
-				if (item && item.originalRoute === route) {
+				if (item && item.route === route) {
 					unreadData[filter] = _.zipObject(tidsByFilter[filter], tidsByFilter[filter].map(() => true));
 					item.content = content;
 					unreadCount.mobileUnread = content;
@@ -462,7 +472,7 @@ module.exports = function (middleware) {
 			modifyNavItem(item, '/unread?filter=unreplied', 'unreplied', unreadCount.unrepliedTopic);
 
 			['flags'].forEach((prop) => {
-				if (item && item.originalRoute === `/${prop}` && unreadCount[prop] > 0) {
+				if (item && item.route === `/${prop}` && unreadCount[prop] > 0) {
 					item.iconClass += ' unread-count';
 					item.content = unreadCount.flags;
 				}
@@ -475,8 +485,8 @@ module.exports = function (middleware) {
 	}
 
 
-	function modifyTitle(obj) {
-		const title = controllersHelpers.buildTitle(meta.config.homePageTitle || '[[pages:home]]');
+	async function modifyTitle(obj, userLang, template) {
+		const title = await controllersHelpers.buildTitle(meta.config.homePageTitle || '[[pages:home]]', userLang, template);
 		obj.browserTitle = title;
 
 		if (obj.metaTags) {

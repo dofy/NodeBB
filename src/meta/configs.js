@@ -6,8 +6,10 @@ const path = require('path');
 const winston = require('winston');
 
 const db = require('../database');
+const file = require('../file');
 const pubsub = require('../pubsub');
 const Meta = require('./index');
+const translator = require('../translator');
 const cacheBuster = require('./cacheBuster');
 const defaults = require('../../install/data/defaults.json');
 
@@ -132,6 +134,7 @@ Configs.setMultiple = async function (data) {
 	await processConfig(data);
 	data = serialize(data);
 	await db.setObject('config', data);
+	await updateNavItems(data);
 	updateConfig(deserialize(data));
 };
 
@@ -178,7 +181,7 @@ async function processConfig(data) {
 	if (data.minimumUsernameLength > data.maximumUsernameLength) {
 		throw new Error('[[error:invalid-data]]');
 	}
-
+	require('../social').postSharing = null;
 	await Promise.all([
 		saveRenderedCss(data),
 		getLogoSize(data),
@@ -189,7 +192,9 @@ function ensureInteger(data, field, min) {
 	if (data.hasOwnProperty(field)) {
 		data[field] = parseInt(data[field], 10);
 		if (!(data[field] >= min)) {
-			throw new Error('[[error:invalid-data]]');
+			throw new Error(translator.compile(
+				'error:invalid-config-field-value', field, data[field]
+			));
 		}
 	}
 }
@@ -208,24 +213,28 @@ async function getLogoSize(data) {
 	if (!data['brand:logo']) {
 		return;
 	}
+	const x50Path = path.join(nconf.get('upload_path'), 'system', 'site-logo-x50.png');
 	let size;
-	try {
-		size = await image.size(path.join(nconf.get('upload_path'), 'system', 'site-logo-x50.png'));
-	} catch (err) {
-		if (err.code === 'ENOENT') {
-			// For whatever reason the x50 logo wasn't generated, gracefully error out
-			winston.warn('[logo] The email-safe logo doesn\'t seem to have been created, please re-upload your site logo.');
-			size = {
-				height: 0,
-				width: 0,
-			};
-		} else {
-			throw err;
-		}
+	if (await file.exists(x50Path)) {
+		size = await image.size(x50Path);
+	} else {
+		// For whatever reason the x50 logo wasn't generated, gracefully error out
+		winston.warn('[logo] The email-safe logo doesn\'t seem to have been created, please re-upload your site logo.');
+		size = {
+			height: 0,
+			width: 0,
+		};
 	}
 	data['brand:emailLogo'] = nconf.get('url') + path.join(nconf.get('upload_url'), 'system', 'site-logo-x50.png');
 	data['brand:emailLogo:height'] = size.height;
 	data['brand:emailLogo:width'] = size.width;
+}
+
+async function updateNavItems(data) {
+	if (data.hasOwnProperty('activitypubEnabled')) {
+		const navAdmin = require('../navigation/admin');
+		await navAdmin.update('/world', { enabled: data.activitypubEnabled ? 'on' : '' });
+	}
 }
 
 function updateConfig(config) {

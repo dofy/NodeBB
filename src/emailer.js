@@ -6,16 +6,17 @@ const Benchpress = require('benchpressjs');
 const nodemailer = require('nodemailer');
 const wellKnownServices = require('nodemailer/lib/well-known/services');
 const { htmlToText } = require('html-to-text');
-const url = require('url');
 const path = require('path');
 const fs = require('fs');
 const _ = require('lodash');
 const jwt = require('jsonwebtoken');
 
+const db = require('./database');
 const User = require('./user');
 const Plugins = require('./plugins');
 const meta = require('./meta');
 const translator = require('./translator');
+const languages = require('./languages');
 const pubsub = require('./pubsub');
 const file = require('./file');
 
@@ -55,8 +56,7 @@ const smtpSettingsChanged = (config) => {
 
 const getHostname = () => {
 	const configUrl = nconf.get('url');
-	const parsed = url.parse(configUrl);
-	return parsed.hostname;
+	return new URL(configUrl).hostname;
 };
 
 const buildCustomTemplates = async (config) => {
@@ -119,45 +119,53 @@ Emailer.setupFallbackTransport = (config) => {
 	winston.verbose('[emailer] Setting up fallback transport');
 	// Enable SMTP transport if enabled in ACP
 	if (parseInt(config['email:smtpTransport:enabled'], 10) === 1) {
-		const smtpOptions = {
-			name: getHostname(),
-			pool: config['email:smtpTransport:pool'],
-		};
-
-		if (config['email:smtpTransport:user'] || config['email:smtpTransport:pass']) {
-			smtpOptions.auth = {
-				user: config['email:smtpTransport:user'],
-				pass: config['email:smtpTransport:pass'],
-			};
-		}
-
-		if (config['email:smtpTransport:service'] === 'nodebb-custom-smtp') {
-			smtpOptions.port = config['email:smtpTransport:port'];
-			smtpOptions.host = config['email:smtpTransport:host'];
-
-			if (config['email:smtpTransport:security'] === 'NONE') {
-				smtpOptions.secure = false;
-				smtpOptions.requireTLS = false;
-				smtpOptions.ignoreTLS = true;
-			} else if (config['email:smtpTransport:security'] === 'STARTTLS') {
-				smtpOptions.secure = false;
-				smtpOptions.requireTLS = true;
-				smtpOptions.ignoreTLS = false;
-			} else {
-				// meta.config['email:smtpTransport:security'] === 'ENCRYPTED' or undefined
-				smtpOptions.secure = true;
-				smtpOptions.requireTLS = true;
-				smtpOptions.ignoreTLS = false;
-			}
-		} else {
-			smtpOptions.service = String(config['email:smtpTransport:service']);
-		}
-
-		Emailer.transports.smtp = nodemailer.createTransport(smtpOptions);
+		Emailer.transports.smtp = Emailer.createSmtpTransport(config);
 		Emailer.fallbackTransport = Emailer.transports.smtp;
 	} else {
 		Emailer.fallbackTransport = Emailer.transports.sendmail;
 	}
+};
+
+Emailer.createSmtpTransport = (config) => {
+	const smtpOptions = {
+		name: getHostname(),
+		pool: config['email:smtpTransport:pool'],
+	};
+
+	if (config['email:smtpTransport:user'] || config['email:smtpTransport:pass']) {
+		smtpOptions.auth = {
+			user: config['email:smtpTransport:user'],
+			pass: config['email:smtpTransport:pass'],
+		};
+	}
+
+	if (config['email:smtpTransport:service'] === 'nodebb-custom-smtp') {
+		smtpOptions.port = config['email:smtpTransport:port'];
+		smtpOptions.host = config['email:smtpTransport:host'];
+
+		if (config['email:smtpTransport:security'] === 'NONE') {
+			smtpOptions.secure = false;
+			smtpOptions.requireTLS = false;
+			smtpOptions.ignoreTLS = true;
+		} else if (config['email:smtpTransport:security'] === 'STARTTLS') {
+			smtpOptions.secure = false;
+			smtpOptions.requireTLS = true;
+			smtpOptions.ignoreTLS = false;
+		} else {
+			// meta.config['email:smtpTransport:security'] === 'ENCRYPTED' or undefined
+			smtpOptions.secure = true;
+			smtpOptions.requireTLS = true;
+			smtpOptions.ignoreTLS = false;
+		}
+	} else {
+		smtpOptions.service = String(config['email:smtpTransport:service']);
+	}
+	if (config['email:smtpTransport:allow-self-signed']) {
+		smtpOptions.tls = {
+			rejectUnauthorized: false,
+		};
+	}
+	return nodemailer.createTransport(smtpOptions);
 };
 
 Emailer.registerApp = (expressApp) => {
@@ -220,9 +228,16 @@ Emailer.send = async (template, uid, params) => {
 
 	let userData = await User.getUserFields(uid, ['email', 'username', 'email:confirmed', 'banned']);
 
-	// 'welcome' and 'verify-email' explicitly used passed-in email address
-	if (['welcome', 'verify-email'].includes(template)) {
+	// 'welcome', 'verify-email' & 'registration_accepted' explicitly use passed-in email address
+	if (['welcome', 'verify-email', 'registration_accepted'].includes(template)) {
 		userData.email = params.email;
+	} else if (meta.config.includeUnverifiedEmails && !userData.email) {
+		// get unconfirmed email to use
+		const code = await db.get(`confirm:byUid:${uid}`);
+		const confirmObj = code ? await db.getObject(`confirm:${code}`) : null;
+		if (confirmObj && confirmObj.email) {
+			userData.email = String(confirmObj.email);
+		}
 	}
 
 	({ template, userData, params } = await Plugins.hooks.fire('filter:email.prepare', { template, uid, userData, params }));
@@ -253,7 +268,8 @@ Emailer.send = async (template, uid, params) => {
 	params = { ...Emailer._defaultPayload, ...params };
 	params.uid = uid;
 	params.username = userData.username;
-	params.rtl = await translator.translate('[[language:dir]]', userSettings.userLang) === 'rtl';
+	params.displayname = userData.displayname;
+	params.rtl = translator.languageDirection(userSettings.userLang) === 'rtl';
 
 	const result = await Plugins.hooks.fire('filter:email.cancel', {
 		cancel: false, // set to true in plugin to cancel sending email
@@ -331,10 +347,7 @@ Emailer.sendToEmail = async (template, email, language, params) => {
 	const usingFallback = !Plugins.hooks.hasListeners('filter:email.send') &&
 		!Plugins.hooks.hasListeners('static:email.send');
 	try {
-		if (Plugins.hooks.hasListeners('filter:email.send')) {
-			// Deprecated, remove in v1.19.0
-			await Plugins.hooks.fire('filter:email.send', data);
-		} else if (Plugins.hooks.hasListeners('static:email.send')) {
+		if (Plugins.hooks.hasListeners('static:email.send')) {
 			await Plugins.hooks.fire('static:email.send', data);
 		} else {
 			await Emailer.sendViaFallback(data);
@@ -354,14 +367,20 @@ Emailer.sendViaFallback = async (data) => {
 	data.text = data.plaintext;
 	delete data.plaintext;
 
-	// NodeMailer uses a combined "from"
-	data.from = `${data.from_name}<${data.from}>`;
+	// use an address object https://nodemailer.com/message/addresses/
+	data.from = {
+		name: data.from_name,
+		address: data.from,
+	};
 	delete data.from_name;
 	await Emailer.fallbackTransport.sendMail(data);
 };
 
 Emailer.renderAndTranslate = async (template, params, lang) => {
-	const html = await app.renderAsync(`emails/${template}`, params);
+	const html = await app.renderAsync(`emails/${template}`, {
+		...params,
+		_i18n: languages.getFull(lang),
+	});
 	return await translator.translate(html, lang);
 };
 

@@ -1,6 +1,8 @@
 'use strict';
 
-define('forum/topic/diffs', ['api', 'bootbox', 'alerts', 'forum/topic/images'], function (api, bootbox, alerts) {
+define('forum/topic/diffs', [
+	'api', 'modals', 'alerts', 'benchpress', 'forum/topic/images',
+], function (api, modals, alerts, Benchpress) {
 	const Diffs = {};
 	const localeStringOpts = { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: 'numeric' };
 
@@ -9,11 +11,11 @@ define('forum/topic/diffs', ['api', 'bootbox', 'alerts', 'forum/topic/images'], 
 			return;
 		}
 
-		api.get(`/posts/${pid}/diffs`, {}).then((data) => {
-			parsePostHistory(data).then(($html) => {
-				const $modal = bootbox.dialog({
+		api.get(`/posts/${encodeURIComponent(pid)}/diffs`, {}).then((data) => {
+			parsePostHistory(data).then(async (html) => {
+				const $modal = await modals.dialog({
 					title: '[[topic:diffs.title]]',
-					message: $html,
+					message: html,
 					size: 'large',
 					onEscape: true,
 					backdrop: true,
@@ -57,7 +59,7 @@ define('forum/topic/diffs', ['api', 'bootbox', 'alerts', 'forum/topic/images'], 
 			return;
 		}
 
-		api.get(`/posts/${pid}/diffs/${since}`, {}).then((data) => {
+		api.get(`/posts/${encodeURIComponent(pid)}/diffs/${since}`, {}).then((data) => {
 			data.deleted = !!parseInt(data.deleted, 10);
 
 			app.parseAndTranslate('partials/posts_list', 'posts', {
@@ -74,16 +76,16 @@ define('forum/topic/diffs', ['api', 'bootbox', 'alerts', 'forum/topic/images'], 
 			return;
 		}
 
-		api.put(`/posts/${pid}/diffs/${since}`, {}).then(() => {
+		api.put(`/posts/${encodeURIComponent(pid)}/diffs/${since}`, {}).then(() => {
 			$modal.modal('hide');
 			alerts.success('[[topic:diffs.post-restored]]');
 		}).catch(alerts.error);
 	};
 
 	Diffs.delete = function (pid, timestamp, $selectEl, $numberOfDiffCon) {
-		api.del(`/posts/${pid}/diffs/${timestamp}`).then((data) => {
-			parsePostHistory(data, 'diffs').then(($html) => {
-				$selectEl.empty().append($html);
+		api.del(`/posts/${encodeURIComponent(pid)}/diffs/${timestamp}`).then((data) => {
+			parsePostHistory(data, 'diffs').then((html) => {
+				$selectEl.empty().append(html);
 				$selectEl.trigger('change');
 				const numberOfDiffs = $selectEl.find('option').length;
 				$numberOfDiffCon.text(numberOfDiffs);
@@ -92,31 +94,28 @@ define('forum/topic/diffs', ['api', 'bootbox', 'alerts', 'forum/topic/images'], 
 		}).catch(alerts.error);
 	};
 
-	function parsePostHistory(data, blockName) {
-		return new Promise((resolve) => {
-			const params = [{
-				diffs: data.revisions.map(function (revision) {
-					const timestamp = parseInt(revision.timestamp, 10);
+	async function parsePostHistory(data, blockName) {
+		const params = [{
+			diffs: data.revisions.map(function (revision) {
+				const timestamp = parseInt(revision.timestamp, 10);
 
-					return {
-						username: revision.username,
-						timestamp: timestamp,
-						pretty: new Date(timestamp).toLocaleString(config.userLang.replace('_', '-'), localeStringOpts),
-					};
-				}),
-				numDiffs: data.timestamps.length,
-				editable: data.editable,
-				deletable: data.deletable,
-			}, function ($html) {
-				resolve($html);
-			}];
+				return {
+					username: revision.username,
+					timestamp: timestamp,
+					pretty: new Date(timestamp).toLocaleString(config.userLang.replace('_', '-'), localeStringOpts),
+				};
+			}),
+			numDiffs: data.timestamps.length,
+			editable: data.editable,
+			deletable: data.deletable,
+		}];
 
-			if (blockName) {
-				params.unshift(blockName);
-			}
+		if (blockName) {
+			params.unshift(blockName);
+		}
 
-			app.parseAndTranslate('modals/post-history', ...params);
-		});
+		return await Benchpress.render('modals/post-history', ...params);
+
 	}
 
 	return Diffs;

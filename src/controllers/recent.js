@@ -22,9 +22,9 @@ recentController.get = async function (req, res, next) {
 	res.render('recent', data);
 };
 
-recentController.getData = async function (req, url, sort) {
+recentController.getData = async function (req, url, sort, selectedTerm = 'alltime') {
 	const page = parseInt(req.query.page, 10) || 1;
-	let term = helpers.terms[req.query.term];
+	let term = helpers.terms[req.query.term || selectedTerm];
 	const { cid, tag } = req.query;
 	const filter = req.query.filter || '';
 
@@ -35,7 +35,7 @@ recentController.getData = async function (req, url, sort) {
 
 	const [settings, categoryData, tagData, rssToken, canPost, isPrivileged] = await Promise.all([
 		user.getSettings(req.uid),
-		helpers.getSelectedCategory(cid),
+		helpers.getSelectedCategory(cid, req.uid),
 		helpers.getSelectedTag(tag),
 		user.auth.getFeedToken(req.uid),
 		privileges.categories.canPostTopic(req.uid),
@@ -79,6 +79,7 @@ recentController.getData = async function (req, url, sort) {
 	data.selectedTag = tagData.selectedTag;
 	data.selectedTags = tagData.selectedTags;
 	data['feeds:disableRSS'] = meta.config['feeds:disableRSS'] || 0;
+	data['reputation:disabled'] = meta.config['reputation:disabled'];
 	if (!meta.config['feeds:disableRSS']) {
 		data.rssFeedUrl = `${relative_path}/${url}.rss`;
 		if (req.loggedIn) {
@@ -90,7 +91,7 @@ recentController.getData = async function (req, url, sort) {
 	data.selectedFilter = data.filters.find(filter => filter && filter.selected);
 	data.terms = helpers.buildTerms(baseUrl, term, query);
 	data.selectedTerm = data.terms.find(term => term && term.selected);
-
+	data.topic_count = data.topicCount;
 	const pageCount = Math.max(1, Math.ceil(data.topicCount / settings.topicsPerPage));
 	data.pagination = pagination.create(page, pageCount, req.query);
 	helpers.addLinkTags({

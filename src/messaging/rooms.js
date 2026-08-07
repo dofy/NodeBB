@@ -1,7 +1,6 @@
 'use strict';
 
 const _ = require('lodash');
-const validator = require('validator');
 const winston = require('winston');
 
 const db = require('../database');
@@ -12,16 +11,19 @@ const privileges = require('../privileges');
 const meta = require('../meta');
 const io = require('../socket.io');
 const cache = require('../cache');
-const cacheCreate = require('../cacheCreate');
+const cacheCreate = require('../cache/lru');
+const utils = require('../utils');
+const tx = require('../translator');
 
 const roomUidCache = cacheCreate({
-	name: 'chat:room:uids',
+	name: 'chat-room-uids',
 	max: 500,
 	ttl: 0,
 });
 
 const intFields = [
-	'roomId', 'timestamp', 'userCount',
+	'roomId', 'timestamp', 'userCount', 'messageCount',
+	'joinLeaveMessages', 'notificationSetting',
 ];
 
 module.exports = function (Messaging) {
@@ -46,7 +48,7 @@ module.exports = function (Messaging) {
 		rooms.forEach((data) => {
 			if (data) {
 				db.parseIntFields(data, intFields, fields);
-				data.roomName = validator.escape(String(data.roomName || ''));
+				data.roomName = String(data.roomName || '');
 				data.public = parseInt(data.public, 10) === 1;
 				data.groupChat = data.userCount > 2;
 
@@ -86,6 +88,8 @@ module.exports = function (Messaging) {
 			roomId: roomId,
 			timestamp: now,
 			notificationSetting: data.notificationSetting,
+			messageCount: 0,
+			joinLeaveMessages: data.joinLeaveMessages || 0,
 		};
 
 		if (data.hasOwnProperty('roomName') && data.roomName) {
@@ -102,11 +106,15 @@ module.exports = function (Messaging) {
 		await Promise.all([
 			db.setObject(`chat:room:${roomId}`, room),
 			db.sortedSetAdd('chat:rooms', now, roomId),
-			db.sortedSetAdd(`chat:room:${roomId}:owners`, now, uid),
-			db.sortedSetsAdd([
-				`chat:room:${roomId}:uids`,
-				`chat:room:${roomId}:uids:online`,
-			], now, uid),
+			db.sortedSetAddBulk([
+				[`chat:room:${roomId}:uids`, now, uid],
+				[`chat:room:${roomId}:uids:online`, now, uid],
+				...(
+					isPublic ?
+						[[`chat:room:${roomId}:owners`, now, uid]] :
+						[uid].concat(data.uids).map(uid => ([`chat:room:${roomId}:owners`, now, uid]))
+				),
+			]),
 		]);
 
 		await Promise.all([
@@ -124,8 +132,7 @@ module.exports = function (Messaging) {
 			'chat:rooms:public:order:all',
 		]);
 
-		if (!isPublic) {
-			// chat owner should also get the user-join system message
+		if (!isPublic && parseInt(room.joinLeaveMessages, 10) === 1) {
 			await Messaging.addSystemMessage('user-join', uid, roomId);
 		}
 
@@ -231,15 +238,24 @@ module.exports = function (Messaging) {
 		return isArray ? result : result[0];
 	};
 
-	Messaging.toggleOwner = async (uid, roomId) => {
+	Messaging.toggleOwner = async (uid, roomId, state = null) => {
 		if (!(parseInt(uid, 10) > 0) || !roomId) {
-			return;
+			throw new Error('[[error:invalid-data]]');
 		}
+
 		const isOwner = await Messaging.isRoomOwner(uid, roomId);
-		if (isOwner) {
-			await db.sortedSetRemove(`chat:room:${roomId}:owners`, uid);
+		if (state !== null) {
+			if (state === isOwner) {
+				return false;
+			}
 		} else {
+			state = !isOwner;
+		}
+
+		if (state) {
 			await db.sortedSetAdd(`chat:room:${roomId}:owners`, Date.now(), uid);
+		} else {
+			await db.sortedSetRemove(`chat:room:${roomId}:owners`, uid);
 		}
 	};
 
@@ -249,6 +265,13 @@ module.exports = function (Messaging) {
 
 	Messaging.addUsersToRoom = async function (uid, uids, roomId) {
 		uids = _.uniq(uids);
+
+		// Public rooms must only contain local users
+		const isPublic = await db.getObjectField(`chat:room:${roomId}`, 'public');
+		if (parseInt(isPublic, 10) === 1 && uids.some(uid => !utils.isNumber(uid))) {
+			throw new Error('[[error:invalid-uid]]');
+		}
+
 		const inRoom = await Messaging.isUserInRoom(uid, roomId);
 		const payload = await plugins.hooks.fire('filter:messaging.addUsersToRoom', { uid, uids, roomId, inRoom });
 
@@ -262,12 +285,22 @@ module.exports = function (Messaging) {
 	async function addUidsToRoom(uids, roomId) {
 		const now = Date.now();
 		const timestamps = uids.map(() => now);
+
 		await Promise.all([
 			db.sortedSetAdd(`chat:room:${roomId}:uids`, timestamps, uids),
 			db.sortedSetAdd(`chat:room:${roomId}:uids:online`, timestamps, uids),
 		]);
 		await updateUserCount([roomId]);
-		await Promise.all(uids.map(uid => Messaging.addSystemMessage('user-join', uid, roomId)));
+		if (await joinLeaveMessagesEnabled(roomId)) {
+			await Promise.all(
+				uids.map(uid => Messaging.addSystemMessage('user-join', uid, roomId))
+			);
+		}
+	}
+
+	async function joinLeaveMessagesEnabled(roomId) {
+		const roomData = await Messaging.getRoomData(roomId, ['joinLeaveMessages']);
+		return roomData && roomData.joinLeaveMessages === 1;
 	}
 
 	Messaging.removeUsersFromRoom = async (uid, uids, roomId) => {
@@ -301,7 +334,10 @@ module.exports = function (Messaging) {
 	}
 
 	Messaging.leaveRoom = async (uids, roomId) => {
-		const isInRoom = await Promise.all(uids.map(uid => Messaging.isUserInRoom(uid, roomId)));
+		if (!utils.isNumber(roomId) || !Array.isArray(uids)) {
+			throw new Error('[[error:invalid-data]]');
+		}
+		const isInRoom = await Messaging.isUsersInRoom(uids, roomId);
 		uids = uids.filter((uid, index) => isInRoom[index]);
 
 		const keys = uids
@@ -316,16 +352,24 @@ module.exports = function (Messaging) {
 			], uids),
 			db.sortedSetsRemove(keys, roomId),
 		]);
-
-		await Promise.all(uids.map(uid => Messaging.addSystemMessage('user-leave', uid, roomId)));
+		if (await joinLeaveMessagesEnabled(roomId)) {
+			await Promise.all(
+				uids.map(uid => Messaging.addSystemMessage('user-leave', uid, roomId))
+			);
+		}
 		await updateOwner(roomId);
 		await updateUserCount([roomId]);
 	};
 
 	Messaging.leaveRooms = async (uid, roomIds) => {
-		const isInRoom = await Promise.all(roomIds.map(roomId => Messaging.isUserInRoom(uid, roomId)));
+		if (!Array.isArray(roomIds)) {
+			throw new Error('[[error:invalid-data]]');
+		}
+		const isInRoom = await Messaging.isUserInRoom(uid, roomIds);
 		roomIds = roomIds.filter((roomId, index) => isInRoom[index]);
-
+		if (!roomIds.length) {
+			return;
+		}
 		const roomKeys = [
 			...roomIds.map(roomId => `chat:room:${roomId}:uids`),
 			...roomIds.map(roomId => `chat:room:${roomId}:owners`),
@@ -339,10 +383,13 @@ module.exports = function (Messaging) {
 			], roomIds),
 		]);
 
-		await Promise.all(
-			roomIds.map(roomId => updateOwner(roomId))
-				.concat(roomIds.map(roomId => Messaging.addSystemMessage('user-leave', uid, roomId)))
-		);
+		await Promise.all(roomIds.map(async (roomId) => {
+			await updateOwner(roomId);
+			if (await joinLeaveMessagesEnabled(roomId)) {
+				await Messaging.addSystemMessage('user-leave', uid, roomId);
+			}
+		}));
+
 		await updateUserCount(roomIds);
 	};
 
@@ -413,7 +460,12 @@ module.exports = function (Messaging) {
 		}
 
 		await db.setObjectField(`chat:room:${payload.roomId}`, 'roomName', payload.newName);
-		await Messaging.addSystemMessage(`room-rename, ${payload.newName.replace(',', '&#44;')}`, payload.uid, payload.roomId);
+		await Messaging.addSystemMessage(
+			'room-rename',
+			payload.uid,
+			payload.roomId,
+			[tx.escape(payload.newName)]
+		);
 
 		plugins.hooks.fire('action:chat.renameRoom', {
 			roomId: payload.roomId,
@@ -495,16 +547,16 @@ module.exports = function (Messaging) {
 			return { options, selectedIcon: labels[currentSetting].icon };
 		}
 
-		const [canReply, users, messages, settings, isOwner, onlineUids, notifOptions] = await Promise.all([
+		const [canReply, users, messages, isOwner, onlineUids, notifOptions] = await Promise.all([
 			Messaging.canReply(roomId, uid),
 			Messaging.getUsersInRoomFromSet(`chat:room:${roomId}:uids:online`, roomId, 0, 39, true),
 			Messaging.getMessages({
 				callerUid: uid,
+				start: data.start || 0,
 				uid: data.uid || uid,
 				roomId: roomId,
 				isNew: false,
 			}),
-			user.getSettings(uid),
 			Messaging.isRoomOwner(uid, roomId),
 			io.getUidsInRoom(`chat_room_${roomId}`),
 			getNotificationOptions(),
@@ -513,7 +565,8 @@ module.exports = function (Messaging) {
 
 		users.forEach((user) => {
 			if (user) {
-				user.online = parseInt(user.uid, 10) === parseInt(uid, 10) || onlineUids.includes(String(user.uid));
+				const userUid = String(user.uid);
+				user.online = userUid === String(uid) || onlineUids.includes(userUid);
 			}
 		});
 
@@ -524,7 +577,7 @@ module.exports = function (Messaging) {
 		room.groupChat = users.length > 2;
 		room.icon = Messaging.getRoomIcon(room);
 		room.usernames = Messaging.generateUsernames(room, uid);
-		room.chatWithMessage = await Messaging.generateChatWithMessage(room, uid, settings.userLang);
+		room.chatWithMessage = await Messaging.generateChatWithMessage(room, uid);
 		room.maximumUsersInChatRoom = meta.config.maximumUsersInChatRoom;
 		room.maximumChatMessageLength = meta.config.maximumChatMessageLength;
 		room.showUserInput = !room.maximumUsersInChatRoom || room.maximumUsersInChatRoom > 2;

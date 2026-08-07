@@ -2,10 +2,10 @@
 
 define('settings/sorted-list', [
 	'benchpress',
-	'bootbox',
+	'modals',
 	'hooks',
 	'jquery-ui/widgets/sortable',
-], function (benchpress, bootbox, hooks) {
+], function (benchpress, modals, hooks) {
 	let Settings;
 
 
@@ -38,8 +38,8 @@ define('settings/sorted-list', [
 
 			const addBtn = $('[data-sorted-list="' + key + '"] [data-type="add"]');
 
-			addBtn.on('click', function () {
-				const modal = bootbox.confirm(formHtml, function (save) {
+			addBtn.on('click', async function () {
+				const modal = await modals.confirm(formHtml, function (save) {
 					if (save) {
 						SortedList.addItem(modal.find('form').children(), $container);
 					}
@@ -64,7 +64,6 @@ define('settings/sorted-list', [
 				}));
 
 				// todo: parse() needs to be refactored to return the html, so multiple calls can be parallelized
-				// eslint-disable-next-line no-restricted-syntax
 				for (const { itemUUID, item } of items) {
 					// eslint-disable-next-line no-await-in-loop
 					const element = await parse($container, itemUUID, item);
@@ -107,7 +106,7 @@ define('settings/sorted-list', [
 		const key = $container.attr('data-sorted-list');
 		const editBtn = $('[data-sorted-list-uuid="' + itemUUID + '"] [data-type="edit"]');
 
-		editBtn.on('click', function () {
+		editBtn.on('click', async function () {
 			const form = $('[data-sorted-list-uuid="' + itemUUID + '"][data-sorted-list-object="' + key + '"]');
 			const clone = form.clone(true).show();
 
@@ -116,7 +115,7 @@ define('settings/sorted-list', [
 				el.value = form.find(`select#${el.id}`).val();
 			});
 
-			const modal = bootbox.confirm(clone, async (save) => {
+			const modal = await modals.confirm(clone, async (save) => {
 				if (save) {
 					const form = $('<form class="" data-sorted-list-uuid="' + itemUUID + '" data-sorted-list-object="' + key + '"></form>');
 					form.append(modal.find('form').children());

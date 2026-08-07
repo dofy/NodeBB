@@ -1,18 +1,21 @@
 'use strict';
 
-define('categorySearch', ['alerts', 'bootstrap'], function (alerts, bootstrap) {
+define('categorySearch', ['alerts', 'bootstrap', 'api'], function (alerts, bootstrap, api) {
 	const categorySearch = {};
 
 	categorySearch.init = function (el, options) {
-		let categoriesList = null;
+		let categoriesList = options.defaultCategories || null;
 		options = options || {};
 		options.privilege = options.privilege || 'topics:read';
-		options.states = options.states || ['watching', 'notwatching', 'ignoring'];
+		options.states = options.states || ['watching', 'tracking', 'notwatching', 'ignoring'];
 		options.cacheList = options.hasOwnProperty('cacheList') ? options.cacheList : true;
 
 		let localCategories = [];
 		if (Array.isArray(options.localCategories)) {
 			localCategories = options.localCategories.map(c => ({ ...c }));
+			if (categoriesList) {
+				categoriesList = [...localCategories, ...categoriesList];
+			}
 		}
 		options.selectedCids = options.selectedCids || ajaxify.data.selectedCids || [];
 
@@ -21,16 +24,12 @@ define('categorySearch', ['alerts', 'bootstrap'], function (alerts, bootstrap) {
 			return;
 		}
 
-		const toggleVisibility = searchEl.parent('[component="category/dropdown"]').length > 0 ||
-			searchEl.parent('[component="category-selector"]').length > 0;
+		const toggleVisibility = searchEl.parents('[component="category/dropdown"]').length > 0 ||
+			searchEl.parents('[component="category-selector"]').length > 0;
 
 		el.on('show.bs.dropdown', function () {
 			if (toggleVisibility) {
-				el.find('.dropdown-toggle').css({ visibility: 'hidden' });
 				searchEl.removeClass('hidden');
-				searchEl.css({
-					'z-index': el.find('.dropdown-toggle').css('z-index') + 1,
-				});
 			}
 
 			function doSearch() {
@@ -44,12 +43,23 @@ define('categorySearch', ['alerts', 'bootstrap'], function (alerts, bootstrap) {
 					renderList(categoriesList);
 				}
 			}
+			const searchInput = searchEl.find('input').val('');
+			searchInput.on('keydown', function (ev) {
+				if (ev.key === 'ArrowDown') {
+					const firstItem = el.find('[component="category/list"] li[data-cid]:first a');
+					if (firstItem.length) {
+						firstItem.focus();
+						ev.stopPropagation();
+						ev.preventDefault();
+					}
+				}
+			});
 
 			searchEl.on('click', function (ev) {
 				ev.preventDefault();
 				ev.stopPropagation();
 			});
-			searchEl.find('input').val('').on('keyup', utils.debounce(doSearch, 300));
+			searchInput.on('keyup', utils.debounce(doSearch, 300));
 			doSearch();
 		});
 
@@ -61,16 +71,15 @@ define('categorySearch', ['alerts', 'bootstrap'], function (alerts, bootstrap) {
 
 		el.on('hide.bs.dropdown', function () {
 			if (toggleVisibility) {
-				el.find('.dropdown-toggle').css({ visibility: 'inherit' });
 				searchEl.addClass('hidden');
 			}
 
 			searchEl.off('click');
-			searchEl.find('input').off('keyup');
+			searchEl.find('input').off('keyup keydown');
 		});
 
 		function loadList(search, callback) {
-			socket.emit('categories.categorySearch', {
+			api.get('/search/categories', {
 				search: search,
 				query: utils.params(),
 				parentCid: options.parentCid || 0,
@@ -78,7 +87,9 @@ define('categorySearch', ['alerts', 'bootstrap'], function (alerts, bootstrap) {
 				privilege: options.privilege,
 				states: options.states,
 				showLinks: options.showLinks,
-			}, function (err, categories) {
+				localOnly: options.localOnly,
+				hideUncategorized: options.hideUncategorized,
+			}, function (err, { categories }) {
 				if (err) {
 					return alerts.error(err);
 				}
@@ -88,13 +99,18 @@ define('categorySearch', ['alerts', 'bootstrap'], function (alerts, bootstrap) {
 
 		function renderList(categories) {
 			const selectedCids = options.selectedCids.map(String);
+			const disabledCids = (options.disabledCids || []).map(String);
 			categories.forEach(function (c) {
 				c.selected = selectedCids.includes(String(c.cid));
+				if (disabledCids.includes(String(c.cid))) {
+					c.disabledClass = true;
+				}
 			});
 			app.parseAndTranslate(options.template, {
 				categoryItems: categories.slice(0, 200),
 				selectedCategory: ajaxify.data.selectedCategory,
 				allCategoriesUrl: ajaxify.data.allCategoriesUrl,
+				hideAll: options.hideAll,
 			}, function (html) {
 				el.find('[component="category/list"]')
 					.html(html.find('[component="category/list"]').html());

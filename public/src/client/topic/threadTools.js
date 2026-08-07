@@ -8,10 +8,12 @@ define('forum/topic/threadTools', [
 	'forum/topic/posts',
 	'api',
 	'hooks',
-	'bootbox',
+	'modals',
 	'alerts',
 	'bootstrap',
-], function (components, translator, handleBack, posts, api, hooks, bootbox, alerts, bootstrap) {
+	'helpers',
+	'benchpress',
+], function (components, translator, handleBack, posts, api, hooks, modals, alerts, bootstrap, helpers, Benchpress) {
 	const ThreadTools = {};
 
 	ThreadTools.init = function (tid, topicContainer) {
@@ -84,12 +86,24 @@ define('forum/topic/threadTools', [
 
 		topicContainer.on('click', '[component="topic/event/delete"]', function () {
 			const eventId = $(this).attr('data-topic-event-id');
-			const eventEl = $(this).parents('[component="topic/event"]');
-			bootbox.confirm('[[topic:delete-event-confirm]]', (ok) => {
+			const eventEl = $(this).parents('[data-topic-event-id]');
+			modals.confirm('[[topic:delete-event-confirm]]', (ok) => {
 				if (ok) {
 					api.del(`/topics/${tid}/events/${eventId}`, {})
 						.then(function () {
+							const itemsParent = eventEl.parents('[component="topic/event/items"]');
 							eventEl.remove();
+							if (itemsParent.length) {
+								const childrenCount = itemsParent.children().length;
+								const eventParent = itemsParent.parents('[component="topic/event"]');
+								if (!childrenCount) {
+									eventParent.remove();
+								} else {
+									eventParent
+										.find('[data-bs-toggle]')
+										.translateText(`[[topic:announcers-x, ${childrenCount}]]`);
+								}
+							}
 						})
 						.catch(alerts.error);
 				}
@@ -101,6 +115,12 @@ define('forum/topic/threadTools', [
 				move.init([tid], ajaxify.data.cid);
 			});
 			return false;
+		});
+
+		topicContainer.on('click', '[component="topic/crosspost"]', () => {
+			require(['forum/topic/crosspost'], (crosspost) => {
+				crosspost.init(tid, ajaxify.data.cid);
+			});
 		});
 
 		topicContainer.on('click', '[component="topic/delete/posts"]', function () {
@@ -211,7 +231,8 @@ define('forum/topic/threadTools', [
 			if (dropdownMenu.attr('data-loaded')) {
 				return;
 			}
-			const data = await socket.emit('topics.loadTopicTools', { tid: ajaxify.data.tid, cid: ajaxify.data.cid });
+			dropdownMenu.html(helpers.generatePlaceholderWave([8, 8, 8]));
+			const data = await socket.emit('topics.loadTopicTools', { tid: ajaxify.data.tid, cid: ajaxify.data.cid }).catch(alerts.error);
 			const html = await app.parseAndTranslate('partials/topic/topic-menu-list', data);
 			$(dropdownMenu).attr('data-loaded', 'true').html(html);
 			hooks.fire('action:topic.tools.load', {
@@ -238,7 +259,7 @@ define('forum/topic/threadTools', [
 			case 'delete':
 			case 'restore':
 			case 'purge':
-				bootbox.confirm(`[[topic:thread-tools.${command}-confirm]]`, execute);
+				modals.confirm(`[[topic:thread-tools.${command}-confirm]]`, execute);
 				break;
 
 			case 'pin':
@@ -252,8 +273,8 @@ define('forum/topic/threadTools', [
 	}
 
 	ThreadTools.requestPinExpiry = function (body, onSuccess) {
-		app.parseAndTranslate('modals/set-pin-expiry', {}, function (html) {
-			const modal = bootbox.dialog({
+		Benchpress.render('modals/set-pin-expiry', {}).then(async (html) => {
+			const modal = await modals.dialog({
 				title: '[[topic:thread-tools.pin]]',
 				message: html,
 				onEscape: true,
@@ -292,7 +313,7 @@ define('forum/topic/threadTools', [
 
 	ThreadTools.setLockedState = function (data) {
 		const threadEl = components.get('topic');
-		if (parseInt(data.tid, 10) !== parseInt(threadEl.attr('data-tid'), 10)) {
+		if (String(data.tid) !== threadEl.attr('data-tid')) {
 			return;
 		}
 
@@ -320,7 +341,7 @@ define('forum/topic/threadTools', [
 
 	ThreadTools.setDeleteState = function (data) {
 		const threadEl = components.get('topic');
-		if (parseInt(data.tid, 10) !== parseInt(threadEl.attr('data-tid'), 10)) {
+		if (String(data.tid) !== threadEl.attr('data-tid')) {
 			return;
 		}
 
@@ -354,7 +375,7 @@ define('forum/topic/threadTools', [
 
 	ThreadTools.setPinnedState = function (data) {
 		const threadEl = components.get('topic');
-		if (parseInt(data.tid, 10) !== parseInt(threadEl.attr('data-tid'), 10)) {
+		if (String(data.tid) !== threadEl.attr('data-tid')) {
 			return;
 		}
 

@@ -31,14 +31,16 @@ define('forum/topic/delete-posts', [
 			postSelect.init(function () {
 				checkButtonEnable();
 				showPostsSelected();
+			}, {
+				allowMainPostSelect: true,
 			});
 			showPostsSelected();
 
 			deleteBtn.on('click', function () {
-				deletePosts(deleteBtn, pid => `/posts/${pid}/state`);
+				deletePosts(deleteBtn, pid => `/posts/${encodeURIComponent(pid)}/state`);
 			});
 			purgeBtn.on('click', function () {
-				deletePosts(purgeBtn, pid => `/posts/${pid}`);
+				deletePosts(purgeBtn, pid => `/posts/${encodeURIComponent(pid)}`);
 			});
 		});
 	};
@@ -62,9 +64,9 @@ define('forum/topic/delete-posts', [
 
 	function showPostsSelected() {
 		if (postSelect.pids.length) {
-			modal.find('#pids').translateHtml('[[topic:fork-pid-count, ' + postSelect.pids.length + ']]');
+			modal.find('#pids').translateText('[[topic:fork-pid-count, ' + postSelect.pids.length + ']]');
 		} else {
-			modal.find('#pids').translateHtml('[[topic:fork-no-pids]]');
+			modal.find('#pids').translateText('[[topic:fork-no-pids]]');
 		}
 	}
 

@@ -15,6 +15,12 @@ get:
       schema:
         type: string
       example: 1
+    - name: index
+      in: path
+      required: true
+      schema:
+        type: string
+      example: 1
   responses:
     "200":
       description: ""
@@ -32,6 +38,11 @@ get:
                     type: boolean
                   userCount:
                     type: number
+                  messageCount:
+                    type: number
+                  scrollToIndex:
+                    type: number
+                    nullable: true
                   icon:
                     type: string
                   groups:
@@ -45,6 +56,8 @@ get:
                     type: array
                   notificationOptionsIcon:
                     type: string
+                  joinLeaveMessages:
+                    type: number
                   messages:
                     type: array
                     items:
@@ -79,6 +92,9 @@ get:
                             uid:
                               type: number
                               description: A user identifier
+                            isLocal:
+                              type: boolean
+                              description: Whether the user belongs to the local installation or not.
                             username:
                               type: string
                               description: A friendly name for a given user account
@@ -108,6 +124,8 @@ get:
                                 `icon:text` for the user's auto-generated
                                 icon
                               example: "#f44336"
+                            banned_until:
+                              type: number
                             banned_until_readable:
                               type: string
                             deleted:
@@ -130,6 +148,9 @@ get:
                         uid:
                           type: number
                           description: A user identifier
+                        isLocal:
+                          type: boolean
+                          description: Whether the user belongs to the local installation or not.
                         username:
                           type: string
                           description: A friendly name for a given user account
@@ -160,6 +181,8 @@ get:
                           type: number
                   canReply:
                     type: boolean
+                  canUpload:
+                    type: boolean
                   groupChat:
                     type: boolean
                   usernames:
@@ -187,6 +210,8 @@ get:
                           type: boolean
                         userCount:
                           type: number
+                        messageCount:
+                          type: number
                         groups:
                           type: array
                         timestamp:
@@ -200,6 +225,9 @@ get:
                               uid:
                                 type: number
                                 description: A user identifier
+                              isLocal:
+                                type: boolean
+                                description: Whether the user belongs to the local installation or not.
                               username:
                                 type: string
                                 description: A friendly name for a given user account
@@ -238,6 +266,8 @@ get:
                         teaser:
                           type: object
                           properties:
+                            roomId:
+                              type: number
                             fromuid:
                               type: number
                             content:
@@ -253,6 +283,9 @@ get:
                                 uid:
                                   type: number
                                   description: A user identifier
+                                isLocal:
+                                  type: boolean
+                                  description: Whether the user belongs to the local installation or not.
                                 username:
                                   type: string
                                   description: A friendly name for a given user account
@@ -291,6 +324,9 @@ get:
                             uid:
                               type: number
                               description: A user identifier
+                            isLocal:
+                              type: boolean
+                              description: Whether the user belongs to the local installation or not.
                             username:
                               type: string
                               description: A friendly name for a given user account
@@ -328,6 +364,8 @@ get:
                           type: string
                         notificationSetting:
                           type: number
+                        joinLeaveMessages:
+                          type: number
                   publicRooms:
                     type: array
                     items:
@@ -351,6 +389,9 @@ get:
                               uid:
                                 type: number
                                 description: A user identifier
+                              isLocal:
+                                type: boolean
+                                description: Whether the user belongs to the local installation or not.
                               username:
                                 type: string
                                 description: A friendly name for a given user account
@@ -404,6 +445,9 @@ get:
                                 uid:
                                   type: number
                                   description: A user identifier
+                                isLocal:
+                                  type: boolean
+                                  description: Whether the user belongs to the local installation or not.
                                 username:
                                   type: string
                                   description: A friendly name for a given user account
@@ -442,6 +486,9 @@ get:
                             uid:
                               type: number
                               description: A user identifier
+                            isLocal:
+                              type: boolean
+                              description: Whether the user belongs to the local installation or not.
                             username:
                               type: string
                               description: A friendly name for a given user account

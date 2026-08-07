@@ -21,7 +21,12 @@ module.exports = function (Topics) {
 		}
 
 		const otherTids = tids.sort((a, b) => a - b)
-			.filter(tid => tid && parseInt(tid, 10) !== parseInt(mergeIntoTid, 10));
+			.filter(tid => tid && String(tid) !== String(mergeIntoTid));
+
+		await Promise.all([
+			posts.updateQueuedPostsTopic(mergeIntoTid, otherTids),
+			updateViewCount(mergeIntoTid, tids),
+		]);
 
 		for (const tid of otherTids) {
 			/* eslint-disable no-await-in-loop */
@@ -38,11 +43,6 @@ module.exports = function (Topics) {
 				mergedTimestamp: Date.now(),
 			});
 		}
-
-		await Promise.all([
-			posts.updateQueuedPostsTopic(mergeIntoTid, otherTids),
-			updateViewCount(mergeIntoTid, tids),
-		]);
 
 		plugins.hooks.fire('action:topic.merge', {
 			uid: uid,

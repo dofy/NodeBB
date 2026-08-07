@@ -6,7 +6,7 @@ const util = require('util');
 const semver = require('semver');
 const readline = require('readline');
 const winston = require('winston');
-const chalk = require('chalk');
+const chalk = require('chalk').default;
 
 const plugins = require('./plugins');
 const db = require('./database');
@@ -146,7 +146,6 @@ Upgrade.process = async function (files, skipCount) {
 			process.stdout.write(chalk.grey(' skipped\n'));
 
 			await db.sortedSetAdd('schemaLog', Date.now(), path.basename(file, '.js'));
-			// eslint-disable-next-line no-continue
 			continue;
 		}
 

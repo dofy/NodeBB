@@ -9,7 +9,7 @@ import {
 	Filler,
 } from 'chart.js';
 
-import * as bootbox from 'bootbox';
+import * as modals from 'modals';
 import * as alerts from '../../modules/alerts';
 
 Chart.register(
@@ -23,7 +23,6 @@ Chart.register(
 );
 
 
-// eslint-disable-next-line import/prefer-default-export
 export function init() {
 	setupCharts();
 
@@ -31,7 +30,7 @@ export function init() {
 }
 
 function clear404() {
-	bootbox.confirm('[[admin/advanced/errors:clear404-confirm]]', function (ok) {
+	modals.confirm('[[admin/advanced/errors:clear404-confirm]]', function (ok) {
 		if (ok) {
 			socket.emit('admin.errors.clear', {}, function (err) {
 				if (err) {
@@ -92,30 +91,29 @@ function setupCharts() {
 			],
 		},
 	};
+	const chartOptions = {
+		responsive: true,
+		scales: {
+			y: {
+				beginAtZero: true,
+			},
+		},
+		plugins: {
+			legend: {
+				display: false,
+			},
+		},
+	};
 
 	new Chart(notFoundCanvas.getContext('2d'), {
 		type: 'line',
 		data: data['not-found'],
-		options: {
-			responsive: true,
-			scales: {
-				y: {
-					beginAtZero: true,
-				},
-			},
-		},
+		options: chartOptions,
 	});
 
 	new Chart(tooBusyCanvas.getContext('2d'), {
 		type: 'line',
 		data: data.toobusy,
-		options: {
-			responsive: true,
-			scales: {
-				y: {
-					beginAtZero: true,
-				},
-			},
-		},
+		options: chartOptions,
 	});
 }

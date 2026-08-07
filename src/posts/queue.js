@@ -1,7 +1,6 @@
 'use strict';
 
 const _ = require('lodash');
-const validator = require('validator');
 const nconf = require('nconf');
 
 const db = require('../database');
@@ -16,6 +15,9 @@ const plugins = require('../plugins');
 const utils = require('../utils');
 const cache = require('../cache');
 const socketHelpers = require('../socket.io/helpers');
+const helpers = require('../helpers');
+
+const upload_url = nconf.get('relative_path') + nconf.get('upload_url');
 
 module.exports = function (Posts) {
 	Posts.getQueuedPosts = async (filter = {}, options = {}) => {
@@ -24,46 +26,52 @@ module.exports = function (Posts) {
 		if (!postData) {
 			const ids = await db.getSortedSetRange('post:queue', 0, -1);
 			const keys = ids.map(id => `post:queue:${id}`);
-			postData = await db.getObjects(keys);
+			postData = (await db.getObjects(keys)).filter(Boolean);
+
 			postData.forEach((data) => {
 				if (data) {
 					data.data = JSON.parse(data.data);
 					data.data.timestampISO = utils.toISOString(data.data.timestamp);
+					if (data?.data) {
+						delete data.data.req;
+						delete data.data.ip;
+					}
 				}
 			});
 			const uids = postData.map(data => data && data.uid);
 			const userData = await user.getUsersFields(uids, [
-				'username', 'userslug', 'picture', 'joindate', 'postcount', 'reputation',
+				'username', 'userslug', 'picture', 'icon:bgColor', 'joindate', 'postcount', 'reputation',
 			]);
 			postData.forEach((postData, index) => {
 				if (postData) {
 					postData.user = userData[index];
 					if (postData.user.uid === 0 && postData.data.handle) {
-						postData.user.username = validator.escape(String(postData.data.handle));
+						postData.user.username = String(postData.data.handle);
 						postData.user.displayname = postData.user.username;
 						postData.user.fullname = postData.user.username;
 					}
-					postData.data.rawContent = validator.escape(String(postData.data.content));
-					postData.data.title = validator.escape(String(postData.data.title || ''));
+					postData.data.content = postData.data.sourceContent || postData.data.content;
+					postData.data.rawContent = String(postData.data.content);
+					postData.data.title = String(postData.data.title || '');
 				}
 			});
 			cache.set('post-queue', _.cloneDeep(postData));
 		}
 		if (filter.id) {
-			postData = postData.filter(p => p.id === filter.id);
+			postData = postData.filter(p => p && p.id === filter.id);
 		}
 		if (options.metadata) {
 			await Promise.all(postData.map(addMetaData));
 		}
 
 		// Filter by tid if present
-		if (utils.isNumber(filter.tid)) {
-			const tid = parseInt(filter.tid, 10);
-			postData = postData.filter(item => item.data.tid && parseInt(item.data.tid, 10) === tid);
+		if (filter.tid) {
+			const tid = String(filter.tid);
+			postData = postData.filter(item => item && item.data.tid && String(item.data.tid) === tid);
 		} else if (Array.isArray(filter.tid)) {
-			const tids = filter.tid.map(tid => parseInt(tid, 10));
+			const tids = filter.tid.map(String);
 			postData = postData.filter(
-				item => item.data.tid && tids.includes(parseInt(item.data.tid, 10))
+				item => item && item.data.tid && tids.includes(String(item.data.tid))
 			);
 		}
 
@@ -75,11 +83,40 @@ module.exports = function (Posts) {
 			return;
 		}
 		postData.topic = { cid: 0 };
-		if (postData.data.cid) {
+		if (postData.data.crosspostCid) {
+			if (postData.data.tid) {
+				const topicData = await topics.getTopicFields(postData.data.tid, ['title', 'timestamp', 'uid', 'mainPid', 'cid', 'lastposttime']);
+				postData.topic = topicData;
+				postData.data.title = topicData.title || '';
+				postData.data.timestamp = topicData.timestamp;
+				postData.data.timestampISO = topicData.timestampISO;
+				if (topicData.mainPid) {
+					const firstPost = await Posts.getPostFields(topicData.mainPid, ['content', 'sourceContent']);
+					if (firstPost) {
+						postData.data.content = firstPost.content || firstPost.sourceContent || '';
+					}
+				}
+
+				// uid queued is 0 because system user queued it, so user metadata is retrieved here instead
+				const userData = await user.getUserFields(topicData.uid, [
+					'username', 'userslug', 'picture', 'icon:bgColor', 'joindate', 'postcount', 'reputation',
+				]);
+				postData.user = userData;
+				postData.crosspostCategory = await categories.getCategoryData(postData.data.crosspostCid);
+			} else {
+				postData.topic = { cid: parseInt(postData.data.crosspostCid, 10) };
+			}
+		} else if (postData.data.cid) {
 			postData.topic = { cid: parseInt(postData.data.cid, 10) };
 		} else if (postData.data.tid) {
 			postData.topic = await topics.getTopicFields(postData.data.tid, ['title', 'cid', 'lastposttime']);
 		}
+		if (Array.isArray(postData.data.thumbs)) {
+			postData.data.thumbs = postData.data.thumbs.map(
+				thumb => thumb.startsWith('http') ? thumb : upload_url + thumb
+			);
+		}
+
 		postData.category = await categories.getCategoryData(postData.topic.cid);
 		const result = await plugins.hooks.fire('filter:parse.post', { postData: postData.data });
 		postData.data.content = result.postData.content;
@@ -96,9 +133,16 @@ module.exports = function (Posts) {
 
 		if (!isPrivileged && reputation < meta.config['min:rep:post-links']) {
 			const parsed = await plugins.hooks.fire('filter:parse.raw', String(content));
-			if (parsed.match(/<a[^>]*>([^<]+)<\/a>/g)) {
-				return false;
+			const matches = parsed.matchAll(/<a[^>]*href="([^"]+)"[^>]*>/g);
+			let external = 0;
+			for (const [, href] of matches) {
+				const internal = utils.isInternalURI(new URL(href, nconf.get('url')), new URL(nconf.get('url')), nconf.get('relative_path'));
+				if (!internal) {
+					external += 1;
+				}
 			}
+
+			return external === 0;
 		}
 		return true;
 	};
@@ -141,7 +185,9 @@ module.exports = function (Posts) {
 	}
 
 	function getType(data) {
-		if (data.hasOwnProperty('tid')) {
+		if (data.hasOwnProperty('crosspostCid')) {
+			return 'crosspost';
+		} else if (data.hasOwnProperty('tid')) {
 			return 'reply';
 		} else if (data.hasOwnProperty('cid')) {
 			return 'topic';
@@ -174,6 +220,19 @@ module.exports = function (Posts) {
 		const id = `${type}-${now}`;
 		await canPost(type, data);
 
+		if (type === 'crosspost' && data.tid && await db.isSetMember('post:queue:rejected:crosspost', String(data.tid))) {
+			return {
+				id: id,
+				type: type,
+				queued: false,
+				message: '[[success:crosspost-already-rejected]]',
+			};
+		}
+
+		if (data.pid) {
+			await removeFromQueueByPid(data.pid);
+		}
+
 		let payload = {
 			id: id,
 			uid: data.uid,
@@ -181,26 +240,50 @@ module.exports = function (Posts) {
 			data: data,
 		};
 		payload = await plugins.hooks.fire('filter:post-queue.save', payload);
-		payload.data = JSON.stringify(data);
 
+		if (payload?.data?.req) {
+			delete payload.data.req; // dont save req into post queue
+		}
 		await db.sortedSetAdd('post:queue', now, id);
-		await db.setObject(`post:queue:${id}`, payload);
+		await db.setObject(`post:queue:${id}`, {
+			...payload,
+			data: JSON.stringify(payload.data),
+		});
 		await user.setUserField(data.uid, 'lastqueuetime', now);
 		cache.del('post-queue');
 
-		const cid = await getCid(type, data);
-		const uids = await getNotificationUids(cid);
-		const bodyLong = await parseBodyLong(cid, type, data);
+		await plugins.hooks.fire('action:post-queue.save', payload);
+
+		const typeToTx = {
+			reply: '[[notifications:post-awaiting-review]]',
+			crosspost: '[[notifications:crosspost-awaiting-review]]',
+			topic: '[[notifications:topic-awaiting-review]]',
+		};
+		let bodyLong;
+		if (type === 'reply') {
+			bodyLong = await plugins.hooks.fire('filter:parse.raw', data.sourceContent || data.content);
+		} else {
+			bodyLong = helpers.escape(String(data.title));
+		}
 
 		const notifObj = await notifications.create({
 			type: 'post-queue',
 			nid: `post-queue-${id}`,
-			mergeId: 'post-queue',
-			bodyShort: '[[notifications:post-awaiting-review]]',
+			mergeId: `post-queue-${type}-uid-${data.uid}`,
+			bodyShort: typeToTx[type],
 			bodyLong: bodyLong,
 			path: `/post-queue/${id}`,
+			from: data.uid,
 		});
-		await notifications.push(notifObj, uids);
+		if (notifObj) {
+			const cid = await getCid(type, data);
+			const [uids, emailData] = await Promise.all([
+				getNotificationUids(cid),
+				getEmailData(cid, type, data),
+			]);
+			await notifications.push({ ...notifObj, ...emailData }, uids);
+		}
+
 		return {
 			id: id,
 			type: type,
@@ -209,10 +292,10 @@ module.exports = function (Posts) {
 		};
 	};
 
-	async function parseBodyLong(cid, type, data) {
+	async function getEmailData(cid, type, data) {
 		const url = nconf.get('url');
 		const [content, category, userData] = await Promise.all([
-			plugins.hooks.fire('filter:parse.raw', data.content),
+			plugins.hooks.fire('filter:parse.raw', data.sourceContent || data.content),
 			categories.getCategoryFields(cid, ['name', 'slug']),
 			user.getUserFields(data.uid, ['uid', 'username']),
 		]);
@@ -227,13 +310,7 @@ module.exports = function (Posts) {
 			topic.title = await topics.getTopicField(data.tid, 'title');
 			topic.url = `${url}/topic/${data.tid}`;
 		}
-		const { app } = require('../webserver');
-		return await app.renderAsync('emails/partials/post-queue-body', {
-			content: content,
-			category: category,
-			user: userData,
-			topic: topic,
-		});
+		return { content, category, topic, user: userData };
 	}
 
 	async function getCid(type, data) {
@@ -241,6 +318,8 @@ module.exports = function (Posts) {
 			return data.cid;
 		} else if (type === 'reply') {
 			return await topics.getTopicField(data.tid, 'cid');
+		} else if (type === 'crosspost') {
+			return data.crosspostCid;
 		}
 		return null;
 	}
@@ -250,9 +329,12 @@ module.exports = function (Posts) {
 		const typeToPrivilege = {
 			topic: 'topics:create',
 			reply: 'topics:reply',
+			crosspost: 'topics:crosspost',
 		};
 
-		topics.checkContent(data.content);
+		if (type !== 'crosspost') {
+			topics.checkContent(data.sourceContent || data.content);
+		}
 		if (type === 'topic') {
 			topics.checkTitle(data.title);
 			if (data.tags) {
@@ -261,7 +343,7 @@ module.exports = function (Posts) {
 		}
 
 		const [canPost] = await Promise.all([
-			privileges.categories.can(typeToPrivilege[type], cid, data.uid),
+			(type === 'crosspost' && data.uid === 0) || privileges.categories.can(typeToPrivilege[type], cid, data.uid),
 			user.isReadyToQueue(data.uid, cid),
 		]);
 		if (!canPost) {
@@ -276,6 +358,9 @@ module.exports = function (Posts) {
 		}
 		const result = await plugins.hooks.fire('filter:post-queue:removeFromQueue', { data: data });
 		await removeFromQueue(id);
+		if (result.data.type === 'crosspost' && result.data.data.tid) {
+			await db.setAdd('post:queue:rejected:crosspost', String(result.data.data.tid));
+		}
 		plugins.hooks.fire('action:post-queue:removeFromQueue', { data: result.data });
 		return result.data;
 	};
@@ -285,6 +370,23 @@ module.exports = function (Posts) {
 		await db.sortedSetRemove('post:queue', id);
 		await db.delete(`post:queue:${id}`);
 		cache.del('post-queue');
+	}
+
+	async function removeFromQueueByPid(pid) {
+		const ids = await db.getSortedSetRange('post:queue', 0, -1);
+		if (!ids.length) {
+			return;
+		}
+		const keys = ids.map(id => `post:queue:${id}`);
+		const items = await db.getObjects(keys);
+		const toRemove = [];
+		items.forEach((item, idx) => {
+			const data = JSON.parse(item.data);
+			if (data.pid === pid) {
+				toRemove.push(ids[idx]);
+			}
+		});
+		await Promise.all(toRemove.map(removeFromQueue));
 	}
 
 	Posts.submitFromQueue = async function (id) {
@@ -297,9 +399,14 @@ module.exports = function (Posts) {
 		if (data.type === 'topic') {
 			const result = await createTopic(data.data);
 			data.pid = result.postData.pid;
+			data.tid = result.topicData.tid;
 		} else if (data.type === 'reply') {
 			const result = await createReply(data.data);
 			data.pid = result.pid;
+			data.tid = result.tid;
+		} else if (data.type === 'crosspost') {
+			const result = await createCrosspost(data.data);
+			data.tid = result.tid;
 		}
 		await removeFromQueue(id);
 		plugins.hooks.fire('action:post-queue:submitFromQueue', { data: data });
@@ -324,6 +431,11 @@ module.exports = function (Posts) {
 		const result = await topics.post(data);
 		socketHelpers.notifyNew(data.uid, 'newTopic', { posts: [result.postData], topic: result.topicData });
 		return result;
+	}
+
+	async function createCrosspost(data) {
+		await topics.crossposts.add(data.tid, data.crosspostCid, 0);
+		return { tid: data.tid };
 	}
 
 	async function createReply(data) {
@@ -358,11 +470,23 @@ module.exports = function (Posts) {
 		if (editData.cid !== undefined) {
 			data.data.cid = editData.cid;
 		}
+		if (editData.tags !== undefined) {
+			data.data.tags = editData.tags;
+		}
+		if (editData.thumbs !== undefined) {
+			data.data.thumbs = editData.thumbs;
+		}
+		if (editData.crosspostCid !== undefined) {
+			data.data.crosspostCid = editData.crosspostCid;
+		}
 		await db.setObjectField(`post:queue:${editData.id}`, 'data', JSON.stringify(data.data));
 		cache.del('post-queue');
 	};
 
 	Posts.canEditQueue = async function (uid, editData, action) {
+		if (!utils.isNumber(uid) || !(parseInt(uid, 10) > 0)) {
+			return false;
+		}
 		const [isAdminOrGlobalMod, data] = await Promise.all([
 			user.isAdminOrGlobalMod(uid),
 			getParsedObject(editData.id),

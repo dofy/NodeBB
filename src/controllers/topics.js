@@ -1,7 +1,9 @@
 'use strict';
 
 const nconf = require('nconf');
+const path = require('path');
 const qs = require('querystring');
+const validator = require('validator');
 
 const user = require('../user');
 const meta = require('../meta');
@@ -13,31 +15,37 @@ const helpers = require('./helpers');
 const pagination = require('../pagination');
 const utils = require('../utils');
 const analytics = require('../analytics');
+const activitypub = require('../activitypub');
+const translator = require('../translator');
 
 const topicsController = module.exports;
 
 const url = nconf.get('url');
+const base_url = nconf.get('base_url');
 const relative_path = nconf.get('relative_path');
 const upload_url = nconf.get('upload_url');
+const validSorts = ['oldest_to_newest', 'newest_to_oldest', 'most_votes'];
 
 topicsController.get = async function getTopic(req, res, next) {
 	const tid = req.params.topic_id;
 	if (
 		(req.params.post_index && !utils.isNumber(req.params.post_index) && req.params.post_index !== 'unread') ||
-		!utils.isNumber(tid)
+		(!utils.isNumber(tid) && !validator.isUUID(String(tid)))
 	) {
 		return next();
 	}
 	let postIndex = parseInt(req.params.post_index, 10) || 1;
+	const topicData = await topics.getTopicData(tid);
+	if (!topicData) {
+		return next();
+	}
 	const [
 		userPrivileges,
 		settings,
-		topicData,
 		rssToken,
 	] = await Promise.all([
 		privileges.topics.get(tid, req.uid),
 		user.getSettings(req.uid),
-		topics.getTopicData(tid),
 		user.auth.getFeedToken(req.uid),
 	]);
 
@@ -45,7 +53,6 @@ topicsController.get = async function getTopic(req, res, next) {
 	const pageCount = Math.max(1, Math.ceil((topicData && topicData.postcount) / settings.postsPerPage));
 	const invalidPagination = (settings.usePagination && (currentPage < 1 || currentPage > pageCount));
 	if (
-		!topicData ||
 		userPrivileges.disabled ||
 		invalidPagination ||
 		(topicData.scheduled && !userPrivileges.view_scheduled)
@@ -53,7 +60,11 @@ topicsController.get = async function getTopic(req, res, next) {
 		return next();
 	}
 
-	if (!userPrivileges['topics:read'] || (!topicData.scheduled && topicData.deleted && !userPrivileges.view_deleted)) {
+	if (
+		!userPrivileges['topics:read'] ||
+		(!topicData.scheduled && topicData.deleted && !userPrivileges.view_deleted) ||
+		await shouldHideTopicFromGuest(req.uid, tid, topicData.cid)
+	) {
 		return helpers.notAllowed(req, res);
 	}
 
@@ -69,7 +80,9 @@ topicsController.get = async function getTopic(req, res, next) {
 		return helpers.redirect(res, `/topic/${tid}/${req.params.slug}${postIndex > topicData.postcount ? `/${topicData.postcount}` : ''}${generateQueryString(req.query)}`);
 	}
 	postIndex = Math.max(1, postIndex);
-	const sort = req.query.sort || settings.topicPostSort;
+	const selectedSort = String(req.query.sort || settings.topicPostSort);
+	const sort = validSorts.includes(selectedSort) ? selectedSort : meta.config.topicPostSort;
+
 	const set = sort === 'most_votes' ? `tid:${tid}:posts:votes` : `tid:${tid}:posts`;
 	const reverse = sort === 'newest_to_oldest' || sort === 'most_votes';
 
@@ -94,6 +107,8 @@ topicsController.get = async function getTopic(req, res, next) {
 	topicData.topicStaleDays = meta.config.topicStaleDays;
 	topicData['reputation:disabled'] = meta.config['reputation:disabled'];
 	topicData['downvote:disabled'] = meta.config['downvote:disabled'];
+	topicData.upvoteVisibility = meta.config.upvoteVisibility;
+	topicData.downvoteVisibility = meta.config.downvoteVisibility;
 	topicData['feeds:disableRSS'] = meta.config['feeds:disableRSS'] || 0;
 	topicData['signatures:hideDuplicates'] = meta.config['signatures:hideDuplicates'];
 	topicData.bookmarkThreshold = meta.config.bookmarkThreshold;
@@ -105,6 +120,8 @@ topicsController.get = async function getTopic(req, res, next) {
 	topicData.allowMultipleBadges = meta.config.allowMultipleBadges === 1;
 	topicData.privateUploads = meta.config.privateUploads === 1;
 	topicData.showPostPreviewsOnHover = meta.config.showPostPreviewsOnHover === 1;
+	topicData.sortOption = sort;
+	topicData.sortOptionLabel = `[[topic:${sort.replace(/_/g, '-')}]]`;
 	if (!meta.config['feeds:disableRSS']) {
 		topicData.rssFeedUrl = `${relative_path}/topic/${topicData.tid}.rss`;
 		if (req.loggedIn) {
@@ -113,24 +130,51 @@ topicsController.get = async function getTopic(req, res, next) {
 	}
 
 	topicData.postIndex = postIndex;
+	const postAtIndex = topicData.posts.find(
+		p => parseInt(p.index, 10) === parseInt(Math.max(0, postIndex - 1), 10)
+	);
 
-	await Promise.all([
+	const [author, crossposts] = await Promise.all([
+		user.getUserFields(topicData.uid, ['username', 'userslug']),
+		topics.crossposts.get(topicData.tid),
 		buildBreadcrumbs(topicData),
-		addOldCategory(topicData, userPrivileges),
-		addTags(topicData, req, res, currentPage),
-		incrementViewCount(req, tid),
+		addOldCategory(topicData, userPrivileges, settings.userLang),
+		addTags(topicData, req, res, currentPage, postAtIndex),
+		topics.increaseViewCount(req, tid),
 		markAsRead(req, tid),
 		analytics.increment([`pageviews:byCid:${topicData.category.cid}`]),
 	]);
 
+	topicData.author = author;
+	topicData.crossposts = crossposts;
 	topicData.pagination = pagination.create(currentPage, pageCount, req.query);
 	topicData.pagination.rel.forEach((rel) => {
 		rel.href = `${url}/topic/${topicData.slug}${rel.href}`;
 		res.locals.linkTags.push(rel);
 	});
 
+	if (meta.config.activitypubEnabled) {
+		if (postAtIndex) {
+			// Include link header for richer parsing
+			const { pid } = postAtIndex;
+			const href = utils.isNumber(pid) ? `${nconf.get('url')}/post/${pid}` : pid;
+			res.set('Link', `<${href}>; rel="alternate"; type="application/activity+json"`);
+		}
+
+		if (req.uid > 0 && !utils.isNumber(topicData.mainPid)) {
+			// not awaited on purpose so topic loading is not blocked
+			activitypub.notes.backfill(topicData.mainPid);
+		}
+	}
+
 	res.render('topic', topicData);
 };
+
+async function shouldHideTopicFromGuest(uid, tid, cid) {
+	if (uid > 0 || cid !== -1) return false;
+	const uids = await topics.getUids(tid);
+	return !uids.some(uid => utils.isNumber(uid));
+}
 
 function generateQueryString(query) {
 	const qString = qs.stringify(query);
@@ -156,19 +200,6 @@ function calculateStartStop(page, postIndex, settings) {
 	return { start: Math.max(0, start), stop: Math.max(0, stop) };
 }
 
-async function incrementViewCount(req, tid) {
-	const allow = req.uid > 0 || (meta.config.guestsIncrementTopicViews && req.uid === 0);
-	if (allow) {
-		req.session.tids_viewed = req.session.tids_viewed || {};
-		const now = Date.now();
-		const interval = meta.config.incrementTopicViewsInterval * 60000;
-		if (!req.session.tids_viewed[tid] || req.session.tids_viewed[tid] < now - interval) {
-			await topics.increaseViewCount(tid);
-			req.session.tids_viewed[tid] = now;
-		}
-	}
-}
-
 async function markAsRead(req, tid) {
 	if (req.loggedIn) {
 		const markedRead = await topics.markAsRead([tid], req.uid);
@@ -188,34 +219,23 @@ async function buildBreadcrumbs(topicData) {
 			cid: topicData.category.cid,
 		},
 		{
-			text: topicData.title,
+			text: translator.escape(topicData.title),
 		},
 	];
 	const parentCrumbs = await helpers.buildCategoryBreadcrumbs(topicData.category.parentCid);
 	topicData.breadcrumbs = parentCrumbs.concat(breadcrumbs);
 }
 
-async function addOldCategory(topicData, userPrivileges) {
+async function addOldCategory(topicData, userPrivileges, userLang) {
 	if (userPrivileges.isAdminOrMod && topicData.oldCid) {
 		topicData.oldCategory = await categories.getCategoryFields(
 			topicData.oldCid, ['cid', 'name', 'icon', 'bgColor', 'color', 'slug']
 		);
+		topicData.oldCategory.name = await translator.translate(topicData.oldCategory.name, userLang);
 	}
 }
 
-async function addTags(topicData, req, res, currentPage) {
-	const postIndex = parseInt(req.params.post_index, 10) || 0;
-	const postAtIndex = topicData.posts.find(p => parseInt(p.index, 10) === parseInt(Math.max(0, postIndex - 1), 10));
-	let description = '';
-	if (postAtIndex && postAtIndex.content) {
-		description = utils.stripHTMLTags(utils.decodeHTMLEntities(postAtIndex.content)).trim();
-	}
-
-	if (description.length > 160) {
-		description = `${description.slice(0, 157)}...`;
-	}
-	description = description.replace(/\n/g, ' ').trim();
-
+async function addTags(topicData, req, res, currentPage, postAtIndex) {
 	let mainPost = topicData.posts.find(p => parseInt(p.index, 10) === 0);
 	if (!mainPost) {
 		mainPost = await posts.getPostData(topicData.mainPid);
@@ -224,11 +244,11 @@ async function addTags(topicData, req, res, currentPage) {
 	res.locals.metaTags = [
 		{
 			name: 'title',
-			content: topicData.titleRaw,
+			content: topicData.title,
 		},
 		{
 			property: 'og:title',
-			content: topicData.titleRaw,
+			content: topicData.title,
 		},
 		{
 			property: 'og:type',
@@ -248,7 +268,15 @@ async function addTags(topicData, req, res, currentPage) {
 		},
 	];
 
-	if (description && description.length) {
+	if (!utils.isNumber(topicData.tid)) {
+		res.locals.metaTags.push({
+			name: 'robots',
+			content: 'noindex',
+		});
+	}
+
+	const description = getDescriptionFromPost(postAtIndex);
+	if (description) {
 		res.locals.metaTags.push(
 			{
 				name: 'description',
@@ -268,7 +296,6 @@ async function addTags(topicData, req, res, currentPage) {
 		{
 			rel: 'canonical',
 			href: `${url}/topic/${topicData.slug}${page}`,
-			noEscape: true,
 		},
 	];
 
@@ -293,21 +320,40 @@ async function addTags(topicData, req, res, currentPage) {
 			href: `${url}/user/${postAtIndex.user.userslug}`,
 		});
 	}
+
+	if (meta.config.activitypubEnabled && postAtIndex) {
+		const { pid } = postAtIndex;
+		res.locals.linkTags.push({
+			rel: 'alternate',
+			type: 'application/activity+json',
+			href: utils.isNumber(pid) ? `${nconf.get('url')}/post/${pid}` : pid,
+		});
+	}
+}
+
+function getDescriptionFromPost(post) {
+	let description = '';
+	if (post && post.content) {
+		description = utils.stripHTMLTags(utils.decodeHTMLEntities(post.content)).trim();
+		if (description.length > 160) {
+			description = `${description.slice(0, 157)}...`;
+		}
+		description = description.replace(/\n/g, ' ').trim();
+	}
+	return description;
 }
 
 async function addOGImageTags(res, topicData, postAtIndex) {
 	const uploads = postAtIndex ? await posts.uploads.listWithSizes(postAtIndex.pid) : [];
-	const images = uploads.map((upload) => {
-		upload.name = `${url + upload_url}/${upload.name}`;
-		return upload;
-	});
+	const images = uploads.filter(Boolean);
+
 	if (topicData.thumbs) {
-		const path = require('path');
 		const thumbs = topicData.thumbs.filter(
-			t => t && images.every(img => path.normalize(img.name) !== path.normalize(url + t.url))
+			t => t && images.every(img => path.normalize(img.name) !== path.normalize(t.path))
 		);
-		images.push(...thumbs.map(thumbObj => ({ name: url + thumbObj.url })));
+		images.push(...thumbs.map(t => t.path));
 	}
+
 	if (topicData.category.backgroundImage && (!postAtIndex || !postAtIndex.index)) {
 		images.push(topicData.category.backgroundImage);
 	}
@@ -318,26 +364,31 @@ async function addOGImageTags(res, topicData, postAtIndex) {
 }
 
 function addOGImageTag(res, image) {
-	let imageUrl;
-	if (typeof image === 'string' && !image.startsWith('http')) {
-		imageUrl = url + image.replace(new RegExp(`^${relative_path}`), '');
-	} else if (typeof image === 'object') {
-		imageUrl = image.name;
-	} else {
-		imageUrl = image;
+	const isObject = typeof image === 'object' && image.name;
+	let imageUrl = isObject ? image.name : image;
+	if (!(typeof imageUrl === 'string')) {
+		return;
+	}
+
+	if (!imageUrl.startsWith('http')) {
+		if (imageUrl.startsWith(`${relative_path}${upload_url}`)) {
+			// (https://domain.com) + imageUrl (which starts with /relative_path/upload_url)
+			imageUrl = base_url + imageUrl;
+		} else {
+			// (https://domain.com/forum) + (/assets/uploads) + (/files/imagePath)
+			imageUrl = url + path.posix.join(upload_url, imageUrl);
+		}
 	}
 
 	res.locals.metaTags.push({
 		property: 'og:image',
 		content: imageUrl,
-		noEscape: true,
 	}, {
 		property: 'og:image:url',
 		content: imageUrl,
-		noEscape: true,
 	});
 
-	if (typeof image === 'object' && image.width && image.height) {
+	if (isObject && image.width && image.height) {
 		res.locals.metaTags.push({
 			property: 'og:image:width',
 			content: String(image.width),
@@ -375,21 +426,15 @@ topicsController.pagination = async function (req, res, next) {
 	if (!utils.isNumber(tid)) {
 		return next();
 	}
-
-	const [userPrivileges, settings, topic] = await Promise.all([
-		privileges.topics.get(tid, req.uid),
-		user.getSettings(req.uid),
-		topics.getTopicData(tid),
-	]);
-
+	const topic = await topics.getTopicData(tid);
 	if (!topic) {
 		return next();
 	}
-
-	if (!userPrivileges.read || !privileges.topics.canViewDeletedScheduled(topic, userPrivileges)) {
+	if (!await privileges.topics.canRead(tid, req.uid)) {
 		return helpers.notAllowed(req, res);
 	}
 
+	const settings = await user.getSettings(req.uid);
 	const postCount = topic.postcount;
 	const pageCount = Math.max(1, Math.ceil(postCount / settings.postsPerPage));
 

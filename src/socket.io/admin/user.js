@@ -2,56 +2,17 @@
 
 const async = require('async');
 const winston = require('winston');
+const nconf = require('nconf');
+const pubsub = require('../../pubsub');
 
 const db = require('../../database');
 const groups = require('../../groups');
 const user = require('../../user');
 const events = require('../../events');
-const translator = require('../../translator');
 const utils = require('../../utils');
 const sockets = require('..');
 
 const User = module.exports;
-
-User.makeAdmins = async function (socket, uids) {
-	if (!Array.isArray(uids)) {
-		throw new Error('[[error:invalid-data]]');
-	}
-	const isMembersOfBanned = await groups.isMembers(uids, groups.BANNED_USERS);
-	if (isMembersOfBanned.includes(true)) {
-		throw new Error('[[error:cant-make-banned-users-admin]]');
-	}
-	for (const uid of uids) {
-		/* eslint-disable no-await-in-loop */
-		await groups.join('administrators', uid);
-		await events.log({
-			type: 'user-makeAdmin',
-			uid: socket.uid,
-			targetUid: uid,
-			ip: socket.ip,
-		});
-	}
-};
-
-User.removeAdmins = async function (socket, uids) {
-	if (!Array.isArray(uids)) {
-		throw new Error('[[error:invalid-data]]');
-	}
-	for (const uid of uids) {
-		/* eslint-disable no-await-in-loop */
-		const count = await groups.getMemberCount('administrators');
-		if (count === 1) {
-			throw new Error('[[error:cant-remove-last-admin]]');
-		}
-		await groups.leave('administrators', uid);
-		await events.log({
-			type: 'user-removeAdmin',
-			uid: socket.uid,
-			targetUid: uid,
-			ip: socket.ip,
-		});
-	}
-};
 
 User.resetLockouts = async function (socket, uids) {
 	if (!Array.isArray(uids)) {
@@ -66,11 +27,14 @@ User.validateEmail = async function (socket, uids) {
 	}
 
 	for (const uid of uids) {
+		// eslint-disable-next-line no-await-in-loop
 		const email = await user.email.getEmailForValidation(uid);
 		if (email) {
+			// eslint-disable-next-line no-await-in-loop
 			await user.setUserField(uid, 'email', email);
 		}
-		await user.email.confirmByUid(uid);
+		// eslint-disable-next-line no-await-in-loop
+		await user.email.confirmByUid(uid, socket.uid);
 	}
 };
 
@@ -129,8 +93,15 @@ User.forcePasswordReset = async function (socket, uids) {
 	uids.forEach(uid => sockets.in(`uid_${uid}`).emit('event:logout'));
 };
 
+pubsub.on('admin.user.restartJobs', () => {
+	if (nconf.get('runJobs')) {
+		winston.verbose('[user/jobs] Restarting jobs...');
+		user.startJobs();
+	}
+});
+
 User.restartJobs = async function () {
-	user.startJobs();
+	pubsub.publish('admin.user.restartJobs', {});
 };
 
 User.loadGroups = async function (socket, uids) {
@@ -140,9 +111,6 @@ User.loadGroups = async function (socket, uids) {
 	]);
 	userData.forEach((data, index) => {
 		data.groups = groupData[index].filter(group => !groups.isPrivilegeGroup(group.name));
-		data.groups.forEach((group) => {
-			group.nameEscaped = translator.escape(group.displayName);
-		});
 	});
 	return { users: userData };
 };
@@ -162,7 +130,7 @@ User.setReputation = async function (socket, data) {
 	]);
 };
 
-User.exportUsersCSV = async function (socket) {
+User.exportUsersCSV = async function (socket, data) {
 	await events.log({
 		type: 'exportUsersCSV',
 		uid: socket.uid,
@@ -170,7 +138,7 @@ User.exportUsersCSV = async function (socket) {
 	});
 	setTimeout(async () => {
 		try {
-			await user.exportUsersCSV();
+			await user.exportUsersCSV(data.fields);
 			if (socket.emit) {
 				socket.emit('event:export-users-csv');
 			}
@@ -186,4 +154,35 @@ User.exportUsersCSV = async function (socket) {
 			winston.error(err.stack);
 		}
 	}, 0);
+};
+
+User.saveCustomFields = async function (socket, fields) {
+	const userFields = await user.getUserFieldWhitelist();
+	for (const field of fields) {
+		if (userFields.includes(field.key) || userFields.includes(field.key.toLowerCase())) {
+			throw new Error(`[[error:invalid-custom-user-field, ${field.key}]]`);
+		}
+	}
+	const keys = await db.getSortedSetRange('user-custom-fields', 0, -1);
+	await db.delete('user-custom-fields');
+	await db.deleteAll(keys.map(k => `user-custom-field:${k}`));
+
+	await db.sortedSetAdd(
+		`user-custom-fields`,
+		fields.map((f, i) => i),
+		fields.map(f => f.key)
+	);
+	await db.setObjectBulk(
+		fields.map(field => [`user-custom-field:${field.key}`, field])
+	);
+	await user.reloadCustomFieldWhitelist();
+};
+
+User.saveCustomReasons = async function (socket, reasons) {
+	const keys = await db.getSortedSetRange('custom-reasons', 0, -1);
+	await db.delete('custom-reasons');
+	await db.deleteAll(keys.map(k => `custom-reason:${k}`));
+	const ids = reasons.map((f, i) => i);
+	await db.sortedSetAdd(`custom-reasons`, ids, ids);
+	await db.setObjectBulk(reasons.map((reason, i) => [`custom-reason:${i}`, reason]));
 };

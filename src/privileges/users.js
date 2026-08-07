@@ -74,17 +74,19 @@ async function filterIsModerator(cid, uid, isModerator) {
 }
 
 privsUsers.canEdit = async function (callerUid, uid) {
-	if (parseInt(callerUid, 10) === parseInt(uid, 10)) {
+	callerUid = String(callerUid);
+	uid = String(uid);
+	if (callerUid === uid) {
 		return true;
 	}
 
-	const [isAdmin, isGlobalMod, isTargetAdmin, isUserAllowedTo] = await Promise.all([
+	const [isAdmin, isGlobalMod, isTargetAdmin, [canManageUsers]] = await Promise.all([
 		privsUsers.isAdministrator(callerUid),
 		privsUsers.isGlobalModerator(callerUid),
 		privsUsers.isAdministrator(uid),
 		helpers.isAllowedTo('admin:users', callerUid, [0]),
 	]);
-	const canManageUsers = isUserAllowedTo[0];
+
 	const data = await plugins.hooks.fire('filter:user.canEdit', {
 		isAdmin: isAdmin,
 		isGlobalMod: isGlobalMod,
@@ -141,6 +143,18 @@ privsUsers.canFlag = async function (callerUid, uid) {
 	}
 
 	return { flag: canFlag };
+};
+
+privsUsers.canExportData = async function (callerUid, uid) {
+	if (String(callerUid) === String(uid)) {
+		return true;
+	}
+	const privsAdmin = require('./admin');
+	const [isAdmin, hadAdminUsersPrivilege] = await Promise.all([
+		privsUsers.isAdministrator(callerUid),
+		privsAdmin.can('admin:users', callerUid),
+	]);
+	return isAdmin || hadAdminUsersPrivilege;
 };
 
 privsUsers.hasBanPrivilege = async uid => await hasGlobalPrivilege('ban', uid);

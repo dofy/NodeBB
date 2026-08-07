@@ -52,12 +52,16 @@ FlagObject:
                     description: An URL-safe variant of the username (i.e. lower-cased, spaces
                       removed, etc.)
                   picture:
+                    type: string
                     nullable: true
                   reputation:
                     type: number
                   uid:
                     type: number
                     description: A user identifier
+                  isLocal:
+                    type: boolean
+                    description: Whether the user belongs to the local installation or not.
                   icon:text:
                     type: string
                     description: A single-letter representation of a username. This is used in the
@@ -81,7 +85,7 @@ FlagHistoryObject:
         type: object
         properties:
           uid:
-            type: number
+            type: [number, string]
             description: A user identifier
           fields:
             type: object
@@ -118,10 +122,14 @@ FlagHistoryObject:
                 description: An URL-safe variant of the username (i.e. lower-cased, spaces
                   removed, etc.)
               picture:
+                type: string
                 nullable: true
               uid:
                 type: number
                 description: A user identifier
+              isLocal:
+                type: boolean
+                description: Whether the user belongs to the local installation or not.
               icon:text:
                 type: string
                 description: A single-letter representation of a username. This is used in the
@@ -175,6 +183,9 @@ FlagNotesObject:
               uid:
                 type: number
                 description: A user identifier
+              isLocal:
+                type: boolean
+                description: Whether the user belongs to the local installation or not.
               icon:text:
                 type: string
                 description: A single-letter representation of a username. This is used in the

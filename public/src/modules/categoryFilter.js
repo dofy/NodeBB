@@ -8,7 +8,7 @@ define('categoryFilter', ['categorySearch', 'api', 'hooks'], function (categoryS
 			return;
 		}
 		options = options || {};
-		options.states = options.states || ['watching', 'notwatching', 'ignoring'];
+		options.states = options.states || ['watching', 'tracking', 'notwatching', 'ignoring'];
 		options.template = options.template || 'partials/category/filter-dropdown-left';
 
 		hooks.fire('action:category.filter.options', { el: el, options: options });
@@ -55,17 +55,18 @@ define('categoryFilter', ['categorySearch', 'api', 'hooks'], function (categoryS
 
 				delete currentParams.page;
 				if (Object.keys(currentParams).length) {
-					url += '?' + decodeURIComponent($.param(currentParams));
+					url += '?' + $.param(currentParams);
 				}
 				ajaxify.go(url);
 			}
 		});
 
-		el.on('click', '[component="category/list"] [data-cid]', function () {
+		el.on('click', '[component="category/list"] [data-cid]', function (ev) {
 			const listEl = el.find('[component="category/list"]');
 			const categoryEl = $(this);
 			const link = categoryEl.find('a').attr('href');
 			if (link && link !== '#' && link.length) {
+				ev.stopPropagation();
 				return;
 			}
 			const cid = categoryEl.attr('data-cid');
@@ -81,10 +82,10 @@ define('categoryFilter', ['categorySearch', 'api', 'hooks'], function (categoryS
 					return a - b;
 				});
 				icon.toggleClass('invisible');
-				listEl.find('[data-cid="all"] i').toggleClass('invisible', !!selectedCids.length);
+				listEl.find('[data-cid="all"] [component="category/select/icon"]').toggleClass('invisible', !!selectedCids.length);
 			} else {
 				el.find('[component="category/select/icon"]').addClass('invisible');
-				listEl.find('[data-cid="all"] i').removeClass('invisible');
+				listEl.find('[data-cid="all"] [component="category/select/icon"]').removeClass('invisible');
 				selectedCids = [];
 			}
 

@@ -9,16 +9,13 @@ const util = require('util');
 
 const sleep = util.promisify(setTimeout);
 const assert = require('assert');
-const async = require('async');
 const nconf = require('nconf');
-const request = require('request');
-
-const cookies = request.jar();
 
 const db = require('./mocks/databasemock');
 const user = require('../src/user');
 const groups = require('../src/groups');
 const categories = require('../src/categories');
+const topics = require('../src/topics');
 const helpers = require('./helpers');
 const meta = require('../src/meta');
 const events = require('../src/events');
@@ -33,54 +30,28 @@ describe('socket.io', () => {
 	let regularUid;
 
 	before(async () => {
-		const data = await Promise.all([
-			user.create({ username: 'admin', password: 'adminpwd' }),
-			user.create({ username: 'regular', password: 'regularpwd' }),
-			categories.create({
-				name: 'Test Category',
-				description: 'Test category created by testing script',
-			}),
-		]);
-		adminUid = data[0];
-		await groups.join('administrators', data[0]);
+		adminUid = await user.create({ username: 'admin', password: 'adminpwd' });
+		await groups.join('administrators', adminUid);
+		regularUid = await user.create({ username: 'regular', password: 'regularpwd', email: 'regular@test.com' }, { emailVerification: 'verify' });
+		({ cid } = await categories.create({
+			name: 'Test Category',
+			description: 'Test category created by testing script',
+		}));
 
-		regularUid = data[1];
-		await user.setUserField(regularUid, 'email', 'regular@test.com');
-		await user.email.confirmByUid(regularUid);
-
-		cid = data[2].cid;
+		await topics.post({
+			uid: adminUid,
+			cid: cid,
+			title: 'Test Topic',
+			content: 'Test topic content',
+		});
 	});
 
 
-	it('should connect and auth properly', (done) => {
-		request.get({
-			url: `${nconf.get('url')}/api/config`,
-			jar: cookies,
-			json: true,
-		}, (err, res, body) => {
-			assert.ifError(err);
-
-			request.post(`${nconf.get('url')}/login`, {
-				jar: cookies,
-				form: {
-					username: 'admin',
-					password: 'adminpwd',
-				},
-				headers: {
-					'x-csrf-token': body.csrf_token,
-				},
-				json: true,
-			}, (err, res) => {
-				assert.ifError(err);
-
-				helpers.connectSocketIO(res, body.csrf_token, (err, _io) => {
-					io = _io;
-					assert.ifError(err);
-
-					done();
-				});
-			});
-		});
+	it('should connect and auth properly', async () => {
+		const { response, csrf_token } = await helpers.loginUser('admin', 'adminpwd');
+		io = await helpers.connectSocketIO(response, csrf_token);
+		assert(io);
+		assert(io.emit);
 	});
 
 	it('should return error for unknown event', (done) => {
@@ -103,19 +74,6 @@ describe('socket.io', () => {
 		io.emit('constructor.toString', (err) => {
 			assert(err);
 			assert.equal(err.message, '[[error:invalid-event, constructor.toString]]');
-			done();
-		});
-	});
-
-	it('should get installed themes', (done) => {
-		const themes = ['nodebb-theme-persona'];
-		io.emit('admin.themes.getInstalled', (err, data) => {
-			assert.ifError(err);
-			assert(data);
-			const installed = data.map(theme => theme.id);
-			themes.forEach((theme) => {
-				assert(installed.includes(theme));
-			});
 			done();
 		});
 	});
@@ -144,28 +102,6 @@ describe('socket.io', () => {
 		await apiUser.unban({ uid: adminUid }, { uid: regularUid });
 		const isBanned = await user.bans.isBanned(regularUid);
 		assert(!isBanned);
-	});
-
-	it('should make user admin', (done) => {
-		socketAdmin.user.makeAdmins({ uid: adminUid }, [regularUid], (err) => {
-			assert.ifError(err);
-			groups.isMember(regularUid, 'administrators', (err, isMember) => {
-				assert.ifError(err);
-				assert(isMember);
-				done();
-			});
-		});
-	});
-
-	it('should make user non-admin', (done) => {
-		socketAdmin.user.removeAdmins({ uid: adminUid }, [regularUid], (err) => {
-			assert.ifError(err);
-			groups.isMember(regularUid, 'administrators', (err, isMember) => {
-				assert.ifError(err);
-				assert(!isMember);
-				done();
-			});
-		});
 	});
 
 	describe('user create/delete', () => {
@@ -220,6 +156,26 @@ describe('socket.io', () => {
 		assert(Array.isArray(users[0].groups));
 	});
 
+	it('should error with invalid data set user reputation', async () => {
+		await assert.rejects(
+			socketAdmin.user.setReputation({ uid: adminUid }, null),
+			{ message: '[[error:invalid-data]]' }
+		);
+		await assert.rejects(
+			socketAdmin.user.setReputation({ uid: adminUid }, {}),
+			{ message: '[[error:invalid-data]]' }
+		);
+		await assert.rejects(
+			socketAdmin.user.setReputation({ uid: adminUid }, { uids: [], value: null }),
+			{ message: '[[error:invalid-data]]' }
+		);
+	});
+
+	it('should set user reputation', async () => {
+		await socketAdmin.user.setReputation({ uid: adminUid }, { uids: [adminUid], value: 10 });
+		assert.strictEqual(10, await db.sortedSetScore('users:reputation', adminUid));
+	});
+
 	it('should reset lockouts', (done) => {
 		socketAdmin.user.resetLockouts({ uid: adminUid }, [regularUid], (err) => {
 			assert.ifError(err);
@@ -236,12 +192,12 @@ describe('socket.io', () => {
 		before(() => {
 			// Attach an emailer hook so related requests do not error
 			plugins.hooks.register('emailer-test', {
-				hook: 'filter:email.send',
+				hook: 'static:email.send',
 				method: dummyEmailerHook,
 			});
 		});
 		after(() => {
-			plugins.hooks.unregister('emailer-test', 'filter:email.send');
+			plugins.hooks.unregister('emailer-test', 'static:email.send');
 		});
 
 		it('should validate emails', (done) => {
@@ -270,12 +226,9 @@ describe('socket.io', () => {
 		});
 	});
 
-	it('should push unread notifications on reconnect', (done) => {
+	it('should push unread notifications/chats on reconnect', async () => {
 		const socketMeta = require('../src/socket.io/meta');
-		socketMeta.reconnected({ uid: 1 }, {}, (err) => {
-			assert.ifError(err);
-			done();
-		});
+		await socketMeta.reconnected({ uid: 1 }, {});
 	});
 
 
@@ -440,15 +393,13 @@ describe('socket.io', () => {
 		});
 	});
 
-	it('should set theme to local persona', (done) => {
-		socketAdmin.themes.set({ uid: adminUid }, { type: 'local', id: 'nodebb-theme-persona' }, (err) => {
-			assert.ifError(err);
-			meta.configs.get('theme:id', (err, id) => {
-				assert.ifError(err);
-				assert.equal(id, 'nodebb-theme-persona');
-				done();
-			});
-		});
+	it('should set theme to local persona', async () => {
+		const currentThemeId = await meta.configs.get('theme:id');
+		assert.strictEqual(currentThemeId, 'nodebb-theme-harmony');
+		await socketAdmin.themes.set({ uid: adminUid }, { type: 'local', id: 'nodebb-theme-persona' });
+		const newId = await meta.configs.get('theme:id');
+		assert.equal(newId, 'nodebb-theme-persona');
+		await socketAdmin.themes.set({ uid: adminUid }, { type: 'local', id: currentThemeId });
 	});
 
 	it('should toggle plugin active', (done) => {
@@ -459,20 +410,63 @@ describe('socket.io', () => {
 		});
 	});
 
-	it('should toggle plugin install', function (done) {
-		this.timeout(0);
-		const oldValue = process.env.NODE_ENV;
-		process.env.NODE_ENV = 'development';
-		socketAdmin.plugins.toggleInstall({
-			uid: adminUid,
-		}, {
-			id: 'nodebb-plugin-location-to-map',
-			version: 'latest',
-		}, (err, data) => {
-			assert.ifError(err);
-			assert.equal(data.name, 'nodebb-plugin-location-to-map');
-			process.env.NODE_ENV = oldValue;
-			done();
+	describe('install/upgrade plugin', () => {
+		it('should toggle plugin install', function (done) {
+			this.timeout(0);
+			const oldValue = process.env.NODE_ENV;
+			process.env.NODE_ENV = 'development';
+			socketAdmin.plugins.toggleInstall({
+				uid: adminUid,
+			}, {
+				id: 'nodebb-plugin-location-to-map',
+				version: 'latest',
+			}, (err, data) => {
+				assert.ifError(err);
+				assert.equal(data.name, 'nodebb-plugin-location-to-map');
+				process.env.NODE_ENV = oldValue;
+				done();
+			});
+		});
+
+		it('should upgrade plugin', function (done) {
+			this.timeout(0);
+			const oldValue = process.env.NODE_ENV;
+			process.env.NODE_ENV = 'development';
+			socketAdmin.plugins.upgrade({
+				uid: adminUid,
+			}, {
+				id: 'nodebb-plugin-markdown',
+				version: 'latest',
+			}, (err) => {
+				assert.ifError(err);
+				process.env.NODE_ENV = oldValue;
+				done();
+			});
+		});
+
+		it('should fail to upgrade plugin if it is not installed', function (done) {
+			this.timeout(0);
+			const oldValue = process.env.NODE_ENV;
+			process.env.NODE_ENV = 'development';
+			socketAdmin.plugins.toggleInstall({
+				uid: adminUid,
+			}, {
+				id: 'nodebb-plugin-location-to-map',
+				version: 'latest',
+			}, function (err) {
+				assert.ifError(err);
+				socketAdmin.plugins.upgrade({
+					uid: adminUid,
+				}, {
+					id: 'nodebb-plugin-location-to-map',
+					version: 'latest',
+				}, (err) => {
+					console.log(err);
+					assert.strictEqual(err.message, '[[error:plugin-not-installed]]');
+					process.env.NODE_ENV = oldValue;
+					done();
+				});
+			});
 		});
 	});
 
@@ -486,7 +480,7 @@ describe('socket.io', () => {
 
 	it('should order active plugins', (done) => {
 		const data = [
-			{ name: 'nodebb-theme-persona', order: 0 },
+			{ name: 'nodebb-theme-harmony', order: 0 },
 			{ name: 'nodebb-plugin-dbsearch', order: 1 },
 			{ name: 'nodebb-plugin-markdown', order: 2 },
 			{ ignoreme: 'wrong data' },
@@ -498,22 +492,6 @@ describe('socket.io', () => {
 				assert.equal(rank, 1);
 				done();
 			});
-		});
-	});
-
-	it('should upgrade plugin', function (done) {
-		this.timeout(0);
-		const oldValue = process.env.NODE_ENV;
-		process.env.NODE_ENV = 'development';
-		socketAdmin.plugins.upgrade({
-			uid: adminUid,
-		}, {
-			id: 'nodebb-plugin-location-to-map',
-			version: 'latest',
-		}, (err) => {
-			assert.ifError(err);
-			process.env.NODE_ENV = oldValue;
-			done();
 		});
 	});
 
@@ -709,60 +687,40 @@ describe('socket.io', () => {
 			assert(pwExpiry > then && pwExpiry < Date.now());
 		});
 
-		it('should not error on valid email', (done) => {
-			socketUser.reset.send({ uid: 0 }, 'regular@test.com', (err) => {
-				assert.ifError(err);
+		it('should not error on valid email', async () => {
+			await socketUser.reset.send({ uid: 0 }, 'regular@test.com');
+			const [count, eventsData] = await Promise.all([
+				db.sortedSetCount('reset:issueDate', 0, Date.now()),
+				events.getEvents({ filter: '', start: 0, stop: 0 }),
+			]);
+			assert.strictEqual(count, 2);
 
-				async.parallel({
-					count: async.apply(db.sortedSetCount.bind(db), 'reset:issueDate', 0, Date.now()),
-					event: async.apply(events.getEvents, '', 0, 0),
-				}, (err, data) => {
-					assert.ifError(err);
-					assert.strictEqual(data.count, 2);
-
-					// Event validity
-					assert.strictEqual(data.event.length, 1);
-					const event = data.event[0];
-					assert.strictEqual(event.type, 'password-reset');
-					assert.strictEqual(event.text, '[[success:success]]');
-
-					done();
-				});
-			});
+			// Event validity
+			assert.strictEqual(eventsData.length, 1);
+			const event = eventsData[0];
+			assert.strictEqual(event.type, 'password-reset');
+			assert.strictEqual(event.text, '[[success:success]]');
 		});
 
-		it('should not generate code if rate limited', (done) => {
-			socketUser.reset.send({ uid: 0 }, 'regular@test.com', (err) => {
-				assert(err);
+		it('should not generate code if rate limited', async () => {
+			await socketUser.reset.send({ uid: 0 }, 'regular@test.com');
+			const [count, eventsData] = await Promise.all([
+				db.sortedSetCount('reset:issueDate', 0, Date.now()),
+				events.getEvents({ filter: '', start: 0, stop: 0 }),
+			]);
+			assert.strictEqual(count, 2);
 
-				async.parallel({
-					count: async.apply(db.sortedSetCount.bind(db), 'reset:issueDate', 0, Date.now()),
-					event: async.apply(events.getEvents, '', 0, 0),
-				}, (err, data) => {
-					assert.ifError(err);
-					assert.strictEqual(data.count, 2);
-
-					// Event validity
-					assert.strictEqual(data.event.length, 1);
-					const event = data.event[0];
-					assert.strictEqual(event.type, 'password-reset');
-					assert.strictEqual(event.text, '[[error:reset-rate-limited]]');
-
-					done();
-				});
-			});
+			// Event validity
+			assert.strictEqual(eventsData.length, 1);
+			const event = eventsData[0];
+			assert.strictEqual(event.type, 'password-reset');
+			assert.strictEqual(event.text, '[[error:reset-rate-limited]]');
 		});
 
-		it('should not error on invalid email (but not generate reset code)', (done) => {
-			socketUser.reset.send({ uid: 0 }, 'irregular@test.com', (err) => {
-				assert.ifError(err);
-
-				db.sortedSetCount('reset:issueDate', 0, Date.now(), (err, count) => {
-					assert.ifError(err);
-					assert.strictEqual(count, 2);
-					done();
-				});
-			});
+		it('should not error on invalid email (but not generate reset code)', async () => {
+			await socketUser.reset.send({ uid: 0 }, 'irregular@test.com');
+			const count = await db.sortedSetCount('reset:issueDate', 0, Date.now());
+			assert.strictEqual(count, 2);
 		});
 
 		it('should error on no email', (done) => {
@@ -783,7 +741,7 @@ describe('socket.io', () => {
 
 	it('should toggle caches', async () => {
 		const caches = {
-			post: require('../src/posts/cache'),
+			post: require('../src/posts/cache').getOrCreate(),
 			object: require('../src/database').objectCache,
 			group: require('../src/groups').cache,
 			local: require('../src/cache'),

@@ -1,3 +1,6 @@
+@use "fontawesome/scss/variables" as fa-vars;
+@use 'fontawesome/scss/solid' as fa-solid;
+
 @import "fonts";
 @import "mixins";
 @import "common";
@@ -18,6 +21,7 @@
 @import "settings";
 
 @import "../modules/alerts";
+@import "../modules/scrollbar.scss";
 @import "./modules/selectable";
 @import "./modules/nprogress";
 @import "./modules/search";
@@ -152,11 +156,11 @@ body {
 	}
 }
 
-.dropdown-left .dropdown-menu {
-	--bs-position: start;
+.dropdown-left {
+	.dropdown-menu { --bs-position: start; }
 }
-.dropdown-right .dropdown-menu {
-	--bs-position: end;
+.dropdown-right {
+	.dropdown-menu { --bs-position: end; }
 }
 
 [component="category-selector"] {
@@ -206,7 +210,7 @@ body {
 		background-color: $success;
 
 		i {
-			@include fa-icon-solid($fa-var-check);
+			@include fa-solid.icon(fa-vars.$var-check);
 		}
 	}
 }

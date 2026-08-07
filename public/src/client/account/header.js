@@ -10,17 +10,15 @@ define('forum/account/header', [
 	'accounts/moderate',
 	'accounts/picture',
 	'api',
-	'bootbox',
+	'modals',
 	'alerts',
 ], function (coverPhoto, pictureCropper, components, translator,
-	AccountsDelete, AccountsModerate, AccountsPicture, api, bootbox, alerts) {
+	AccountsDelete, AccountsModerate, AccountsPicture, api, modals, alerts) {
 	const AccountHeader = {};
 	let isAdminOrSelfOrGlobalMod;
 
 	AccountHeader.init = function () {
 		isAdminOrSelfOrGlobalMod = ajaxify.data.isAdmin || ajaxify.data.isSelf || ajaxify.data.isGlobalModerator;
-
-		selectActivePill();
 
 		handleImageChange();
 
@@ -32,7 +30,7 @@ define('forum/account/header', [
 		components.get('account/unfollow').on('click', () => toggleFollow('unfollow'));
 
 		components.get('account/chat').on('click', async function () {
-			const roomId = await socket.emit('modules.chats.hasPrivateChat', ajaxify.data.uid);
+			const { roomId } = await api.get(`/users/${encodeURIComponent(ajaxify.data.uid)}/chat`);
 			const chat = await app.require('chat');
 			if (roomId) {
 				chat.openChat(roomId);
@@ -56,20 +54,10 @@ define('forum/account/header', [
 		components.get('account/delete-content').on('click', () => AccountsDelete.content(ajaxify.data.theirid));
 		components.get('account/delete-all').on('click', () => AccountsDelete.purge(ajaxify.data.theirid));
 		components.get('account/flag').on('click', flagAccount);
-		components.get('account/block').on('click', toggleBlockAccount);
-		components.get('account/unblock').on('click', toggleBlockAccount);
+		components.get('account/already-flagged').on('click', rescindAccountFlag);
+		components.get('account/block').on('click', () => toggleBlockAccount('block'));
+		components.get('account/unblock').on('click', () => toggleBlockAccount('unblock'));
 	};
-
-	function selectActivePill() {
-		$('.account-sub-links li a').removeClass('active').each(function () {
-			const href = $(this).attr('href');
-
-			if (decodeURIComponent(href) === decodeURIComponent(window.location.pathname)) {
-				$(this).addClass('active');
-				return false;
-			}
-		});
-	}
 
 	function handleImageChange() {
 		$('[component="profile/change/picture"]').on('click', function () {
@@ -108,7 +96,21 @@ define('forum/account/header', [
 	}
 
 	function toggleFollow(type) {
-		api[type === 'follow' ? 'put' : 'del']('/users/' + ajaxify.data.uid + '/follow', undefined, function (err) {
+		if (!app.user.uid) {
+			let objectId;
+			if (utils.isNumber(ajaxify.data.uid)) {
+				objectId = config.url + '/user/' + ajaxify.data.uid;
+			} else {
+				objectId = ajaxify.data.userslug;
+			}
+			import('modules/intents').then(({ trigger }) => {
+				trigger('follow', { object: objectId });
+			});
+			return false;
+		}
+
+		const target = isFinite(ajaxify.data.uid) ? ajaxify.data.uid : encodeURIComponent(ajaxify.data.userslug);
+		api[type === 'follow' ? 'put' : 'del']('/users/' + target + '/follow', undefined, function (err) {
 			if (err) {
 				return alerts.error(err);
 			}
@@ -129,10 +131,23 @@ define('forum/account/header', [
 		});
 	}
 
-	function toggleBlockAccount() {
+	function rescindAccountFlag() {
+		const flagId = $(this).data('flag-id');
+		require(['flags'], function (flags) {
+			modals.confirm('[[flags:modal-confirm-rescind]]', function (confirm) {
+				if (!confirm) {
+					return;
+				}
+				flags.rescind(flagId);
+			});
+		});
+	}
+
+	function toggleBlockAccount(action) {
 		socket.emit('user.toggleBlock', {
 			blockeeUid: ajaxify.data.uid,
 			blockerUid: app.user.uid,
+			action,
 		}, function (err, blocked) {
 			if (err) {
 				return alerts.error(err);
@@ -146,21 +161,19 @@ define('forum/account/header', [
 	}
 
 	function removeCover() {
-		translator.translate('[[user:remove-cover-picture-confirm]]', function (translated) {
-			bootbox.confirm(translated, function (confirm) {
-				if (!confirm) {
-					return;
-				}
+		modals.confirm('[[user:remove-cover-picture-confirm]]', function (confirm) {
+			if (!confirm) {
+				return;
+			}
 
-				socket.emit('user.removeCover', {
-					uid: ajaxify.data.uid,
-				}, function (err) {
-					if (!err) {
-						ajaxify.refresh();
-					} else {
-						alerts.error(err);
-					}
-				});
+			socket.emit('user.removeCover', {
+				uid: ajaxify.data.uid,
+			}, function (err) {
+				if (!err) {
+					ajaxify.refresh();
+				} else {
+					alerts.error(err);
+				}
 			});
 		});
 	}

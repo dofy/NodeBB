@@ -2,14 +2,16 @@
 
 define('forum/category', [
 	'forum/infinitescroll',
-	'share',
 	'navigator',
 	'topicList',
 	'sort',
 	'categorySelector',
 	'hooks',
 	'alerts',
-], function (infinitescroll, share, navigator, topicList, sort, categorySelector, hooks, alerts) {
+	'api',
+	'clipboard',
+	'modules/intents',
+], function (infinitescroll, navigator, topicList, sort, categorySelector, hooks, alerts, api, clipboard, intents) {
 	const Category = {};
 
 	$(window).on('action:ajaxify.start', function (ev, data) {
@@ -22,8 +24,6 @@ define('forum/category', [
 		const cid = ajaxify.data.cid;
 
 		app.enterRoom('category_' + cid);
-
-		share.addShareHandlers(ajaxify.data.name);
 
 		topicList.init('category', loadTopicsAfter);
 
@@ -41,6 +41,8 @@ define('forum/category', [
 
 		handleLoadMoreSubcategories();
 
+		handleDescription();
+
 		categorySelector.init($('[component="category-selector"]'), {
 			privilege: 'find',
 			parentCid: ajaxify.data.cid,
@@ -48,6 +50,10 @@ define('forum/category', [
 				ajaxify.go('/category/' + category.cid);
 			},
 		});
+
+		new clipboard('[data-clipboard-text]');
+
+		intents.addHandlers();
 
 		hooks.fire('action:topics.loaded', { topics: ajaxify.data.topics });
 		hooks.fire('action:category.loaded', { cid: ajaxify.data.cid });
@@ -64,17 +70,20 @@ define('forum/category', [
 	}
 
 	function handleIgnoreWatch(cid) {
-		$('[component="category/watching"], [component="category/ignoring"], [component="category/notwatching"]').on('click', function () {
+		$('[component="category/watching"], [component="category/tracking"], [component="category/ignoring"], [component="category/notwatching"]').on('click', function () {
 			const $this = $(this);
 			const state = $this.attr('data-state');
 
-			socket.emit('categories.setWatchState', { cid: cid, state: state }, function (err) {
+			api.put(`/categories/${encodeURIComponent(cid)}/watch`, { state }, (err) => {
 				if (err) {
 					return alerts.error(err);
 				}
 
 				$('[component="category/watching/menu"]').toggleClass('hidden', state !== 'watching');
 				$('[component="category/watching/check"]').toggleClass('fa-check', state === 'watching');
+
+				$('[component="category/tracking/menu"]').toggleClass('hidden', state !== 'tracking');
+				$('[component="category/tracking/check"]').toggleClass('fa-check', state === 'tracking');
 
 				$('[component="category/notwatching/menu"]').toggleClass('hidden', state !== 'notwatching');
 				$('[component="category/notwatching/check"]').toggleClass('fa-check', state === 'notwatching');
@@ -88,29 +97,41 @@ define('forum/category', [
 	}
 
 	function handleLoadMoreSubcategories() {
-		$('[component="category/load-more-subcategories"]').on('click', function () {
+		$('[component="category/load-more-subcategories"]').on('click', async function () {
 			const btn = $(this);
-			socket.emit('categories.loadMoreSubCategories', {
-				cid: ajaxify.data.cid,
-				start: ajaxify.data.nextSubCategoryStart,
-			}, function (err, data) {
-				if (err) {
-					return alerts.error(err);
-				}
-				btn.toggleClass('hidden', !data.length || data.length < ajaxify.data.subCategoriesPerPage);
-				if (!data.length) {
-					return;
-				}
-				app.parseAndTranslate('category', 'children', { children: data }, function (html) {
-					html.find('.timeago').timeago();
-					$('[component="category/subcategory/container"]').append(html);
-					ajaxify.data.nextSubCategoryStart += ajaxify.data.subCategoriesPerPage;
-					ajaxify.data.subCategoriesLeft -= data.length;
-					btn.toggleClass('hidden', ajaxify.data.subCategoriesLeft <= 0)
-						.translateText('[[category:x-more-categories, ' + ajaxify.data.subCategoriesLeft + ']]');
-				});
+			const { categories: data } = await api.get(`/categories/${ajaxify.data.cid}/children?start=${ajaxify.data.nextSubCategoryStart}`);
+			btn.toggleClass('hidden', !data.length || data.length < ajaxify.data.subCategoriesPerPage);
+			if (!data.length) {
+				return;
+			}
+			app.parseAndTranslate('category', 'children', { children: data }, function (html) {
+				html.find('.timeago').timeago();
+				$('[component="category/subcategory/container"]').append(html);
+				ajaxify.data.nextSubCategoryStart += ajaxify.data.subCategoriesPerPage;
+				ajaxify.data.subCategoriesLeft -= data.length;
+				btn.toggleClass('hidden', ajaxify.data.subCategoriesLeft <= 0)
+					.translateText(`[[category:x-more-categories, ${ajaxify.data.subCategoriesLeft}]]`);
 			});
+
 			return false;
+		});
+	}
+
+	function handleDescription() {
+		const fadeEl = $(`.description[class*="clamp-fade-"]`);
+		fadeEl.on('click', function () {
+			const $this = $(this);
+			let clampClass = $this.data('clampClass');
+			if (!clampClass) {
+				const match = $this.attr('class').match(/line-clamp-(\S+)/);
+				if (match && match[1]) {
+					clampClass = `line-clamp-${match[1]}`;
+					fadeEl.data('clampClass', clampClass);
+				}
+			}
+			if (clampClass) {
+				fadeEl.toggleClass(clampClass);
+			}
 		});
 	}
 
@@ -118,14 +139,9 @@ define('forum/category', [
 		navigator.scrollTop(0);
 	};
 
-	Category.toBottom = function () {
-		socket.emit('categories.getTopicCount', ajaxify.data.cid, function (err, count) {
-			if (err) {
-				return alerts.error(err);
-			}
-
-			navigator.scrollBottom(count - 1);
-		});
+	Category.toBottom = async () => {
+		const { count } = await api.get(`/categories/${encodeURIComponent(ajaxify.data.category.cid)}/count`);
+		navigator.scrollBottom(count - 1);
 	};
 
 	function loadTopicsAfter(after, direction, callback) {
@@ -133,8 +149,7 @@ define('forum/category', [
 
 		hooks.fire('action:topics.loading');
 		const params = utils.params();
-		infinitescroll.loadMore('categories.loadMore', {
-			cid: ajaxify.data.cid,
+		infinitescroll.loadMore(`/categories/${encodeURIComponent(ajaxify.data.cid)}/topics`, {
 			after: after,
 			direction: direction,
 			query: params,

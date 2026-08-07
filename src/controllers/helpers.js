@@ -1,10 +1,10 @@
 'use strict';
 
 const nconf = require('nconf');
-const validator = require('validator');
+const winston = require('winston');
 const querystring = require('querystring');
 const _ = require('lodash');
-const chalk = require('chalk');
+const chalk = require('chalk').default;
 
 const translator = require('../translator');
 const user = require('../user');
@@ -23,8 +23,10 @@ const url = nconf.get('url');
 helpers.noScriptErrors = async function (req, res, error, httpStatus) {
 	if (req.body.noscript !== 'true') {
 		if (typeof error === 'string') {
+			winston.error(`${new Error(error).stack}`);
 			return res.status(httpStatus).send(error);
 		}
+		winston.error(`${new Error(JSON.stringify(error)).stack}`);
 		return res.status(httpStatus).json(error);
 	}
 	const middleware = require('../middleware');
@@ -40,6 +42,7 @@ helpers.noScriptErrors = async function (req, res, error, httpStatus) {
 };
 
 helpers.terms = {
+	alltime: 'alltime',
 	daily: 'day',
 	weekly: 'week',
 	monthly: 'month',
@@ -101,7 +104,7 @@ helpers.buildFilters = function (url, filter, query) {
 helpers.buildTerms = function (url, term, query) {
 	return [{
 		name: '[[recent:alltime]]',
-		url: url + helpers.buildQueryString(query, 'term', ''),
+		url: url + helpers.buildQueryString(query, 'term', 'alltime'),
 		selected: term === 'alltime',
 		term: 'alltime',
 	}, {
@@ -133,7 +136,7 @@ helpers.notAllowed = async function (req, res, error) {
 	if (req.loggedIn || req.uid === -1) {
 		if (res.locals.isAPI) {
 			if (req.originalUrl.startsWith(`${relative_path}/api/v3`)) {
-				helpers.formatApiResponse(403, res, error);
+				await helpers.formatApiResponse(403, res, error);
 			} else {
 				res.status(403).json({
 					path: req.path.replace(/^\/api/, ''),
@@ -155,7 +158,7 @@ helpers.notAllowed = async function (req, res, error) {
 		}
 	} else if (res.locals.isAPI) {
 		req.session.returnTo = req.url.replace(/^\/api/, '');
-		helpers.formatApiResponse(401, res, error);
+		await helpers.formatApiResponse(401, res, error);
 	} else {
 		req.session.returnTo = req.url;
 		res.redirect(`${relative_path}/login${req.path.startsWith('/admin') ? '?local=1' : ''}`);
@@ -166,9 +169,9 @@ helpers.redirect = function (res, url, permanent) {
 	// this is used by sso plugins to redirect to the auth route
 	// { external: '/auth/sso' } or { external: 'https://domain/auth/sso' }
 	if (url.hasOwnProperty('external')) {
-		const redirectUrl = encodeURI(prependRelativePath(url.external));
+		const redirectUrl = prependRelativePath(url.external);
 		if (res.locals.isAPI) {
-			res.set('X-Redirect', redirectUrl).status(200).json({ external: redirectUrl });
+			res.set('X-Redirect', encodeURIComponent(redirectUrl)).status(200).json({ external: redirectUrl });
 		} else {
 			res.redirect(permanent ? 308 : 307, redirectUrl);
 		}
@@ -176,10 +179,9 @@ helpers.redirect = function (res, url, permanent) {
 	}
 
 	if (res.locals.isAPI) {
-		url = encodeURI(url);
-		res.set('X-Redirect', url).status(200).json(url);
+		res.set('X-Redirect', encodeURIComponent(url)).status(200).json(url);
 	} else {
-		res.redirect(permanent ? 308 : 307, encodeURI(prependRelativePath(url)));
+		res.redirect(permanent ? 308 : 307, prependRelativePath(url));
 	}
 };
 
@@ -194,9 +196,10 @@ helpers.buildCategoryBreadcrumbs = async function (cid) {
 	while (parseInt(cid, 10)) {
 		/* eslint-disable no-await-in-loop */
 		const data = await categories.getCategoryFields(cid, ['name', 'slug', 'parentCid', 'disabled', 'isSection']);
+
 		if (!data.disabled && !data.isSection) {
 			breadcrumbs.unshift({
-				text: String(data.name),
+				text: data.name,
 				url: `${url}/category/${data.slug}`,
 				cid: cid,
 			});
@@ -238,14 +241,22 @@ helpers.buildBreadcrumbs = function (crumbs) {
 	return breadcrumbs;
 };
 
-helpers.buildTitle = function (pageTitle) {
-	pageTitle = pageTitle || '';
+helpers.buildTitle = async function (pageTitle, userLang, template) {
+	pageTitle = String(pageTitle || '');
+	const translateTitle = template !== 'topic';
+
+	const browserTitle = String(meta.config.browserTitle || meta.config.title || 'NodeBB');
+	const [titleTranslated, browserTitleTranslated] = await Promise.all([
+		translateTitle ? translator.translateKey(pageTitle, [], userLang) : pageTitle,
+		translator.translateKey(browserTitle, [], userLang),
+	], userLang);
+
 	const titleLayout = meta.config.titleLayout || `${pageTitle ? '{pageTitle} | ' : ''}{browserTitle}`;
+	const title = titleLayout
+		.replace('{pageTitle}', () => titleTranslated)
+		.replace('{browserTitle}', () => browserTitleTranslated);
 
-	const browserTitle = validator.escape(String(meta.config.browserTitle || meta.config.title || 'NodeBB'));
-
-	const title = titleLayout.replace('{pageTitle}', () => pageTitle).replace('{browserTitle}', () => browserTitle);
-	return title;
+	return utils.decodeHTMLEntities(title);
 };
 
 helpers.getCategories = async function (set, uid, privilege, selectedCid) {
@@ -263,7 +274,7 @@ async function getCategoryData(cids, uid, selectedCid, states, privilege) {
 		helpers.getVisibleCategories({
 			cids, uid, states, privilege, showLinks: false,
 		}),
-		helpers.getSelectedCategory(selectedCid),
+		helpers.getSelectedCategory(selectedCid, uid),
 	]);
 
 	const categoriesData = categories.buildForSelectCategories(visibleCategories, ['disabledClass']);
@@ -334,28 +345,40 @@ helpers.getVisibleCategories = async function (params) {
 	});
 };
 
-helpers.getSelectedCategory = async function (cids) {
+helpers.getSelectedCategory = async function (cids, uid) {
 	if (cids && !Array.isArray(cids)) {
 		cids = [cids];
 	}
+	if (uid === undefined) {
+		const als = require('../als');
+		const store = als.getStore();
+		const e = new Error('').stack.split('\n')[3].trim();
+		if (store) {
+			winston.warn(`helpers.getSelectedCategory called without uid, getting it from async local storage. This is not recommended and may break in future versions. Pass in a uid explicitly. Called ${e}`);
+		} else {
+			winston.warn(`helpers.getSelectedCategory called without uid and no async local storage found, falling back to uid:0. Pass in a uid explicitly. Called ${e}`);
+		}
+		uid = store && store.uid ? store.uid : 0;
+	}
+
 	cids = cids && cids.map(cid => parseInt(cid, 10));
-	let selectedCategories = await categories.getCategoriesData(cids);
+	if (cids && cids.length) {
+		cids = await privileges.categories.filterCids('find', cids, uid);
+	}
+	const selectedCategories = await categories.getCategoriesData(cids);
+	let selectedCategory = null;
 	const selectedCids = selectedCategories.map(c => c && c.cid).filter(Boolean);
 	if (selectedCategories.length > 1) {
-		selectedCategories = {
+		selectedCategory = {
 			icon: 'fa-plus',
 			name: '[[unread:multiple-categories-selected]]',
 			bgColor: '#ddd',
 		};
 	} else if (selectedCategories.length === 1 && selectedCategories[0]) {
-		selectedCategories = selectedCategories[0];
-	} else {
-		selectedCategories = null;
+		selectedCategory = selectedCategories[0];
 	}
-	return {
-		selectedCids: selectedCids,
-		selectedCategory: selectedCategories,
-	};
+
+	return { selectedCids, selectedCategory };
 };
 
 helpers.getSelectedTag = function (tags) {
@@ -363,7 +386,7 @@ helpers.getSelectedTag = function (tags) {
 		tags = [tags];
 	}
 	tags = tags || [];
-	const tagData = tags.map(t => validator.escape(String(t)));
+	const tagData = tags.map(t => String(t));
 	let selectedTag = null;
 	if (tagData.length) {
 		selectedTag = {
@@ -393,9 +416,10 @@ helpers.setCategoryTeaser = function (category) {
 	if (Array.isArray(category.posts) && category.posts.length && category.posts[0]) {
 		const post = category.posts[0];
 		category.teaser = {
-			url: `${nconf.get('relative_path')}/post/${post.pid}`,
+			url: `${nconf.get('relative_path')}/post/${encodeURIComponent(post.pid)}`,
 			timestampISO: post.timestampISO,
 			pid: post.pid,
+			tid: post.tid,
 			index: post.index,
 			topic: post.topic,
 			user: post.user,
@@ -418,6 +442,10 @@ helpers.getHomePageRoutes = async function (uid) {
 		{
 			route: 'categories',
 			name: 'Categories',
+		},
+		{
+			route: 'world',
+			name: 'World',
 		},
 		{
 			route: 'unread',
@@ -505,11 +533,11 @@ helpers.formatApiResponse = async (statusCode, res, payload) => {
 
 		const returnPayload = await helpers.generateError(statusCode, message, res);
 		returnPayload.response = response;
-
-		if (global.env === 'development') {
-			returnPayload.stack = payload.stack;
+		if (process.env.NODE_ENV === 'development') {
+			const stack = payload instanceof Error ? payload.stack : new Error(String(payload)).stack;
+			returnPayload.stack = stack;
 			process.stdout.write(`[${chalk.yellow('api')}] Exception caught, error with stack trace follows:\n`);
-			process.stdout.write(payload.stack);
+			process.stdout.write(stack);
 		}
 		res.status(statusCode).json(returnPayload);
 	} else {
@@ -542,8 +570,8 @@ async function generateBannedResponse(res) {
 helpers.generateError = async (statusCode, message, res) => {
 	async function translateMessage(message) {
 		const { req } = res;
-		const settings = req.query.lang ? null : await user.getSettings(req.uid);
-		const language = String(req.query.lang || settings.userLang || meta.config.defaultLang);
+		const settings = req?.query?.lang ? null : await user.getSettings(req.uid);
+		const language = String(req?.query?.lang || settings.userLang || meta.config.defaultLang);
 		return await translator.translate(message, language);
 	}
 	if (message && message.startsWith('[[')) {
@@ -597,6 +625,28 @@ helpers.generateError = async (statusCode, message, res) => {
 	}
 
 	return payload;
+};
+
+helpers.validateParameters = function (query, fields, validation) {
+	// Parse query string params for filters, eliminate non-valid filters
+	const valid = fields.reduce((memo, field) => {
+		if (query.hasOwnProperty(field) && Object.hasOwn(validation, field)) {
+			const val = query[field];
+			const validationRule = validation[field];
+			if (Array.isArray(validationRule) && validationRule.includes(val)) {
+				memo[field] = val;
+			} else if (validationRule === 'number') {
+				if (Array.isArray(val)) {
+					memo[field] = val.filter(utils.isNumber);
+				} else if (utils.isNumber(val)) {
+					memo[field] = val;
+				}
+			}
+		}
+
+		return memo;
+	}, {});
+	return valid;
 };
 
 require('../promisify')(helpers);

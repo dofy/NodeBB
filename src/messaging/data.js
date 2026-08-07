@@ -1,10 +1,10 @@
 'use strict';
 
 const _ = require('lodash');
-const validator = require('validator');
 
 const db = require('../database');
 const user = require('../user');
+const posts = require('../posts');
 const utils = require('../utils');
 const plugins = require('../plugins');
 
@@ -28,7 +28,7 @@ module.exports = function (Messaging) {
 
 	Messaging.getMessageField = async (mid, field) => {
 		const fields = await Messaging.getMessageFields(mid, [field]);
-		return fields ? fields[field] : null;
+		return fields && fields.hasOwnProperty(field) ? fields[field] : null;
 	};
 
 	Messaging.getMessageFields = async (mid, fields) => {
@@ -49,7 +49,7 @@ module.exports = function (Messaging) {
 		messages = messages
 			.map((msg, idx) => {
 				if (msg) {
-					msg.messageId = parseInt(mids[idx], 10);
+					msg.messageId = utils.isNumber(mids[idx]) ? parseInt(mids[idx], 10) : mids[idx];
 					msg.ip = undefined;
 					msg.isOwner = msg.fromuid === parseInt(uid, 10);
 				}
@@ -136,7 +136,7 @@ module.exports = function (Messaging) {
 		parentMids = parentMids.filter((mid, idx) => canView[idx]);
 
 		const parentMessages = await Messaging.getMessagesFields(parentMids, [
-			'fromuid', 'content', 'timestamp', 'deleted',
+			'mid', 'fromuid', 'content', 'timestamp', 'deleted', 'system',
 		]);
 		const parentUids = _.uniq(parentMessages.map(msg => msg && msg.fromuid));
 		const usersMap = _.zipObject(
@@ -146,7 +146,8 @@ module.exports = function (Messaging) {
 
 		await Promise.all(parentMessages.map(async (parentMsg) => {
 			if (parentMsg.deleted && parentMsg.fromuid !== parseInt(uid, 10)) {
-				parentMsg.content = `<p>[[modules:chat.message-deleted]]</p>`;
+				parentMsg.content = `[[modules:chat.message-deleted]]`;
+				parentMsg.txContent = true;
 				return;
 			}
 			const foundMsg = messages.find(msg => parseInt(msg.mid, 10) === parseInt(parentMsg.mid, 10));
@@ -176,15 +177,16 @@ module.exports = function (Messaging) {
 	async function parseMessages(messages, uid, roomId, isNew) {
 		await Promise.all(messages.map(async (msg) => {
 			if (msg.deleted && !msg.isOwner) {
-				msg.content = `<p>[[modules:chat.message-deleted]]</p>`;
+				msg.content = `[[modules:chat.message-deleted]]`;
+				msg.txContent = true;
 				return;
 			}
 			msg.content = await parseMessage(msg, uid, roomId, isNew);
 		}));
 	}
 	async function parseMessage(message, uid, roomId, isNew) {
-		if (message.system) {
-			return validator.escape(String(message.content));
+		if (message.system || !utils.isNumber(message.mid)) {
+			return posts.sanitize(message.content);
 		}
 
 		return await Messaging.parse(message.content, message.fromuid, uid, roomId, isNew);
@@ -193,11 +195,12 @@ module.exports = function (Messaging) {
 
 async function modifyMessage(message, fields, mid) {
 	if (message) {
+		const hasField = utils.createFieldChecker(fields);
 		db.parseIntFields(message, intFields, fields);
-		if (message.hasOwnProperty('timestamp')) {
+		if (hasField('timestamp')) {
 			message.timestampISO = utils.toISOString(message.timestamp);
 		}
-		if (message.hasOwnProperty('edited')) {
+		if (hasField('edited')) {
 			message.editedISO = utils.toISOString(message.edited);
 		}
 	}

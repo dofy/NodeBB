@@ -6,6 +6,10 @@ const plugins = require('../plugins');
 const meta = require('../meta');
 const privileges = require('../privileges');
 const user = require('../user');
+const notifications = require('../notifications');
+const tx = require('../translator');
+const batch = require('../batch');
+const utils = require('../utils');
 
 module.exports = function (Categories) {
 	Categories.getCategoryTopics = async function (data) {
@@ -24,10 +28,9 @@ module.exports = function (Categories) {
 	};
 
 	Categories.getTopicIds = async function (data) {
-		const [pinnedTids, set, direction] = await Promise.all([
+		const [pinnedTids, set] = await Promise.all([
 			Categories.getPinnedTids({ ...data, start: 0, stop: -1 }),
 			Categories.buildTopicsSortedSet(data),
-			Categories.getSortedSetRangeDirection(data.sort),
 		]);
 
 		const totalPinnedCount = pinnedTids.length;
@@ -59,12 +62,11 @@ module.exports = function (Categories) {
 
 		const stop = data.stop === -1 ? data.stop : start + normalTidsToGet - 1;
 		let normalTids;
-		const reverse = direction === 'highest-to-lowest';
 		if (Array.isArray(set)) {
 			const weights = set.map((s, index) => (index ? 0 : 1));
-			normalTids = await db[reverse ? 'getSortedSetRevIntersect' : 'getSortedSetIntersect']({ sets: set, start: start, stop: stop, weights: weights });
+			normalTids = await db.getSortedSetRevIntersect({ sets: set, start: start, stop: stop, weights: weights });
 		} else {
-			normalTids = await db[reverse ? 'getSortedSetRevRange' : 'getSortedSetRange'](set, start, stop);
+			normalTids = await db.getSortedSetRevRange(set, start, stop);
 		}
 		normalTids = normalTids.filter(tid => !pinnedTids.includes(tid));
 		return pinnedTidsOnPage.concat(normalTids);
@@ -81,46 +83,55 @@ module.exports = function (Categories) {
 		const set = await Categories.buildTopicsSortedSet(data);
 		if (Array.isArray(set)) {
 			return await db.sortedSetIntersectCard(set);
-		} else if (data.targetUid && set) {
+		} else if (parseInt(data.cid, 10) === -1 || (data.targetUid && set)) {
 			return await db.sortedSetCard(set);
 		}
 		return data.category.topic_count;
 	};
 
 	Categories.buildTopicsSortedSet = async function (data) {
-		const { cid } = data;
-		let set = `cid:${cid}:tids`;
-		const sort = data.sort || (data.settings && data.settings.categoryTopicSort) || meta.config.categoryTopicSort || 'newest_to_oldest';
+		const { cid, uid } = data;
+		const sort = data.sort || (data.settings && data.settings.categoryTopicSort) || meta.config.categoryTopicSort || 'recently_replied';
+		const sortToSet = {
+			recently_replied: `cid:${cid}:tids`,
+			recently_created: `cid:${cid}:tids:create`,
+			most_posts: `cid:${cid}:tids:posts`,
+			most_votes: `cid:${cid}:tids:votes`,
+			most_views: `cid:${cid}:tids:views`,
+		};
 
-		if (sort === 'most_posts') {
-			set = `cid:${cid}:tids:posts`;
-		} else if (sort === 'most_votes') {
-			set = `cid:${cid}:tids:votes`;
-		} else if (sort === 'most_views') {
-			set = `cid:${cid}:tids:views`;
-		}
+		const mainSet = sortToSet.hasOwnProperty(sort) ? sortToSet[sort] : `cid:${cid}:tids`;
+		const set = new Set([mainSet]);
 
 		if (data.tag) {
 			if (Array.isArray(data.tag)) {
-				set = [set].concat(data.tag.map(tag => `tag:${tag}:topics`));
+				data.tag.forEach((tag) => {
+					set.add(`tag:${tag}:topics`);
+				});
 			} else {
-				set = [set, `tag:${data.tag}:topics`];
+				set.add(`tag:${data.tag}:topics`);
 			}
 		}
 
 		if (data.targetUid) {
-			set = (Array.isArray(set) ? set : [set]).concat([`cid:${cid}:uid:${data.targetUid}:tids`]);
+			set.add(`cid:${cid}:uid:${data.targetUid}:tids`);
 		}
 
+		if (parseInt(cid, 10) === -1 && uid > 0) {
+			set.delete(mainSet);
+			set.add(`uid:${uid}:inbox`);
+		}
+		const setValue = Array.from(set);
 		const result = await plugins.hooks.fire('filter:categories.buildTopicsSortedSet', {
-			set: set,
+			set: set.size > 1 ? setValue : setValue[0],
 			data: data,
 		});
 		return result && result.set;
 	};
 
 	Categories.getSortedSetRangeDirection = async function (sort) {
-		sort = sort || 'newest_to_oldest';
+		console.warn('[deprecated] Will be removed in 4.x');
+		sort = sort || 'recently_replied';
 		const direction = ['newest_to_oldest', 'most_posts', 'most_votes', 'most_views'].includes(sort) ? 'highest-to-lowest' : 'lowest-to-highest';
 		const result = await plugins.hooks.fire('filter:categories.getSortedSetRangeDirection', {
 			sort: sort,
@@ -150,20 +161,19 @@ module.exports = function (Categories) {
 		return await topics.tools.checkPinExpiry(pinnedTids);
 	};
 
-	Categories.modifyTopicsByPrivilege = function (topics, privileges) {
+	Categories.modifyTopicsByPrivilege = async function (topics, privileges) {
 		if (!Array.isArray(topics) || !topics.length || privileges.view_deleted) {
 			return;
 		}
 
 		topics.forEach((topic) => {
-			if (!topic.scheduled && topic.deleted && !topic.isOwner) {
+			if (topic && !topic.scheduled && topic.deleted && !topic.isOwner) {
 				topic.title = '[[topic:topic-is-deleted]]';
-				if (topic.hasOwnProperty('titleRaw')) {
-					topic.titleRaw = '[[topic:topic-is-deleted]]';
-				}
+				topic.txTitle = true;
 				topic.slug = topic.tid;
 				topic.teaser = null;
 				topic.noAnchor = true;
+				topic.unread = false;
 				topic.tags = [];
 			}
 		});
@@ -175,7 +185,7 @@ module.exports = function (Categories) {
 		}
 		const promises = [
 			db.sortedSetAdd(`cid:${cid}:pids`, postData.timestamp, postData.pid),
-			db.incrObjectField(`category:${cid}`, 'post_count'),
+			db.incrObjectField(`${utils.isNumber(cid) ? 'category' : 'categoryRemote'}:${cid}`, 'post_count'),
 		];
 		if (!pinned) {
 			promises.push(db.sortedSetIncrBy(`cid:${cid}:tids:posts`, 1, postData.tid));
@@ -186,13 +196,15 @@ module.exports = function (Categories) {
 
 	Categories.onTopicsMoved = async (cids) => {
 		await Promise.all(cids.map(async (cid) => {
+			const [topicCount, postCount] = await db.sortedSetsCard([
+				`cid:${cid}:tids:lastposttime`,
+				`cid:${cid}:pids`,
+			]);
 			await Promise.all([
-				Categories.setCategoryField(
-					cid, 'topic_count', await db.sortedSetCard(`cid:${cid}:tids:lastposttime`)
-				),
-				Categories.setCategoryField(
-					cid, 'post_count', await db.sortedSetCard(`cid:${cid}:pids`)
-				),
+				Categories.setCategoryFields(cid, {
+					topic_count: topicCount,
+					post_count: postCount,
+				}),
 				Categories.updateRecentTidForCid(cid),
 			]);
 		}));
@@ -203,4 +215,81 @@ module.exports = function (Categories) {
 		const now = Date.now();
 		return tids.filter((tid, index) => tid && (!scores[index] || scores[index] <= now));
 	}
+
+	Categories.notifyCategoryFollowers = async (postData, exceptUid) => {
+		const { cid } = postData.topic;
+		const followers = [];
+		await batch.processSortedSet(`cid:${cid}:uid:watch:state`, async (uids) => {
+			followers.push(
+				...await privileges.categories.filterUids('topics:read', cid, uids)
+			);
+		}, {
+			batch: 500,
+			min: Categories.watchStates.watching,
+			max: Categories.watchStates.watching,
+		});
+		const index = followers.indexOf(String(exceptUid));
+		if (index !== -1) {
+			followers.splice(index, 1);
+		}
+		if (!followers.length) {
+			return;
+		}
+
+		const [displayname, categoryName, title] = await Promise.all([
+			user.getNotificationDisplayname(postData.user.uid),
+			Categories.getCategoryField(cid, 'name'),
+			topics.getNotificationTitle(postData.topic.tid),
+		]);
+
+		const bodyShort = tx.compile(
+			'notifications:user-posted-topic-in-category',
+			displayname,
+			title,
+			categoryName
+		);
+
+		const notification = await notifications.create({
+			type: 'new-topic-in-category',
+			nid: `new_topic:tid:${postData.topic.tid}:uid:${exceptUid}`,
+			bodyShort: bodyShort,
+			bodyLong: postData.content,
+			pid: postData.pid,
+			path: `/post/${encodeURIComponent(postData.pid)}`,
+			tid: postData.topic.tid,
+			from: exceptUid,
+		});
+		notifications.push(notification, followers);
+	};
+
+	Categories.sortTidsBySet = async (tids, sort) => {
+		let cids = await topics.getTopicsFields(tids, ['cid']);
+		cids = cids.map(({ cid }) => cid);
+
+		function getSet(cid, sort) {
+			sort = sort || meta.config.categoryTopicSort || 'recently_replied';
+			const sortToSet = {
+				recently_replied: `cid:${cid}:tids`,
+				recently_created: `cid:${cid}:tids:create`,
+				most_posts: `cid:${cid}:tids:posts`,
+				most_votes: `cid:${cid}:tids:votes`,
+				most_views: `cid:${cid}:tids:views`,
+			};
+
+			return sortToSet[sort];
+		}
+
+		const scores = await Promise.all(tids.map(async (tid, idx) => {
+			const cid = cids[idx];
+			const orderBy = getSet(cid, sort);
+			return await db.sortedSetScore(orderBy, tid);
+		}));
+
+		const sorted = tids
+			.map((tid, idx) => [tid, scores[idx]])
+			.sort(([, a], [, b]) => b - a)
+			.map(([tid]) => tid);
+
+		return sorted;
+	};
 };

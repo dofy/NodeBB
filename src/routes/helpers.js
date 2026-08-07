@@ -16,6 +16,7 @@ helpers.setupPageRoute = function (...args) {
 	}
 
 	middlewares = [
+		middleware.autoLocale,
 		middleware.applyBlacklist,
 		middleware.authenticateRequest,
 		middleware.redirectToHomeIfBanned,
@@ -44,7 +45,7 @@ helpers.setupAdminPageRoute = function (...args) {
 	if (args.length === 5) {
 		winston.warn(`[helpers.setupAdminPageRoute(${name})] passing \`middleware\` as the third param is deprecated, it can now be safely removed`);
 	}
-	router.get(name, middleware.admin.buildHeader, middlewares, helpers.tryRoute(controller));
+	router.get(name, middleware.autoLocale, middleware.admin.buildHeader, middlewares, helpers.tryRoute(controller));
 	router.get(`/api${name}`, middlewares, helpers.tryRoute(controller));
 };
 
@@ -53,15 +54,16 @@ helpers.setupApiRoute = function (...args) {
 	const [router, verb, name] = args;
 	let middlewares = args.length > 4 ? args[args.length - 2] : [];
 	const controller = args[args.length - 1];
-
+	const upload = require('../middleware/multer');
 	middlewares = [
+		middleware.autoLocale,
 		middleware.applyBlacklist,
 		middleware.authenticateRequest,
 		middleware.maintenanceMode,
 		middleware.registrationComplete,
 		middleware.pluginHooks,
 		middleware.logApiUsage,
-		middleware.handleMultipart,
+		upload.any(),
 		...middlewares,
 	];
 

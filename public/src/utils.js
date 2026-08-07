@@ -1,4 +1,3 @@
-/* eslint-disable no-redeclare */
 
 'use strict';
 
@@ -16,21 +15,19 @@ utils.getLanguage = function () {
 
 
 utils.makeNumbersHumanReadable = function (elements) {
-	console.warn('[deprecated] utils.makeNumbersHumanReadable is deprecated! Use {humanReadableNumber(value)} helper directly in the template');
 	elements.each(function () {
 		const $this = $(this);
 		const toFixed = $this.attr('data-toFixed') || 1;
-		$this.html(utils.makeNumberHumanReadable($this.attr('title'), toFixed))
+		$this.text(utils.makeNumberHumanReadable($this.attr('title'), toFixed))
 			.removeClass('hidden');
 	});
 };
 
 utils.addCommasToNumbers = function (elements) {
-	console.warn('[deprecated] utils.addCommasToNumbers is deprecated! Use {formattedNumber(value)} helper directly in the template');
 	elements.each(function (index, element) {
 		const $element = $(element);
 		$element
-			.html(utils.addCommas($element.html()))
+			.text(utils.addCommas($element.text()))
 			.removeClass('hidden');
 	});
 };

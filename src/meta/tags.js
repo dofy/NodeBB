@@ -3,25 +3,29 @@
 const nconf = require('nconf');
 const winston = require('winston');
 
+const translator = require('../translator');
+const user = require('../user');
 const plugins = require('../plugins');
 const Meta = require('./index');
-const utils = require('../utils');
 
-const Tags = module.exports;
 
 const url = nconf.get('url');
 const relative_path = nconf.get('relative_path');
 const upload_url = nconf.get('upload_url');
 
+const Tags = module.exports;
+
 Tags.parse = async (req, data, meta, link) => {
+	const isAPI = req.res && req.res.locals && req.res.locals.isAPI;
+
 	// Meta tags
-	const defaultTags = [{
+	const defaultTags = isAPI ? [] : [{
 		name: 'viewport',
-		content: 'width=device-width, initial-scale=1.0',
+		// https://stackoverflow.com/a/77815388 for resizes-content
+		content: 'width=device-width, initial-scale=1.0, interactive-widget=resizes-content',
 	}, {
 		name: 'content-type',
 		content: 'text/html; charset=UTF-8',
-		noEscape: true,
 	}, {
 		name: 'apple-mobile-web-app-capable',
 		content: 'yes',
@@ -32,53 +36,86 @@ Tags.parse = async (req, data, meta, link) => {
 		property: 'og:site_name',
 		content: Meta.config.title || 'NodeBB',
 	}, {
-		name: 'msapplication-badge',
-		content: `frequency=30; polling-uri=${url}/sitemap.xml`,
-		noEscape: true,
-	}, {
 		name: 'theme-color',
 		content: Meta.config.themeColor || '#ffffff',
 	}];
 
-	if (Meta.config.keywords) {
+	if (Meta.config.keywords && !isAPI) {
 		defaultTags.push({
 			name: 'keywords',
 			content: Meta.config.keywords,
 		});
 	}
 
-	if (Meta.config['brand:logo']) {
+	if (Meta.config['brand:logo'] && !isAPI) {
 		defaultTags.push({
 			name: 'msapplication-square150x150logo',
 			content: Meta.config['brand:logo'],
-			noEscape: true,
 		});
 	}
 
-	const faviconPath = `${relative_path}/assets/uploads/system/favicon.ico`;
-	const cacheBuster = `${Meta.config['cache-buster'] ? `?${Meta.config['cache-buster']}` : ''}`;
+	const faviconPath = Meta.config['brand:favicon'] || `${relative_path}/assets/uploads/system/favicon.ico`;
+	const cacheBuster = Meta.config['cache-buster'] || '';
 
 	// Link Tags
-	const defaultLinks = [{
+	const defaultLinks = isAPI ? [] : [{
 		rel: 'icon',
 		type: 'image/x-icon',
-		href: `${faviconPath}${cacheBuster}`,
+		href: `${faviconPath}${cacheBuster ? `?${cacheBuster}` : ''}`,
 	}, {
 		rel: 'manifest',
 		href: `${relative_path}/manifest.webmanifest`,
 		crossorigin: `use-credentials`,
 	}];
 
-	if (plugins.hooks.hasListeners('filter:search.query')) {
+	if (plugins.hooks.hasListeners('filter:search.query') && !isAPI) {
 		defaultLinks.push({
 			rel: 'search',
 			type: 'application/opensearchdescription+xml',
-			title: utils.escapeHTML(String(Meta.config.title || Meta.config.browserTitle || 'NodeBB')),
+			title: String(Meta.config.title || Meta.config.browserTitle || 'NodeBB'),
 			href: `${relative_path}/osd.xml`,
 		});
 	}
 
-	// Touch icons for mobile-devices
+	if (!isAPI) {
+		addTouchIcons(defaultLinks);
+	}
+
+	const [{ tags }, { links }, { userLang }] = await Promise.all([
+		plugins.hooks.fire('filter:meta.getMetaTags', { req, data, tags: defaultTags }),
+		plugins.hooks.fire('filter:meta.getLinkTags', { req, data, links: defaultLinks }),
+		user.getSettings(req.uid),
+	]);
+
+	meta = await Promise.all(tags.concat(meta || []).map(async (tag) => {
+		if (!tag || typeof tag.content !== 'string') {
+			winston.warn('Invalid meta tag. ', tag);
+			return tag;
+		}
+		if (tag.translate) {
+			tag.content = await translator.translate(tag.content, userLang);
+		}
+		return tag;
+	}));
+
+	await addSiteOGImage(meta);
+
+	addIfNotExists(meta, 'property', 'og:title', Meta.config.title || 'NodeBB');
+	const ogUrl = url + (req.originalUrl !== '/' ? stripRelativePath(req.originalUrl) : '');
+	addIfNotExists(meta, 'property', 'og:url', ogUrl);
+	addIfNotExists(meta, 'name', 'description', Meta.config.description);
+	addIfNotExists(meta, 'property', 'og:description', Meta.config.description);
+
+	link = links.concat(link || []);
+	if (isAPI) {
+		const whitelist = ['canonical', 'alternate', 'up'];
+		link = link.filter(link => whitelist.some(val => val === link.rel));
+	}
+
+	return { meta, link };
+};
+
+function addTouchIcons(defaultLinks) {
 	if (Meta.config['brand:touchIcon']) {
 		defaultLinks.push({
 			rel: 'apple-touch-icon',
@@ -142,64 +179,16 @@ Tags.parse = async (req, data, meta, link) => {
 			href: `${relative_path}/assets/images/touch/512.png`,
 		});
 	}
-
-	const results = await utils.promiseParallel({
-		tags: plugins.hooks.fire('filter:meta.getMetaTags', { req: req, data: data, tags: defaultTags }),
-		links: plugins.hooks.fire('filter:meta.getLinkTags', { req: req, data: data, links: defaultLinks }),
-	});
-
-	meta = results.tags.tags.concat(meta || []).map((tag) => {
-		if (!tag || typeof tag.content !== 'string') {
-			winston.warn('Invalid meta tag. ', tag);
-			return tag;
-		}
-
-		if (!tag.noEscape) {
-			const attributes = Object.keys(tag);
-			attributes.forEach((attr) => {
-				tag[attr] = utils.escapeHTML(String(tag[attr]));
-			});
-		}
-
-		return tag;
-	});
-
-	await addSiteOGImage(meta);
-
-	addIfNotExists(meta, 'property', 'og:title', Meta.config.title || 'NodeBB');
-	const ogUrl = url + (req.originalUrl !== '/' ? stripRelativePath(req.originalUrl) : '');
-	addIfNotExists(meta, 'property', 'og:url', ogUrl);
-	addIfNotExists(meta, 'name', 'description', Meta.config.description);
-	addIfNotExists(meta, 'property', 'og:description', Meta.config.description);
-
-	link = results.links.links.concat(link || []).map((tag) => {
-		if (!tag.noEscape) {
-			const attributes = Object.keys(tag);
-			attributes.forEach((attr) => {
-				tag[attr] = utils.escapeHTML(String(tag[attr]));
-			});
-		}
-
-		return tag;
-	});
-
-	return { meta, link };
-};
+}
 
 function addIfNotExists(meta, keyName, tagName, value) {
-	let exists = false;
-	meta.forEach((tag) => {
-		if (tag[keyName] === tagName) {
-			exists = true;
-		}
-	});
+	const exists = meta.some(tag => tag[keyName] === tagName);
 
 	if (!exists && value) {
-		const data = {
-			content: utils.escapeHTML(String(value)),
-		};
-		data[keyName] = tagName;
-		meta.push(data);
+		meta.push({
+			content: String(value),
+			[keyName]: tagName,
+		});
 	}
 }
 
@@ -235,11 +224,9 @@ async function addSiteOGImage(meta) {
 						meta.push({
 							property: 'og:image',
 							content: image.url,
-							noEscape: true,
 						}, {
 							property: 'og:image:url',
 							content: image.url,
-							noEscape: true,
 						});
 						break;
 					}
@@ -248,7 +235,6 @@ async function addSiteOGImage(meta) {
 						meta.push({
 							property: `og:${property}`,
 							content: image[property],
-							noEscape: true,
 						});
 						break;
 					}

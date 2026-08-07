@@ -22,6 +22,8 @@ const _mounts = {
 	api: require('./api'),
 	admin: require('./admin'),
 	feed: require('./feeds'),
+	'well-known': require('./well-known'),
+	activitypub: require('./activitypub'),
 };
 
 _mounts.main = (app, middleware, controllers) => {
@@ -36,6 +38,7 @@ _mounts.main = (app, middleware, controllers) => {
 	setupPageRoute(app, '/search', [], controllers.search.search);
 	setupPageRoute(app, '/reset/:code?', [middleware.delayLoading], controllers.reset);
 	setupPageRoute(app, '/tos', [], controllers.termsOfUse);
+	setupPageRoute(app, '/intents/:intent', controllers.intents.create);
 
 	setupPageRoute(app, '/email/unsubscribe/:token', [], controllers.accounts.settings.unsubscribe);
 	app.post('/email/unsubscribe/:token', controllers.accounts.settings.unsubscribePost);
@@ -66,8 +69,8 @@ _mounts.post = (app, name, middleware, controllers) => {
 		middleware.registrationComplete,
 		middleware.pluginHooks,
 	];
-	app.get(`/${name}/:pid`, middleware.busyCheck, middlewares, controllers.posts.redirectToPost);
-	app.get(`/api/${name}/:pid`, middlewares, controllers.posts.redirectToPost);
+	app.get(`/${name}/:pid`, middleware.busyCheck, middlewares, helpers.tryRoute(controllers.posts.redirectToPost));
+	app.get(`/api/${name}/:pid`, middlewares, helpers.tryRoute(controllers.posts.redirectToPost));
 };
 
 _mounts.tags = (app, name, middleware, controllers) => {
@@ -130,13 +133,15 @@ module.exports = async function (app, middleware) {
 	});
 
 	router.all('(/+api|/+api/*?)', middleware.prepareAPI);
-	router.all(`(/+api/admin|/+api/admin/*?${mounts.admin !== 'admin' ? `|/+api/${mounts.admin}|/+api/${mounts.admin}/*?` : ''})`, middleware.authenticateRequest, middleware.ensureLoggedIn, middleware.admin.checkPrivileges);
-	router.all(`(/+admin|/+admin/*?${mounts.admin !== 'admin' ? `|/+${mounts.admin}|/+${mounts.admin}/*?` : ''})`, middleware.ensureLoggedIn, middleware.applyCSRF, middleware.admin.checkPrivileges);
-
-	app.use(middleware.stripLeadingSlashes);
 
 	// handle custom homepage routes
 	router.use('/', controllers.home.rewrite);
+
+	router.all(`(/+api/admin|/+api/admin/*?${mounts.admin !== 'admin' ? `|/+api/${mounts.admin}|/+api/${mounts.admin}/*?` : ''})`, middleware.authenticateRequest, middleware.ensureLoggedIn, middleware.admin.checkPrivileges);
+	router.all(`(/+admin|/+admin/*?${mounts.admin !== 'admin' ? `|/+${mounts.admin}|/+${mounts.admin}/*?` : ''})`, middleware.ensureLoggedIn, middleware.applyCSRF, middleware.admin.checkPrivileges);
+
+
+	app.use(middleware.stripLeadingSlashes);
 
 	// homepage handled by `action:homepage.get:[route]`
 	setupPageRoute(router, '/', [], controllers.home.pluginHook);
@@ -154,9 +159,11 @@ function addCoreRoutes(app, router, middleware, mounts) {
 	_mounts.api(router, middleware, controllers);
 	_mounts.feed(router, middleware, controllers);
 
+	_mounts.activitypub(router, middleware, controllers);
 	_mounts.main(router, middleware, controllers);
 	_mounts.mod(router, middleware, controllers);
 	_mounts.globalMod(router, middleware, controllers);
+	_mounts['well-known'](router, middleware, controllers);
 
 	addRemountableRoutes(app, router, middleware, mounts);
 
@@ -178,7 +185,7 @@ function addCoreRoutes(app, router, middleware, mounts) {
 	};
 
 	if (path.resolve(__dirname, '../../public/uploads') !== nconf.get('upload_path')) {
-		statics.unshift({ route: '/assets/uploads', path: nconf.get('upload_path') });
+		statics.unshift({ route: '/assets', path: path.join(nconf.get('upload_path'), '..') });
 	}
 
 	statics.forEach((obj) => {

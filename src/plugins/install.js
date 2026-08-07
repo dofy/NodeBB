@@ -7,13 +7,14 @@ const nconf = require('nconf');
 const os = require('os');
 const cproc = require('child_process');
 const util = require('util');
-const request = require('request-promise-native');
 
+const request = require('../request');
 const db = require('../database');
 const meta = require('../meta');
 const pubsub = require('../pubsub');
-const { paths } = require('../constants');
+const { paths, pluginNamePattern } = require('../constants');
 const pkgInstall = require('../cli/package-install');
+const cache = require('../cache');
 
 const packageManager = pkgInstall.getPackageManager();
 let packageManagerExecutable = packageManager;
@@ -42,15 +43,23 @@ if (process.platform === 'win32') {
 
 module.exports = function (Plugins) {
 	if (nconf.get('isPrimary')) {
-		pubsub.on('plugins:toggleInstall', (data) => {
+		pubsub.on('plugins:toggleInstall', async (data) => {
 			if (data.hostname !== os.hostname()) {
-				toggleInstall(data.id, data.version);
+				try {
+					await toggleInstall(data.id, data.version);
+				} catch (err) {
+					winston.error(err.stack);
+				}
 			}
 		});
 
-		pubsub.on('plugins:upgrade', (data) => {
+		pubsub.on('plugins:upgrade', async (data) => {
 			if (data.hostname !== os.hostname()) {
-				upgrade(data.id, data.version);
+				try {
+					await upgrade(data.id, data.version);
+				} catch (err) {
+					winston.error(err.stack);
+				}
 			}
 		});
 	}
@@ -60,6 +69,9 @@ module.exports = function (Plugins) {
 			winston.error('Cannot activate plugins while plugin state is set in the configuration (config.json, environmental variables or terminal arguments), please modify the configuration instead');
 			throw new Error('[[error:plugins-set-in-configuration]]');
 		}
+		if (!pluginNamePattern.test(id)) {
+			throw new Error('[[error:invalid-plugin-id]]');
+		}
 		const isActive = await Plugins.isActive(id);
 		if (isActive) {
 			await db.sortedSetRemove('plugins:active', id);
@@ -67,6 +79,7 @@ module.exports = function (Plugins) {
 			const count = await db.sortedSetCard('plugins:active');
 			await db.sortedSetAdd('plugins:active', count, id);
 		}
+		cache.set(`plugin:isActive:${id}`, !isActive);
 		meta.reloadRequired = true;
 		const hook = isActive ? 'deactivate' : 'activate';
 		Plugins.hooks.fire(`action:plugin.${hook}`, { id: id });
@@ -74,12 +87,10 @@ module.exports = function (Plugins) {
 	};
 
 	Plugins.checkWhitelist = async function (id, version) {
-		const body = await request({
-			method: 'GET',
-			url: `https://packages.nodebb.org/api/v1/plugins/${encodeURIComponent(id)}`,
-			json: true,
-		});
-
+		const { response, body } = await request.get(`https://packages.nodebb.org/api/v1/plugins/${encodeURIComponent(id)}`);
+		if (!response.ok) {
+			throw new Error(`[[error:cant-connect-to-nbbpm]]`);
+		}
 		if (body && body.code === 'ok' && (version === 'latest' || body.payload.valid.includes(version))) {
 			return;
 		}
@@ -88,15 +99,17 @@ module.exports = function (Plugins) {
 	};
 
 	Plugins.suggest = async function (pluginId, nbbVersion) {
-		const body = await request({
-			method: 'GET',
-			url: `https://packages.nodebb.org/api/v1/suggest?package=${encodeURIComponent(pluginId)}&version=${encodeURIComponent(nbbVersion)}`,
-			json: true,
-		});
+		const { response, body } = await request.get(`https://packages.nodebb.org/api/v1/suggest?package=${encodeURIComponent(pluginId)}&version=${encodeURIComponent(nbbVersion)}`);
+		if (!response.ok) {
+			throw new Error(`[[error:cant-connect-to-nbbpm]]`);
+		}
 		return body;
 	};
 
 	Plugins.toggleInstall = async function (id, version) {
+		if (!pluginNamePattern.test(id)) {
+			throw new Error('[[error:invalid-plugin-id]]');
+		}
 		pubsub.publish('plugins:toggleInstall', { hostname: os.hostname(), id: id, version: version });
 		return await toggleInstall(id, version);
 	};
@@ -119,22 +132,54 @@ module.exports = function (Plugins) {
 	}
 
 	function runPackageManagerCommand(command, pkgName, version, callback) {
-		cproc.execFile(packageManagerExecutable, [
+		if (!pluginNamePattern.test(pkgName)) {
+			throw new Error('[[error:invalid-plugin-id]]');
+		}
+		const args = [
 			packageManagerCommands[packageManager][command],
 			pkgName + (command === 'install' && version ? `@${version}` : ''),
 			'--save',
-		], (err, stdout) => {
-			if (err) {
-				return callback(err);
-			}
+			'--ignore-scripts',
+		];
 
-			winston.verbose(`[plugins/${command}] ${stdout}`);
-			callback();
-		});
+		if (process.platform === 'win32') {
+			const child = cproc.spawn(packageManagerExecutable, args, { shell: true });
+			let stdout = '';
+			let stderr = '';
+
+			child.stdout.on('data', (data) => {
+				stdout += data;
+			});
+			child.stderr.on('data', (data) => {
+				stderr += data;
+			});
+
+			child.on('close', (code) => {
+				if (code !== 0) {
+					const err = new Error(stderr || `Process exited with code ${code}`);
+					return callback(err);
+				}
+				winston.verbose(`[plugins/${command}] ${stdout}`);
+				callback();
+			});
+			child.on('error', callback);
+		} else {
+			cproc.execFile(packageManagerExecutable, args, (err, stdout) => {
+				if (err) {
+					return callback(err);
+				}
+
+				winston.verbose(`[plugins/${command}] ${stdout}`);
+				callback();
+			});
+		}
 	}
 
 
 	Plugins.upgrade = async function (id, version) {
+		if (!pluginNamePattern.test(id)) {
+			throw new Error('[[error:invalid-plugin-id]]');
+		}
 		pubsub.publish('plugins:upgrade', { hostname: os.hostname(), id: id, version: version });
 		return await upgrade(id, version);
 	};
@@ -156,11 +201,27 @@ module.exports = function (Plugins) {
 		}
 	};
 
+	Plugins.isSystemPlugin = async function (id) {
+		const pluginDir = path.join(paths.nodeModules, id, 'plugin.json');
+		try {
+			const pluginData = JSON.parse(await fs.readFile(pluginDir, 'utf8'));
+			return pluginData && pluginData.system === true;
+		} catch (err) {
+			return false;
+		}
+	};
+
 	Plugins.isActive = async function (id) {
 		if (nconf.get('plugins:active')) {
 			return nconf.get('plugins:active').includes(id);
 		}
-		return await db.isSortedSetMember('plugins:active', id);
+		const cached = cache.get(`plugin:isActive:${id}`);
+		if (cached !== undefined) {
+			return cached;
+		}
+		const isActive = await db.isSortedSetMember('plugins:active', id);
+		cache.set(`plugin:isActive:${id}`, isActive);
+		return isActive;
 	};
 
 	Plugins.getActive = async function () {

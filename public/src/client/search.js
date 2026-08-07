@@ -10,7 +10,7 @@ define('forum/search', [
 	'translator',
 	'categoryFilter',
 	'userFilter',
-], function (searchModule, storage, hooks, alerts, api, translator, categoryFilter, userFilter) {
+], function (searchModule, storage, hooks, alerts, api, tx, categoryFilter, userFilter) {
 	const Search = {};
 	let selectedUsers = [];
 	let selectedTags = [];
@@ -71,8 +71,8 @@ define('forum/search', [
 		const isActive = selectedTags.length > 0;
 		let labelText = '[[search:tags]]';
 		if (selectedTags.length) {
-			labelText = translator.compile(
-				'search:tags-x', selectedTags.map(u => u.valueEscaped).join(', ')
+			labelText = tx.compile(
+				'search:tags-x', selectedTags.map(u => tx.escape(u.value)).join(', ')
 			);
 		}
 		$('[component="tag/filter/button"]').toggleClass(
@@ -119,7 +119,7 @@ define('forum/search', [
 			in: $('#search-in').val(),
 		};
 		searchData.term = $('#search-input').val();
-		if (searchData.in === 'posts' || searchData.in === 'titlesposts' || searchData.in === 'titles') {
+		if (['posts', 'titlesposts', 'titles', 'bookmarks'].includes(searchData.in)) {
 			searchData.matchWords = form.find('#match-words-filter').val();
 			searchData.by = selectedUsers.length ? selectedUsers.map(u => u.username) : undefined;
 			searchData.categories = selectedCids.length ? selectedCids : undefined;
@@ -143,7 +143,7 @@ define('forum/search', [
 	}
 
 	function updateFormItemVisiblity(searchIn) {
-		const hideTitlePostFilters = !searchIn.includes('posts') && !searchIn.includes('titles');
+		const hideTitlePostFilters = !['posts', 'titles', 'bookmarks'].some(token => searchIn.includes(token));
 		$('.post-search-item').toggleClass('hidden', hideTitlePostFilters);
 	}
 
@@ -252,6 +252,7 @@ define('forum/search', [
 
 	function categoryFilterDropdown(_selectedCids) {
 		ajaxify.data.allCategoriesUrl = '';
+		selectedCids = _selectedCids || [];
 		const dropdownEl = $('[component="category/filter"]');
 		categoryFilter.init(dropdownEl, {
 			selectedCids: _selectedCids,
@@ -290,6 +291,7 @@ define('forum/search', [
 	}
 
 	function userFilterDropdown(el, _selectedUsers) {
+		selectedUsers = _selectedUsers || [];
 		userFilter.init(el, {
 			selectedUsers: _selectedUsers,
 			template: 'partials/search-filters',
@@ -300,8 +302,8 @@ define('forum/search', [
 				const isActive = _selectedUsers.length > 0;
 				let labelText = '[[search:posted-by]]';
 				if (isActive) {
-					labelText = translator.compile(
-						'search:posted-by-usernames', selectedUsers.map(u => u.username).join(', ')
+					labelText = tx.compile(
+						'search:posted-by-usernames', selectedUsers.map(u => tx.escape(u.username)).join(', ')
 					);
 				}
 				el.find('[component="user/filter/button"]').toggleClass(
@@ -320,12 +322,10 @@ define('forum/search', [
 			el.find('[component="tag/filter/selected"]').html(html);
 		}
 		function tagValueToObject(value) {
-			const escapedTag = utils.escapeHTML(value);
 			return {
 				value: value,
-				valueEscaped: escapedTag,
-				valueEncoded: encodeURIComponent(escapedTag),
-				class: escapedTag.replace(/\s/g, '-'),
+				valueEncoded: encodeURIComponent(value),
+				class: value.replace(/\s/g, '-'),
 			};
 		}
 
@@ -343,7 +343,7 @@ define('forum/search', [
 			}
 
 			if (!result.tags.length) {
-				el.find('[component="tag/filter/results"]').translateHtml(
+				el.find('[component="tag/filter/results"]').translateText(
 					'[[tags:no-tags-found]]'
 				);
 				return;
@@ -351,7 +351,7 @@ define('forum/search', [
 			result.tags = result.tags.slice(0, 20);
 			const tagMap = {};
 			result.tags.forEach((tag) => {
-				tagMap[tag.valueEscaped] = tag;
+				tagMap[tag.value] = tag;
 			});
 
 			const html = await app.parseAndTranslate('partials/search-filters', 'tagFilterResults', {
@@ -372,7 +372,7 @@ define('forum/search', [
 
 		el.on('click', '[component="tag/filter/delete"]', function () {
 			const deleteTag = $(this).attr('data-tag');
-			selectedTags = selectedTags.filter(tag => tag.valueEscaped !== deleteTag);
+			selectedTags = selectedTags.filter(tag => tag.value !== deleteTag);
 			renderSelectedTags();
 		});
 

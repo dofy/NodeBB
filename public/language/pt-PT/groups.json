@@ -1,7 +1,9 @@
 {
+    "group": "Group",
     "all-groups": "All groups",
     "groups": "Grupos",
     "members": "Members",
+    "x-members": "%1 member(s)",
     "view-group": "Ver o grupo",
     "owner": "Dono do grupo",
     "new-group": "Criar novo grupo",
@@ -48,6 +50,8 @@
     "details.hidden": "Escondido",
     "details.hidden-help": "Se ativado, este grupo não será encontrado na listagem de grupos e os utilizadores terão de ser convidados manualmente",
     "details.delete-group": "Eliminar grupo",
+    "details.delete-group-confirm": "Are you sure you want to delete the group: <strong>\"%1\"</strong>?",
+    "details.delete-group-confirm-label": "Please enter the name of this group in order to delete it:",
     "details.private-system-help": "Tornar grupos privados é desativado ao nível do sistema. Esta opção não executa nada",
     "event.updated": "Detalhes do grupo foram atualizados",
     "event.deleted": "O grupo \"%1\" foi apagado",

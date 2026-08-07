@@ -1,6 +1,7 @@
 'use strict';
 
 const winston = require('winston');
+const validator = require('validator');
 
 const categories = require('../categories');
 const plugins = require('../plugins');
@@ -35,9 +36,15 @@ module.exports = function (Groups) {
 		const payload = {
 			description: values.description || '',
 			icon: values.icon || '',
-			labelColor: values.labelColor || '#000000',
-			textColor: values.textColor || '#ffffff',
 		};
+
+		if (values.hasOwnProperty('labelColor')) {
+			payload.labelColor = validateColor(values.labelColor, '#000000');
+		}
+
+		if (values.hasOwnProperty('textColor')) {
+			payload.textColor = validateColor(values.textColor, '#ffffff');
+		}
 
 		if (values.hasOwnProperty('userTitle')) {
 			payload.userTitle = values.userTitle || '';
@@ -77,7 +84,7 @@ module.exports = function (Groups) {
 
 		if (values.hasOwnProperty('memberPostCids')) {
 			const validCids = await categories.getCidsByPrivilege('categories:cid', groupName, 'topics:read');
-			const cidsArray = values.memberPostCids.split(',').map(cid => parseInt(cid.trim(), 10)).filter(Boolean);
+			const cidsArray = values.memberPostCids.split(',').map(cid => (cid || '').trim()).filter(Boolean);
 			payload.memberPostCids = cidsArray.filter(cid => validCids.includes(cid)).join(',') || '';
 		}
 
@@ -88,6 +95,14 @@ module.exports = function (Groups) {
 			name: groupName,
 			values: values,
 		});
+	};
+
+	function validateColor(color, fallback) {
+		color = String(color || fallback);
+		if (!validator.isHexColor(color, { requireHash: true })) {
+			throw new Error('[[error:invalid-data]]');
+		}
+		return color;
 	};
 
 	async function updateVisibility(groupName, hidden) {
@@ -191,8 +206,10 @@ module.exports = function (Groups) {
 		await updateConfig(oldName, newName);
 		await updateChatRooms(oldName, newName);
 		await db.setObject(`group:${oldName}`, { name: newName, slug: slugify(newName) });
-		await db.deleteObjectField('groupslug:groupname', group.slug);
-		await db.setObjectField('groupslug:groupname', slugify(newName), newName);
+		if (!Groups.isPrivilegeGroup(oldName) && !Groups.isPrivilegeGroup(newName)) {
+			await db.deleteObjectField('groupslug:groupname', group.slug);
+			await db.setObjectField('groupslug:groupname', slugify(newName), newName);
+		}
 
 		const allGroups = await db.getSortedSetRange('groups:createtime', 0, -1);
 		const keys = allGroups.map(group => `group:${group}:members`);
@@ -248,7 +265,7 @@ module.exports = function (Groups) {
 				navItem.groups.splice(navItem.groups.indexOf(oldName), 1, newName);
 			}
 		});
-		navigation.unescapeFields(navItems);
+
 		await navigation.save(navItems);
 	}
 
@@ -256,9 +273,9 @@ module.exports = function (Groups) {
 		const admin = require('../widgets/admin');
 		const widgets = require('../widgets');
 
-		const data = await admin.get();
+		const areas = await admin.getAreas();
 
-		data.areas.forEach((area) => {
+		areas.forEach((area) => {
 			area.widgets = area.data;
 			area.widgets.forEach((widget) => {
 				if (widget && widget.data && Array.isArray(widget.data.groups) && widget.data.groups.includes(oldName)) {
@@ -266,7 +283,7 @@ module.exports = function (Groups) {
 				}
 			});
 		});
-		for (const area of data.areas) {
+		for (const area of areas) {
 			if (area.data.length) {
 				await widgets.setArea(area);
 			}
@@ -274,17 +291,19 @@ module.exports = function (Groups) {
 	}
 
 	async function updateConfig(oldName, newName) {
-		if (meta.config.groupsExemptFromPostQueue.includes(oldName)) {
-			meta.config.groupsExemptFromPostQueue.splice(
-				meta.config.groupsExemptFromPostQueue.indexOf(oldName), 1, newName
-			);
-			await meta.configs.set('groupsExemptFromPostQueue', meta.config.groupsExemptFromPostQueue);
-		}
-		if (meta.config.groupsExemptFromMaintenanceMode.includes(oldName)) {
-			meta.config.groupsExemptFromMaintenanceMode.splice(
-				meta.config.groupsExemptFromMaintenanceMode.indexOf(oldName), 1, newName
-			);
-			await meta.configs.set('groupsExemptFromMaintenanceMode', meta.config.groupsExemptFromMaintenanceMode);
+		const configKeys = [
+			'groupsExemptFromPostQueue',
+			'groupsExemptFromNewUserRestrictions',
+			'groupsExemptFromMaintenanceMode',
+		];
+
+		for (const key of configKeys) {
+			if (meta.config[key] && meta.config[key].includes(oldName)) {
+				meta.config[key].splice(
+					meta.config[key].indexOf(oldName), 1, newName
+				);
+				await meta.configs.set(key, meta.config[key]);
+			}
 		}
 	}
 

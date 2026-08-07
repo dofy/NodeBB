@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const db = require('../database');
 
 const user = require('../user');
@@ -9,6 +10,32 @@ const utils = module.exports;
 
 // internal token management utilities only
 utils.tokens = {};
+
+utils.tokens.fingerprint = token => crypto.createHash('sha256').update(token).digest('hex');
+
+utils.tokens.resolveIdentifier = async (identifier) => {
+	identifier = String(identifier || '').trim();
+	if (!identifier) {
+		throw new Error('[[error:invalid-data]]');
+	}
+
+	if (/^[a-f0-9]{64}$/i.test(identifier)) {
+		const normalizedIdentifier = identifier.toLowerCase();
+		const tokens = await db.getSortedSetRange('tokens:createtime', 0, -1);
+		const token = tokens.find(t => utils.tokens.fingerprint(t) === normalizedIdentifier);
+		if (!token) {
+			throw new Error('[[error:invalid-data]]');
+		}
+
+		return token;
+	}
+
+	if (await db.exists(`token:${identifier}`)) {
+		return identifier;
+	}
+
+	throw new Error('[[error:invalid-data]]');
+};
 
 utils.tokens.list = async (start = 0, stop = -1) => {
 	// Validation handled at higher level
@@ -41,9 +68,11 @@ utils.tokens.get = async (tokens) => {
 		}
 
 		tokenObj.token = tokens[idx];
+		tokenObj.uid = parseInt(tokenObj.uid, 10);
+		tokenObj.timestamp = parseInt(tokenObj.timestamp, 10);
 		tokenObj.lastSeen = lastSeen[idx];
 		tokenObj.lastSeenISO = lastSeen[idx] ? new Date(lastSeen[idx]).toISOString() : null;
-		tokenObj.timestampISO = new Date(parseInt(tokenObj.timestamp, 10)).toISOString();
+		tokenObj.timestampISO = new Date(tokenObj.timestamp).toISOString();
 
 		return tokenObj;
 	});
@@ -52,6 +81,9 @@ utils.tokens.get = async (tokens) => {
 };
 
 utils.tokens.generate = async ({ uid, description }) => {
+	if (!srcUtils.isNumber(uid)) {
+		throw new Error('[[error:invalid-uid]]');
+	}
 	if (parseInt(uid, 10) !== 0) {
 		const uidExists = await user.exists(uid);
 		if (!uidExists) {
@@ -66,7 +98,7 @@ utils.tokens.generate = async ({ uid, description }) => {
 };
 
 utils.tokens.add = async ({ token, uid, description = '', timestamp = Date.now() }) => {
-	if (!token || uid === undefined) {
+	if (!token || uid === undefined || !srcUtils.isNumber(uid)) {
 		throw new Error('[[error:invalid-data]]');
 	}
 
@@ -80,6 +112,9 @@ utils.tokens.add = async ({ token, uid, description = '', timestamp = Date.now()
 };
 
 utils.tokens.update = async (token, { uid, description }) => {
+	if (!srcUtils.isNumber(uid)) {
+		throw new Error('[[error:invalid-uid]]');
+	}
 	await Promise.all([
 		db.setObject(`token:${token}`, { uid, description }),
 		db.sortedSetAdd(`tokens:uid`, uid, token),

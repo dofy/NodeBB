@@ -59,7 +59,7 @@
 						<div class="row mb-3">
 							<div class="col-sm-4">
 								<label class="form-label" for="nav:text">[[admin/settings/navigation:text]]</label>
-								<input id="nav:text" class="form-control unescape" type="text" name="text" value="{enabled.text}" />
+								<input id="nav:text" class="form-control" type="text" name="text" value="{enabled.text}" />
 							</div>
 
 							<div class="col-sm-4">
@@ -69,13 +69,13 @@
 
 							<div class="col-sm-4">
 								<label class="form-label" for="nav:tooltip">[[admin/settings/navigation:tooltip]]</label>
-								<input id="nav:tooltip" class="form-control unescape" type="text" name="title" value="{enabled.title}" />
+								<input id="nav:tooltip" class="form-control" type="text" name="title" value="{enabled.title}" />
 							</div>
 						</div>
 
 						<div class="row mb-3">
 							<div class="col-12">
-								<label class="form-label">[[admin/settings/navigation:groups]]</label>
+								<label class="form-label">[[admin/settings/navigation:show-to-groups]]</label>
 
 								<select name="groups" class="form-select" size="10" multiple>
 									{{{ each enabled.groups }}}
@@ -122,8 +122,8 @@
 				<div class="card-header">[[admin/settings/navigation:available-menu-items]]</div>
 				<div class="card-body">
 					<ul id="available">
-						<li data-id="custom" class="clearfix">
-							<div data-id="custom" class="drag-item alert alert-success float-start">
+						<li data-id="custom" class="clearfix d-flex align-items-center gap-3 mb-3">
+							<div data-id="custom" class="drag-item alert p-2 mb-0 alert-success">
 								<i class="fa fa-fw fa-plus-circle"></i>
 							</div>
 							<p>
@@ -131,14 +131,23 @@
 							</p>
 						</li>
 						{{{ each available }}}
-						<li data-id="{@index}" class="clearfix">
-							<div data-id="{@index}" class="drag-item alert {{{ if available.core }}}alert-warning{{{ else }}}alert-info{{{ end }}} float-start">
+						<li data-id="{@index}" class="clearfix d-flex align-items-center gap-3 mb-3">
+							<div data-id="{@index}" class="drag-item alert p-2 mb-0 {{{ if available.core }}}alert-warning{{{ else }}}alert-info{{{ end }}}">
 								<i class="fa fa-fw {{{ if available.iconClass }}}{available.iconClass}{{{ else }}}fa-navicon{{{ end }}}"></i>
 							</div>
-							<p>
-								<strong>{available.text}</strong> {available.route} <br/>
-								{{{ if available.core }}} [[admin/settings/navigation:core]] {{{ else }}} [[admin/settings/navigation:plugin]] {{{ end }}}
-							</p>
+							<div class="d-flex flex-column">
+								<p class="mb-0">
+									<strong>{{tx(./text)}}</strong>
+								</p>
+								<p class="mb-0">
+									{{{ if ./core }}}
+									<span class="badge bg-primary-subtle text-primary">[[admin/settings/navigation:core]]</span>
+									{{{ else }}}
+									<span class="badge bg-secondary-subtle text-secondary">[[admin/settings/navigation:plugin]]</span>
+									{{{ end }}}
+									<span class="badge text-bg-none"><code>{./route}</code></span>
+								</p>
+							</div>
 						</li>
 						{{{ end }}}
 					</ul>

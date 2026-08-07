@@ -7,6 +7,7 @@ const meta = require('../meta');
 const plugins = require('../plugins');
 const db = require('../database');
 const groups = require('../groups');
+const activitypub = require('../activitypub');
 const utils = require('../utils');
 
 module.exports = function (User) {
@@ -40,12 +41,57 @@ module.exports = function (User) {
 		} else if (searchBy === 'uid') {
 			uids = [query];
 		} else {
+			if (!data.findUids && data.uid) {
+				const handle = activitypub.helpers.isWebfinger(data.query);
+				if (handle || activitypub.helpers.isUri(data.query)) {
+					const local = await activitypub.helpers.resolveLocalId(data.query);
+					if (local.type === 'user' && utils.isNumber(local.id)) {
+						uids = [local.id];
+					} else {
+						const assertion = await activitypub.actors.assert([handle || data.query]);
+						if (assertion === true) {
+							uids = [handle ? await User.getUidByUserslug(handle) : query];
+						} else if (Array.isArray(assertion) && assertion.length) {
+							uids = assertion.map(u => u.id);
+						}
+					}
+				}
+			}
+
+			if (!uids.length) {
+				uids = await (data.findUids || findUids)(query, searchBy, data.hardCap);
+			}
+		}
+
+		// Allow plugins to short-circuit with their own results
+		const hookResult = await plugins.hooks.fire('filter:users.searchOverride', {
+			query, searchBy, uids, uid, hardCap: data.hardCap,
+		});
+		uids = hookResult.uids;
+
+		// Only run fallback if still empty
+		if (!uids.length) {
 			const searchMethod = data.findUids || findUids;
-			uids = await searchMethod(query, searchBy, data.hardCap);
+			const promises = [
+				searchMethod(query, searchBy, data.hardCap),
+			];
+
+			const mapping = {
+				username: 'ap.preferredUsername',
+				fullname: 'ap.name',
+			};
+			if (meta.config.activitypubEnabled && Object.hasOwn(mapping, searchBy)) {
+				promises.push(searchMethod(query, mapping[searchBy], data.hardCap));
+			}
+			uids = (await Promise.all(promises)).flat();
 		}
 
 		uids = await filterAndSortUids(uids, data);
-		const result = await plugins.hooks.fire('filter:users.search', { uids: uids, uid: uid });
+		if (data.hardCap > 0) {
+			uids.length = data.hardCap;
+		}
+
+		const result = await plugins.hooks.fire('filter:users.search', { uids, uid });
 		uids = result.uids;
 
 		const searchResult = {
@@ -60,9 +106,23 @@ module.exports = function (User) {
 			uids = uids.slice(start, stop);
 		}
 
-		const userData = await User.getUsers(uids, uid);
+		const [userData, blocks] = await Promise.all([
+			User.getUsers(uids, uid),
+			User.blocks.list(uid),
+		]);
+
+		if (blocks.length) {
+			userData.forEach((user) => {
+				if (user) {
+					user.isBlocked = blocks.includes(user.uid);
+				}
+			});
+		}
+
 		searchResult.timing = (process.elapsedTimeSince(startTime) / 1000).toFixed(2);
-		searchResult.users = userData.filter(user => user && user.uid > 0);
+		searchResult.users = userData.filter(
+			user => user && (utils.isNumber(user.uid) ? user.uid > 0 : activitypub.helpers.isUri(user.uid))
+		);
 		return searchResult;
 	};
 
@@ -74,16 +134,21 @@ module.exports = function (User) {
 		const min = query;
 		const max = query.substr(0, query.length - 1) + String.fromCharCode(query.charCodeAt(query.length - 1) + 1);
 
-		const resultsPerPage = meta.config.userSearchResultsPerPage;
-		hardCap = hardCap || resultsPerPage * 10;
+		hardCap = hardCap || 500;
 
 		const data = await db.getSortedSetRangeByLex(`${searchBy}:sorted`, min, max, 0, hardCap);
-		const uids = data.map(data => data.split(':').pop());
+		const uids = data.map((data) => {
+			if (data.includes(':https:')) {
+				return data.substring(data.indexOf(':https:') + 1);
+			}
+
+			return data.split(':').pop();
+		});
 		return uids;
 	}
 
 	async function filterAndSortUids(uids, data) {
-		uids = uids.filter(uid => parseInt(uid, 10));
+		uids = uids.filter(uid => parseInt(uid, 10) || activitypub.helpers.isUri(uid));
 		let filters = data.filters || [];
 		filters = Array.isArray(filters) ? filters : [data.filters];
 		const fields = [];
@@ -111,6 +176,11 @@ module.exports = function (User) {
 			const isMembersOfBanned = await groups.isMembers(uids, groups.BANNED_USERS);
 			const checkBanned = filters.includes('banned');
 			uids = uids.filter((uid, index) => (checkBanned ? isMembersOfBanned[index] : !isMembersOfBanned[index]));
+		}
+
+		if (filters.includes('muted')) {
+			const isMembersOfMuted = await db.isSortedSetMembers('users:muted', uids);
+			uids = uids.filter((uid, index) => isMembersOfMuted[index]);
 		}
 
 		fields.push('uid');

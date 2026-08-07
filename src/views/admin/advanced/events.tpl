@@ -14,7 +14,7 @@
 							<span class="badge bg-info">{events.type}</span>
 							<span class="badge bg-info">uid {events.uid}</span>
 							{{{ if events.ip }}}<span class="badge bg-info">{events.ip}</span>{{{ end }}}
-							<a href="{config.relative_path}/user/{events.user.userslug}" target="_blank">{buildAvatar(events.user, "24px", true)}</a>
+							<a href="{config.relative_path}/user/{events.user.userslug}" target="_blank">{{buildAvatar(events.user, "24px", true)}}</a>
 							<a href="{config.relative_path}/user/{events.user.userslug}" target="_blank">{events.user.username}</a>
 							<span class="text-xs">{events.timestampISO}</span>
 						</div>
@@ -49,6 +49,14 @@
 					<div class="mb-3">
 						<label class="form-label" for="end">[[admin/advanced/events:filter-end]]</label>
 						<input type="date" id="end" name="end" value="{query.end}" class="form-control" />
+					</div>
+					<div class="mb-3 d-flex flex-column gap-3">
+						<select id="user-group-select" class="form-select">
+							<option value="username" {{{ if (query.username != "") }}}selected{{{ end }}}>[[admin/advanced/events:filter-user]]</option>
+							<option value="group" {{{ if (query.group != "") }}}selected{{{ end }}}>[[admin/advanced/events:filter-group]]</option>
+						</select>
+						<input type="text" id="username" name="username" value="{query.username}" class="form-control {{{ if (query.group != "") }}}hidden{{{ end }}}" placeholder="[[admin/advanced/events:filter-user.placeholder]]"/>
+						<input type="text" id="group" name="group" value="{query.group}" class="form-control {{{ if (query.group == "") }}}hidden{{{ end }}} {{{ if (query.username != "") }}}hidden{{{ end }}}" placeholder="[[admin/advanced/events:filter-group.placeholder]]" />
 					</div>
 					<div class="mb-3">
 						<label class="form-label" for="perPage">[[admin/advanced/events:filter-per-page]]</label>

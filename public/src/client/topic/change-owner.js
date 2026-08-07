@@ -5,7 +5,8 @@ define('forum/topic/change-owner', [
 	'postSelect',
 	'autocomplete',
 	'alerts',
-], function (postSelect, autocomplete, alerts) {
+	'api',
+], function (postSelect, autocomplete, alerts, api) {
 	const ChangeOwner = {};
 
 	let modal;
@@ -46,9 +47,9 @@ define('forum/topic/change-owner', [
 
 	function showPostsSelected() {
 		if (postSelect.pids.length) {
-			modal.find('#pids').translateHtml('[[topic:fork-pid-count, ' + postSelect.pids.length + ']]');
+			modal.find('#pids').translateText('[[topic:fork-pid-count, ' + postSelect.pids.length + ']]');
 		} else {
-			modal.find('#pids').translateHtml('[[topic:fork-no-pids]]');
+			modal.find('#pids').translateText('[[topic:fork-no-pids]]');
 		}
 	}
 
@@ -69,14 +70,12 @@ define('forum/topic/change-owner', [
 		if (!toUid) {
 			return;
 		}
-		socket.emit('posts.changeOwner', { pids: postSelect.pids, toUid: toUid }, function (err) {
-			if (err) {
-				return alerts.error(err);
-			}
-			ajaxify.refresh();
+
+		api.post('/posts/owner', { pids: postSelect.pids, uid: toUid}).then(() => {
+			ajaxify.go(`/post/${postSelect.pids[0]}`);
 
 			closeModal();
-		});
+		}).catch(alerts.error);
 	}
 
 	function closeModal() {

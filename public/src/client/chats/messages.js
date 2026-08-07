@@ -2,10 +2,10 @@
 
 
 define('forum/chats/messages', [
-	'components', 'hooks', 'bootbox', 'alerts',
-	'messages', 'api', 'forum/topic/images', 'imagesloaded',
+	'components', 'hooks', 'modals', 'alerts',
+	'messages', 'api', 'forum/topic/images', 'imagesloaded', 'translator',
 ], function (
-	components, hooks, bootbox, alerts, messagesModule, api, images, imagesLoaded
+	components, hooks, modals, alerts, messagesModule, api, images, imagesLoaded, tx
 ) {
 	const messages = {};
 
@@ -50,7 +50,10 @@ define('forum/chats/messages', [
 	messages.updateRemainingLength = function (parent) {
 		const element = parent.find('[component="chat/input"]');
 		parent.find('[component="chat/message/length"]').text(element.val().length);
-		parent.find('[component="chat/message/remaining"]').text(config.maximumChatMessageLength - element.val().length);
+		const remainingLength = config.maximumChatMessageLength - element.val().length;
+		parent.find('[component="chat/message/remaining"]').text(remainingLength)
+			.toggleClass('fw-bold text-danger', remainingLength < 0)
+			.toggleClass('text-muted', remainingLength >= 0);
 		hooks.fire('action:chat.updateRemainingLength', {
 			parent: parent,
 		});
@@ -76,32 +79,39 @@ define('forum/chats/messages', [
 		});
 	}
 
-	messages.appendChatMessage = function (chatContentEl, data) {
+	messages.appendChatMessage = async function (chatContentEl, data) {
 		const lastMsgEl = chatContentEl.find('.chat-message').last();
 		const lastSpeaker = parseInt(lastMsgEl.attr('data-uid'), 10);
 		const lasttimestamp = parseInt(lastMsgEl.attr('data-timestamp'), 10);
 		if (!Array.isArray(data)) {
 			data.newSet = data.toMid || lastSpeaker !== parseInt(data.fromuid, 10) ||
 				parseInt(data.timestamp, 10) > parseInt(lasttimestamp, 10) + (1000 * 60 * 3);
+			data.index = parseInt(lastMsgEl.attr('data-index'), 10) + 1;
 		}
 
-		messages.parseMessage(data, function (html) {
-			onMessagesParsed(chatContentEl, html, data);
-		});
+		const html = await messages.parseMessage(data);
+		onMessagesParsed(chatContentEl, html, data);
 	};
 
 	function onMessagesParsed(chatContentEl, html, msgData) {
 		const newMessage = $(html);
 		const isAtBottom = messages.isAtBottom(chatContentEl);
+		newMessage.addClass('new');
 		newMessage.appendTo(chatContentEl);
 		messages.onMessagesAddedToDom(newMessage);
 		if (isAtBottom || msgData.self) {
-			messages.scrollToBottomAfterImageLoad(chatContentEl);
 			// remove some message elements if there are too many
 			const chatMsgEls = chatContentEl.find('[data-mid]');
 			if (chatMsgEls.length > 150) {
 				const removeCount = chatMsgEls.length - 150;
 				chatMsgEls.slice(0, removeCount).remove();
+				chatContentEl.find('[data-mid].new').removeClass('new');
+			}
+
+			messages.scrollToBottomAfterImageLoad(chatContentEl);
+			const $composer = chatContentEl.siblings('[component="chat/composer"]');
+			if ($composer.length && ajaxify.data?.template?.chats) {
+				$composer[0].scrollIntoView(true);
 			}
 		}
 
@@ -119,16 +129,15 @@ define('forum/chats/messages', [
 		hooks.fire('action:chat.onMessagesAddedToDom', { messageEls });
 	};
 
-	messages.parseMessage = function (data, callback) {
+	messages.parseMessage = function (data) {
 		const tplData = {
 			messages: data,
 			isAdminOrGlobalMod: app.user.isAdmin || app.user.isGlobalMod,
 		};
 		if (Array.isArray(data)) {
-			app.parseAndTranslate('partials/chats/messages', tplData).then(callback);
-		} else {
-			app.parseAndTranslate('partials/chats/' + (data.system ? 'system-message' : 'message'), tplData).then(callback);
+			return app.parseAndTranslate('partials/chats/messages', tplData);
 		}
+		return app.parseAndTranslate('partials/chats/' + (data.system ? 'system-message' : 'message'), tplData);
 	};
 
 	messages.isAtBottom = function (containerEl, threshold) {
@@ -148,8 +157,18 @@ define('forum/chats/messages', [
 		}
 	};
 
+	messages.scrollToMessageAfterImageLoad = function (containerEl, msgEl) {
+		if (containerEl.length && msgEl.length) {
+			const msgBodyEls = containerEl[0].querySelectorAll('[component="chat/message/body"]');
+			imagesLoaded(msgBodyEls, () => {
+				msgEl[0].scrollIntoView(true);
+			});
+		}
+	};
+
 	messages.scrollToBottom = function (containerEl) {
 		if (containerEl && containerEl.length) {
+			containerEl.attr('data-ignore-next-scroll', 1);
 			containerEl.scrollTop(containerEl[0].scrollHeight - containerEl.height());
 			containerEl.parents('[component="chat/message/window"]')
 				.find('[component="chat/messages/scroll-up-alert"]')
@@ -177,7 +196,7 @@ define('forum/chats/messages', [
 		const replyToEl = composerEl.find('[component="chat/composer/replying-to"]');
 		replyToEl.attr('data-tomid', mid)
 			.find('[component="chat/composer/replying-to-text"]')
-			.translateText(`[[modules:chat.replying-to, ${msgEl.attr('data-username')}]]`);
+			.translateHtml(tx.compile('modules:chat.replying-to', tx.escape(msgEl.attr('data-displayname'))));
 		replyToEl.removeClass('hidden');
 		replyToEl.find('[component="chat/composer/replying-to-cancel"]').off('click')
 			.on('click', () => {
@@ -192,7 +211,7 @@ define('forum/chats/messages', [
 	};
 
 	messages.prepEdit = async function (msgEl, mid, roomId) {
-		const raw = await socket.emit('modules.chats.getRaw', { mid: mid, roomId: roomId });
+		const { content: raw } = await api.get(`/chats/${roomId}/messages/${mid}/raw`);
 		const editEl = await app.parseAndTranslate('partials/chats/edit-message', {
 			rawContent: raw,
 		});
@@ -266,35 +285,37 @@ define('forum/chats/messages', [
 
 		socket.removeListener('event:chats.restore', onChatMessageRestored);
 		socket.on('event:chats.restore', onChatMessageRestored);
+
+		socket.removeListener('connect', onChatReconnect);
+		socket.on('connect', onChatReconnect);
 	};
 
-	function onChatMessageEdited(data) {
-		data.messages.forEach(function (message) {
+	async function onChatMessageEdited(data) {
+		await Promise.all(data.messages.map(async (message) => {
 			const self = parseInt(message.fromuid, 10) === parseInt(app.user.uid, 10);
 			message.self = self ? 1 : 0;
-			messages.parseMessage(message, function (html) {
-				const msgEl = components.get('chat/message', message.mid);
-				if (msgEl.length) {
-					const componentsToReplace = [
-						'[component="chat/message/body"]',
-						'[component="chat/message/edited"]',
-					];
-					componentsToReplace.forEach((cmp) => {
-						msgEl.find(cmp).replaceWith(html.find(cmp));
-					});
-					messages.onMessagesAddedToDom(components.get('chat/message', message.mid));
-				}
-				const parentEl = $(`[component="chat/message/parent"][data-parent-mid="${message.mid}"]`);
-				if (parentEl.length) {
-					parentEl.find('[component="chat/message/parent/content"]').html(
-						html.find('[component="chat/message/body"]').html()
-					);
-					messages.onMessagesAddedToDom(
-						$(`[component="chat/message/parent"][data-parent-mid="${message.mid}"]`)
-					);
-				}
-			});
-		});
+			const html = await messages.parseMessage(message);
+			const msgEl = components.get('chat/message', message.mid);
+			if (msgEl.length) {
+				const componentsToReplace = [
+					'[component="chat/message/body"]',
+					'[component="chat/message/edited"]',
+				];
+				componentsToReplace.forEach((cmp) => {
+					msgEl.find(cmp).replaceWith(html.find(cmp));
+				});
+				messages.onMessagesAddedToDom(components.get('chat/message', message.mid));
+			}
+			const parentEl = $(`[component="chat/message/parent"][data-parent-mid="${message.mid}"]`);
+			if (parentEl.length) {
+				parentEl.find('[component="chat/message/parent/content"]').html(
+					html.find('[component="chat/message/body"]').html()
+				);
+				messages.onMessagesAddedToDom(
+					$(`[component="chat/message/parent"][data-parent-mid="${message.mid}"]`)
+				);
+			}
+		}));
 	}
 
 	function onChatMessageDeleted(messageId) {
@@ -305,12 +326,12 @@ define('forum/chats/messages', [
 		msgEl.toggleClass('deleted', true);
 		parentEl.toggleClass('deleted', true);
 		if (!isSelf) {
-			msgEl.find('[component="chat/message/body"]')
-				.translateHtml('<p>[[modules:chat.message-deleted]]</p>');
+			msgEl.find('[component="chat/message/body"]').html('<p></p>')
+				.translateText('[[modules:chat.message-deleted]]');
 		}
 		if (!isParentSelf) {
-			parentEl.find('[component="chat/message/parent/content"]')
-				.translateHtml('<p>[[modules:chat.message-deleted]]</p>');
+			parentEl.find('[component="chat/message/parent/content"]').html('<p></p>')
+				.translateText('[[modules:chat.message-deleted]]');
 		}
 	}
 
@@ -334,20 +355,67 @@ define('forum/chats/messages', [
 		}
 	}
 
+	function onChatReconnect() {
+		$('[component="chat/message/content"]').each(function () {
+			const chatContentEl = $(this);
+			const roomId = chatContentEl.attr('data-roomid');
+			const uid = (ajaxify.data?.template?.chats && ajaxify.data?.uid) || app.user.uid;
+			const isAtBottom = messages.isAtBottom(chatContentEl);
+			messages.loadMoreMessages(chatContentEl, uid, roomId, 1)
+				.then(() => {
+					if (isAtBottom) {
+						messages.scrollToBottomAfterImageLoad(chatContentEl);
+					}
+				}).catch(alerts.error);
+		});
+	}
+
+	messages.loadMoreMessages = async function (chatContentEl, uid, roomId, direction) {
+		const msgEls = chatContentEl.children('[data-mid]').not('.new');
+		const afterEl = direction > 0 ? msgEls.last() : msgEls.first();
+		const start = parseInt(afterEl.attr('data-index'), 10) || 0;
+
+		const data = await api.get(`/chats/${roomId}/messages`, { uid, start, direction });
+		let messageData = data.messages;
+		if (!messageData) {
+			return;
+		}
+		messageData = messageData.filter(function (chatMsg) {
+			const msgOnDom = chatContentEl.find(`[component="chat/message"][data-mid="${chatMsg.messageId}"]`);
+			msgOnDom.removeClass('new');
+			return !msgOnDom.length;
+		});
+		if (!messageData.length) {
+			return;
+		}
+		const html = await messages.parseMessage(messageData);
+		chatContentEl.attr('data-ignore-next-scroll', 1);
+		if (direction > 0) {
+			html.insertAfter(afterEl);
+			messages.onMessagesAddedToDom(html);
+		} else {
+			const currentScrollTop = chatContentEl.scrollTop();
+			const previousHeight = chatContentEl[0].scrollHeight;
+			chatContentEl.prepend(html);
+			messages.onMessagesAddedToDom(html);
+			chatContentEl.scrollTop((chatContentEl[0].scrollHeight - previousHeight) + currentScrollTop);
+		}
+	};
+
 	messages.delete = function (messageId, roomId) {
-		bootbox.confirm('[[modules:chat.delete-message-confirm]]', function (ok) {
+		modals.confirm('[[modules:chat.delete-message-confirm]]', function (ok) {
 			if (!ok) {
 				return;
 			}
 
-			api.del(`/chats/${roomId}/messages/${messageId}`, {}).then(() => {
+			api.del(`/chats/${roomId}/messages/${encodeURIComponent(messageId)}`, {}).then(() => {
 				components.get('chat/message', messageId).toggleClass('deleted', true);
 			}).catch(alerts.error);
 		});
 	};
 
 	messages.restore = function (messageId, roomId) {
-		api.post(`/chats/${roomId}/messages/${messageId}`, {}).then(() => {
+		api.post(`/chats/${roomId}/messages/${encodeURIComponent(messageId)}`, {}).then(() => {
 			components.get('chat/message', messageId).toggleClass('deleted', false);
 		}).catch(alerts.error);
 	};

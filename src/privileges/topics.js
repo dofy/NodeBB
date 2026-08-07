@@ -9,6 +9,7 @@ const user = require('../user');
 const helpers = require('./helpers');
 const categories = require('../categories');
 const plugins = require('../plugins');
+const utils = require('../utils');
 const privsCategories = require('./categories');
 
 const privsTopics = module.exports;
@@ -22,12 +23,17 @@ privsTopics.get = async function (tid, uid) {
 		'posts:upvote', 'posts:downvote',
 		'posts:delete', 'posts:view_deleted', 'read', 'purge',
 	];
-	const topicData = await topics.getTopicFields(tid, ['cid', 'uid', 'locked', 'deleted', 'scheduled']);
-	const [userPrivileges, isAdministrator, isModerator, disabled] = await Promise.all([
+	const topicData = await topics.getTopicFields(tid, ['cid', 'uid', 'locked', 'deleted', 'scheduled', 'postcount']);
+	const [userPrivileges, isAdministrator, isModerator, disabled, topicTools] = await Promise.all([
 		helpers.isAllowedTo(privs, uid, topicData.cid),
 		user.isAdministrator(uid),
 		user.isModerator(uid, topicData.cid),
 		categories.getCategoryField(topicData.cid, 'disabled'),
+		plugins.hooks.fire('filter:topic.thread_tools', {
+			topic: topicData,
+			uid: uid,
+			tools: [],
+		}),
 	]);
 	const privData = _.zipObject(privs, userPrivileges);
 	const isOwner = uid > 0 && uid === topicData.uid;
@@ -35,6 +41,20 @@ privsTopics.get = async function (tid, uid) {
 	const editable = isAdminOrMod;
 	const deletable = (privData['topics:delete'] && (isOwner || isModerator)) || isAdministrator;
 	const mayReply = privsTopics.canViewDeletedScheduled(topicData, {}, false, privData['topics:schedule']);
+	const hasTools = topicTools.tools.length > 0;
+
+	let maxOwnerPosts = parseInt(meta.config.movingTopicsMaxPosts, 10);
+	if (Number.isNaN(maxOwnerPosts)) {
+		maxOwnerPosts = 5;
+	}
+	const exceedsOwnerMoveLimit = maxOwnerPosts > 0 && topicData.postcount > maxOwnerPosts;
+	const canMoveOwnTopic = !!(
+		isOwner &&
+		!isAdminOrMod &&
+		!topicData.locked &&
+		!topicData.deleted &&
+		!exceedsOwnerMoveLimit
+	);
 
 	return await plugins.hooks.fire('filter:privileges.topics.get', {
 		'topics:reply': (privData['topics:reply'] && ((!topicData.locked && mayReply) || isModerator)) || isAdministrator,
@@ -51,10 +71,11 @@ privsTopics.get = async function (tid, uid) {
 		read: privData.read || isAdministrator,
 		purge: (privData.purge && (isOwner || isModerator)) || isAdministrator,
 
-		view_thread_tools: editable || deletable,
+		view_thread_tools: editable || deletable || hasTools || canMoveOwnTopic,
 		editable: editable,
 		deletable: deletable,
-		view_deleted: isAdminOrMod || isOwner || privData['posts:view_deleted'],
+		canMoveOwnTopic: canMoveOwnTopic,
+		view_deleted: isAdministrator || isOwner || privData['posts:view_deleted'],
 		view_scheduled: privData['topics:schedule'] || isAdministrator,
 		isAdminOrMod: isAdminOrMod,
 		disabled: disabled,
@@ -87,6 +108,7 @@ privsTopics.filterTids = async function (privilege, tids, uid) {
 	const canViewScheduled = _.zipObject(cids, results.view_scheduled);
 
 	tids = topicsData.filter(t => (
+		t.tid &&
 		cidsSet.has(t.cid) &&
 		(results.isAdmin || privsTopics.canViewDeletedScheduled(t, {}, canViewDeleted[t.cid], canViewScheduled[t.cid]))
 	)).map(t => t.tid);
@@ -121,14 +143,34 @@ privsTopics.filterUids = async function (privilege, tid, uids) {
 			((allowedTo[index] && (topicData.scheduled || !topicData.deleted)) || isAdmins[index]));
 };
 
+privsTopics.canRead = async function (tid, uid) {
+	tid = String(tid);
+	const [userPrivileges, topic] = await Promise.all([
+		privsTopics.get(tid, uid),
+		topics.getTopicData(tid),
+	]);
+	return (
+		topic &&
+		userPrivileges['topics:read'] &&
+		!userPrivileges.disabled &&
+		privsTopics.canViewDeletedScheduled(topic, userPrivileges)
+	);
+};
+
 privsTopics.canPurge = async function (tid, uid) {
 	const cid = await topics.getTopicField(tid, 'cid');
-	const [purge, owner, isAdmin, isModerator] = await Promise.all([
+	let [purge, owner, isAdmin, isModerator] = await Promise.all([
 		privsCategories.isUserAllowedTo('purge', cid, uid),
 		topics.isOwner(tid, uid),
 		user.isAdministrator(uid),
 		user.isModerator(uid, cid),
 	]);
+
+	// Allow remote posts to purge themselves (as:Delete received)
+	if (!utils.isNumber(tid) && owner) {
+		purge = true;
+	}
+
 	return (purge && (owner || isModerator)) || isAdmin;
 };
 

@@ -3,7 +3,7 @@
 const winston = require('winston');
 const childProcess = require('child_process');
 const CliGraph = require('cli-graph');
-const chalk = require('chalk');
+const chalk = require('chalk').default;
 const nconf = require('nconf');
 
 const build = require('../meta/build');
@@ -130,7 +130,11 @@ async function listPlugins() {
 
 async function listEvents(count = 10) {
 	await db.init();
-	const eventData = await events.getEvents('', 0, count - 1);
+	const eventData = await events.getEvents({
+		filter: '',
+		start: 0,
+		stop: count - 1,
+	});
 	console.log(chalk.bold(`\nDisplaying last ${count} administrative events...`));
 	eventData.forEach((event) => {
 		console.log(`  * ${chalk.green(String(event.timestampISO))} ${chalk.yellow(String(event.type))}${event.text ? ` ${event.text}` : ''} (uid: ${event.uid ? event.uid : 0})`);
@@ -191,6 +195,14 @@ async function info() {
 	process.exit();
 }
 
+async function maintenance(toggle) {
+	const turnOnMaintenance = toggle === 'true';
+	await db.init();
+	await db.setObjectField('config', 'maintenanceMode', turnOnMaintenance ? 1 : 0);
+	console.log(`Maintenance mode turned ${turnOnMaintenance ? 'on' : 'off'}`);
+	process.exit();
+}
+
 async function buildWrapper(targets, options) {
 	try {
 		await build.build(targets, options);
@@ -207,3 +219,4 @@ exports.activate = activate;
 exports.listPlugins = listPlugins;
 exports.listEvents = listEvents;
 exports.info = info;
+exports.maintenance = maintenance;

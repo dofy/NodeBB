@@ -2,7 +2,7 @@ RoomObject:
   type: object
   properties:
     roomId:
-      type: number
+      type: [number, string]
       description: unique identifier for the chat room
     roomName:
       type: string
@@ -16,6 +16,9 @@ RoomObject:
     userCount:
       type: number
       description: number of users in this chat room
+    messageCount:
+      type: number
+      description: number of messages sent in this chat room
     groups:
       type: array
       description: list of groups that can access the room
@@ -24,6 +27,10 @@ RoomObject:
       description: Timestamp of when room was created
     notificationSetting:
       type: number
+      description: The notification setting for the room, 0 = no notifications, 1 = only mentions, 2 = all messages
+    joinLeaveMessages:
+      type: number
+      description: Whether join/leave messages are enabled in the room
 MessageObject:
   type: object
   properties:
@@ -35,7 +42,7 @@ MessageObject:
     fromuid:
       type: number
     roomId:
-      type: number
+      type: [number, string]
     deleted:
       type: number
     system:
@@ -58,6 +65,9 @@ MessageObject:
         uid:
           type: number
           description: A user identifier
+        isLocal:
+          type: boolean
+          description: Whether the user belongs to the local installation or not.
         username:
           type: string
           description: A friendly name for a given user account
@@ -98,6 +108,10 @@ MessageObject:
             `icon:text` for the user's
             auto-generated icon
           example: "#f44336"
+        banned_until:
+            type: number
+            description: A UNIX timestamp representing the moment a ban will be lifted
+            example: 0
         banned_until_readable:
           type: string
           description: An ISO 8601 formatted date string representing the moment a ban will be lifted, or the words "Not Banned"
@@ -119,6 +133,9 @@ RoomUserList:
           uid:
             type: number
             description: A user identifier
+          isLocal:
+            type: boolean
+            description: Whether the user belongs to the local installation or not.
           username:
             type: string
             description: A friendly name for a given user account

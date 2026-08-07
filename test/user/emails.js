@@ -1,8 +1,6 @@
 'use strict';
 
 const assert = require('assert');
-const nconf = require('nconf');
-const util = require('util');
 
 const db = require('../mocks/databasemock');
 
@@ -16,14 +14,14 @@ const utils = require('../../src/utils');
 
 describe('email confirmation (library methods)', () => {
 	let uid;
-	async function dummyEmailerHook(data) {
+	async function dummyEmailerHook() {
 		// pretend to handle sending emails
 	}
 
 	before(() => {
 		// Attach an emailer hook so related requests do not error
 		plugins.hooks.register('emailer-test', {
-			hook: 'filter:email.send',
+			hook: 'static:email.send',
 			method: dummyEmailerHook,
 		});
 	});
@@ -36,7 +34,7 @@ describe('email confirmation (library methods)', () => {
 	});
 
 	after(async () => {
-		plugins.hooks.unregister('emailer-test', 'filter:email.send');
+		plugins.hooks.unregister('emailer-test', 'static:email.send');
 	});
 
 	describe('isValidationPending', () => {
@@ -141,92 +139,126 @@ describe('email confirmation (library methods)', () => {
 describe('email confirmation (v3 api)', () => {
 	let userObj;
 	let jar;
-	const register = data => new Promise((resolve, reject) => {
-		helpers.registerUser(data, (err, jar, response, body) => {
-			if (err) {
-				return reject(err);
-			}
 
-			resolve({ jar, response, body });
-		});
-	});
-
-	before(async () => {
-		// If you're running this file directly, uncomment these lines
-		await register({
+	before(async function () {
+		await helpers.registerUser({
 			username: 'fake-user',
 			password: 'derpioansdosa',
 			email: 'b@c.com',
 			gdpr_consent: true,
 		});
 
-		({ body: userObj, jar } = await register({
+		// Attach an emailer hook so related requests do not error
+		plugins.hooks.register('emailer-test', {
+			hook: 'static:email.send',
+			method: async () => {},
+		});
+
+		this.emailTestEmail = `${utils.generateUUID()}@example.org`;
+		({ body: userObj, jar } = await helpers.registerUser({
 			username: 'email-test',
 			password: 'abcdef',
-			email: 'test@example.org',
+			email: this.emailTestEmail,
 			gdpr_consent: true,
+			acceptTos: true,
 		}));
 	});
 
-	it('should have a pending validation', async () => {
-		const code = await db.get(`confirm:byUid:${userObj.uid}`);
-		assert.strictEqual(await user.email.isValidationPending(userObj.uid, 'test@example.org'), true);
+	after(async () => {
+		plugins.hooks.unregister('emailer-test', 'static:email.send');
+	});
+
+	it('should have a pending validation', async function () {
+		assert.strictEqual(await user.email.isValidationPending(userObj.uid, this.emailTestEmail), true);
 	});
 
 	it('should not list their email', async () => {
-		const { res, body } = await helpers.request('get', `/api/v3/users/${userObj.uid}/emails`, {
+		const { response, body } = await helpers.request('get', `/api/v3/users/${userObj.uid}/emails`, {
 			jar,
 			json: true,
 		});
 
-		assert.strictEqual(res.statusCode, 200);
+		assert.strictEqual(response.statusCode, 200);
 		assert.deepStrictEqual(body, JSON.parse('{"status":{"code":"ok","message":"OK"},"response":{"emails":[]}}'));
 	});
 
-	it('should not allow confirmation if they are not an admin', async () => {
-		const { res } = await helpers.request('post', `/api/v3/users/${userObj.uid}/emails/${encodeURIComponent('test@example.org')}/confirm`, {
+	it('should not report an email that belongs to another user', async () => {
+		const { body } = await helpers.registerUser({
+			username: 'emaillookupother',
+			password: 'abcdef',
+			email: 'lookup-other@example.org',
+			gdpr_consent: true,
+			acceptTos: true,
+		});
+		const { uid } = body;
+		const { response } = await helpers.request('get', `/api/v3/users/${userObj.uid}/emails/${encodeURIComponent('lookup-other@example.org')}`, {
 			jar,
-			json: true,
+		});
+		assert.strictEqual(response.statusCode, 404);
+
+		const { response: response1 } = await helpers.request('get', `/api/v3/users/${uid}/emails/${encodeURIComponent('lookup-other@example.org')}`, {
+			jar,
+		});
+		assert.strictEqual(response1.statusCode, 404);
+	});
+
+	it('should return 204 when checking the current user\'s own email', async function () {
+		const email = 'self-lookup@test.com';
+		const uid = await user.create({
+			username: 'emaillookupself',
+			password: 'abcdef',
+			email: email,
+		}, {
+			emailVerification: 'verify',
+		});
+		const { jar } = await helpers.loginUser('emaillookupself', 'abcdef');
+		const { response } = await helpers.request('get', `/api/v3/users/${uid}/emails/${encodeURIComponent(email)}`, {
+			jar,
+		});
+		assert.strictEqual(response.statusCode, 204);
+	});
+
+	it('should not allow confirmation if they are not an admin', async function () {
+		const { response } = await helpers.request('post', `/api/v3/users/${userObj.uid}/emails/${encodeURIComponent(this.emailTestEmail)}/confirm`, {
+			jar,
 		});
 
-		assert.strictEqual(res.statusCode, 403);
+		assert.strictEqual(response.statusCode, 403);
 	});
 
 	it('should not confirm an email that is not pending or set', async () => {
 		await groups.join('administrators', userObj.uid);
-		const { res, body } = await helpers.request('post', `/api/v3/users/${userObj.uid}/emails/${encodeURIComponent('fake@example.org')}/confirm`, {
+		const { response } = await helpers.request('post', `/api/v3/users/${userObj.uid}/emails/${encodeURIComponent('fake@example.org')}/confirm`, {
 			jar,
-			json: true,
 		});
 
-		assert.strictEqual(res.statusCode, 404);
+		assert.strictEqual(response.statusCode, 404);
 		await groups.leave('administrators', userObj.uid);
 	});
 
-	it('should confirm their email (using the pending validation)', async () => {
+	it('should confirm their email (using the pending validation)', async function () {
 		await groups.join('administrators', userObj.uid);
-		const { res, body } = await helpers.request('post', `/api/v3/users/${userObj.uid}/emails/${encodeURIComponent('test@example.org')}/confirm`, {
+		const { response, body } = await helpers.request('post', `/api/v3/users/${userObj.uid}/emails/${encodeURIComponent(this.emailTestEmail)}/confirm`, {
 			jar,
-			json: true,
 		});
 
-		assert.strictEqual(res.statusCode, 200);
+		assert.strictEqual(response.statusCode, 200);
 		assert.deepStrictEqual(body, JSON.parse('{"status":{"code":"ok","message":"OK"},"response":{}}'));
 		await groups.leave('administrators', userObj.uid);
 	});
 
-	it('should still confirm the email (as email is set in user hash)', async () => {
+	it('should still confirm the email (as email is set in user hash)', async function () {
 		await user.email.remove(userObj.uid);
-		await user.setUserField(userObj.uid, 'email', 'test@example.org');
+		await user.setUserField(userObj.uid, 'email', this.emailTestEmail);
 		({ jar } = await helpers.loginUser('email-test', 'abcdef')); // email removal logs out everybody
 		await groups.join('administrators', userObj.uid);
 
-		const { res, body } = await helpers.request('post', `/api/v3/users/${userObj.uid}/emails/${encodeURIComponent('test@example.org')}/confirm`, {
+		const { response, body } = await helpers.request('post', `/api/v3/users/${userObj.uid}/emails/${encodeURIComponent(this.emailTestEmail)}/confirm`, {
 			jar,
 			json: true,
 		});
 
-		assert.strictEqual(res.statusCode, 200);
+		assert.strictEqual(response.statusCode, 200);
 		assert.deepStrictEqual(body, JSON.parse('{"status":{"code":"ok","message":"OK"},"response":{}}'));
 		await groups.leave('administrators', userObj.uid);
 	});

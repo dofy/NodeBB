@@ -1,8 +1,8 @@
 'use strict';
 
 const path = require('path');
+const { fileTypeFromFile } = require('file-type');
 const nconf = require('nconf');
-const validator = require('validator');
 
 const user = require('../user');
 const meta = require('../meta');
@@ -16,19 +16,10 @@ const helpers = require('./helpers');
 const uploadsController = module.exports;
 
 uploadsController.upload = async function (req, res, filesIterator) {
-	let files;
-	try {
-		files = req.files.files;
-	} catch (e) {
-		return helpers.formatApiResponse(400, res);
-	}
+	const { files } = req;
 
-	// These checks added because of odd behaviour by request: https://github.com/request/request/issues/2445
 	if (!Array.isArray(files)) {
 		return helpers.formatApiResponse(500, res, new Error('[[error:invalid-file]]'));
-	}
-	if (Array.isArray(files[0])) {
-		files = files[0];
 	}
 
 	try {
@@ -50,7 +41,8 @@ uploadsController.upload = async function (req, res, filesIterator) {
 
 uploadsController.uploadPost = async function (req, res) {
 	await uploadsController.upload(req, res, async (uploadedFile) => {
-		const isImage = uploadedFile.type.match(/image./);
+		const detected = await fileTypeFromFile(uploadedFile.path);
+		const isImage = detected && detected.mime.startsWith('image/');
 		if (isImage) {
 			return await uploadAsImage(req, uploadedFile);
 		}
@@ -64,7 +56,7 @@ async function uploadAsImage(req, uploadedFile) {
 		throw new Error('[[error:no-privileges]]');
 	}
 	await image.checkDimensions(uploadedFile.path);
-	await image.stripEXIF(uploadedFile.path);
+	await image.stripEXIF({ path: uploadedFile.path, type: uploadedFile.type });
 
 	if (plugins.hooks.hasListeners('filter:uploadImage')) {
 		return await plugins.hooks.fire('filter:uploadImage', {
@@ -78,12 +70,12 @@ async function uploadAsImage(req, uploadedFile) {
 	let fileObj = await uploadsController.uploadFile(req.uid, uploadedFile);
 	// sharp can't save svgs skip resize for them
 	const isSVG = uploadedFile.type === 'image/svg+xml';
-	if (isSVG || meta.config.resizeImageWidth === 0 || meta.config.resizeImageWidthThreshold === 0) {
-		return fileObj;
+	const resizeDisabled = meta.config.resizeImageWidth === 0 || meta.config.resizeImageWidthThreshold === 0;
+	if (!isSVG && !resizeDisabled) {
+		fileObj = await resizeImage({ ...fileObj, type: uploadedFile.type });
 	}
 
-	fileObj = await resizeImage(fileObj);
-	return { url: fileObj.url };
+	return { url: fileObj.url, name: fileObj.name };
 }
 
 async function uploadAsFile(req, uploadedFile) {
@@ -110,32 +102,45 @@ async function resizeImage(fileObj) {
 
 	await image.resizeImage({
 		path: fileObj.path,
-		target: file.appendToFileName(fileObj.path, '-resized'),
+		type: fileObj.type,
+		target: meta.config.resizeImageKeepOriginal ?
+			file.appendToFileName(fileObj.path, '-resized') :
+			fileObj.path,
 		width: meta.config.resizeImageWidth,
 		quality: meta.config.resizeImageQuality,
 	});
 	// Return the resized version to the composer/postData
-	fileObj.url = file.appendToFileName(fileObj.url, '-resized');
+	if (meta.config.resizeImageKeepOriginal) {
+		fileObj.url = file.appendToFileName(fileObj.url, '-resized');
+	}
 
 	return fileObj;
 }
 
 uploadsController.uploadThumb = async function (req, res) {
 	if (!meta.config.allowTopicsThumbnail) {
-		deleteTempFiles(req.files.files);
+		deleteTempFiles(req.files);
 		return helpers.formatApiResponse(503, res, new Error('[[error:topic-thumbnails-are-disabled]]'));
 	}
 
 	return await uploadsController.upload(req, res, async (uploadedFile) => {
-		if (!uploadedFile.type.match(/image./)) {
+		const canUpload = await privileges.global.can('upload:post:image', req.uid);
+		if (!canUpload) {
+			throw new Error('[[error:no-privileges]]');
+		}
+		const detected = await fileTypeFromFile(uploadedFile.path);
+		const isImage = detected && detected.mime.startsWith('image/');
+		if (!isImage) {
 			throw new Error('[[error:invalid-file]]');
 		}
+
 		await image.isFileTypeAllowed(uploadedFile.path);
 		const dimensions = await image.checkDimensions(uploadedFile.path);
 
 		if (dimensions.width > parseInt(meta.config.topicThumbSize, 10)) {
 			await image.resizeImage({
 				path: uploadedFile.path,
+				type: uploadedFile.type,
 				width: meta.config.topicThumbSize,
 			});
 		}
@@ -147,7 +152,11 @@ uploadsController.uploadThumb = async function (req, res) {
 			});
 		}
 
-		return await uploadsController.uploadFile(req.uid, uploadedFile);
+		const storedFile = await uploadsController.uploadFile(req.uid, uploadedFile);
+		return {
+			url: storedFile.url,
+			name: storedFile.name,
+		};
 	});
 };
 
@@ -168,12 +177,7 @@ uploadsController.uploadFile = async function (uid, uploadedFile) {
 		throw new Error(`[[error:file-too-big, ${meta.config.maximumFileSize}]]`);
 	}
 
-	const allowed = file.allowedExtensions();
-
-	const extension = path.extname(uploadedFile.name).toLowerCase();
-	if (allowed.length > 0 && (!extension || extension === '.' || !allowed.includes(extension))) {
-		throw new Error(`[[error:invalid-file-type, ${allowed.join('&#44; ')}]]`);
-	}
+	await validateFileExtension(uploadedFile);
 
 	return await saveFileToLocal(uid, 'files', uploadedFile);
 };
@@ -182,7 +186,7 @@ async function saveFileToLocal(uid, folder, uploadedFile) {
 	const name = uploadedFile.name || 'upload';
 	const extension = path.extname(name) || '';
 
-	const filename = `${Date.now()}-${validator.escape(name.slice(0, -extension.length)).slice(0, 255)}${extension}`;
+	const filename = `${Date.now()}-${name.slice(0, -extension.length).slice(0, 255)}${extension}`;
 
 	const upload = await file.saveFileToLocal(filename, folder, uploadedFile.path);
 	const storedFile = {
@@ -191,13 +195,40 @@ async function saveFileToLocal(uid, folder, uploadedFile) {
 		name: uploadedFile.name,
 	};
 
-	await user.associateUpload(uid, upload.url.replace(`${nconf.get('upload_url')}/`, ''));
-	const data = await plugins.hooks.fire('filter:uploadStored', { uid: uid, uploadedFile: uploadedFile, storedFile: storedFile });
+	await user.associateUpload(uid, upload.url.replace(`${nconf.get('upload_url')}`, ''));
+	const data = await plugins.hooks.fire('filter:uploadStored', {
+		uid,
+		uploadedFile,
+		storedFile,
+	});
 	return data.storedFile;
 }
 
+async function validateFileExtension(uploadedFile) {
+	const allowed = file.allowedExtensions();
+	const blocked = file.blockedExtensions();
+	function validateExtension(extension) {
+		if (allowed.length > 0 && (!extension || extension === '.' || !allowed.includes(extension))) {
+			throw new Error(`[[error:invalid-file-type, ${extension}, ${allowed.join('&#44; ')}]]`);
+		}
+		if (blocked.length > 0 && (!extension || extension === '.' || blocked.includes(extension))) {
+			throw new Error(`[[error:blocked-file-type, ${extension || 'unknown'}]]`);
+		}
+	}
+	const extension = path.extname(uploadedFile.name).toLowerCase();
+	validateExtension(extension);
+
+	const detected = await fileTypeFromFile(uploadedFile.path);
+	const detectedExtension = detected ? `.${detected.ext}` : '';
+	if (detectedExtension && detectedExtension !== extension) {
+		validateExtension(detectedExtension);
+	}
+}
+
 function deleteTempFiles(files) {
-	files.forEach(fileObj => file.delete(fileObj.path));
+	if (Array.isArray(files)) {
+		files.forEach(fileObj => file.delete(fileObj.path));
+	}
 }
 
 require('../promisify')(uploadsController, ['upload', 'uploadPost', 'uploadThumb']);

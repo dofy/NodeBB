@@ -3,7 +3,7 @@
 define('admin/manage/privileges', [
 	'api',
 	'autocomplete',
-	'bootbox',
+	'modals',
 	'alerts',
 	'translator',
 	'categorySelector',
@@ -11,7 +11,7 @@ define('admin/manage/privileges', [
 	'admin/modules/checkboxRowSelector',
 	'admin/settings',
 ], function (
-	api, autocomplete, bootbox, alerts, translator,
+	api, autocomplete, modals, alerts, translator,
 	categorySelector, mousetrap, checkboxRowSelector, settings
 ) {
 	const Privileges = {};
@@ -30,6 +30,7 @@ define('admin/manage/privileges', [
 				Privileges.refreshPrivilegeTable();
 				ajaxify.updateHistory('admin/manage/privileges/' + (cid || ''));
 			},
+			localOnly: true,
 			localCategories: ajaxify.data.categories,
 			privilege: 'find',
 			showLinks: true,
@@ -59,7 +60,7 @@ define('admin/manage/privileges', [
 
 			if (member) {
 				if (isGroup && privilege === 'groups:moderate' && !isPrivate && state) {
-					bootbox.confirm('[[admin/manage/privileges:alert.confirm-moderate]]', function (confirm) {
+					modals.confirm('[[admin/manage/privileges:alert.confirm-moderate]]', function (confirm) {
 						if (confirm) {
 							$wrapperEl.attr('data-delta', delta);
 							Privileges.applyDeltaState(checkboxEl, delta);
@@ -69,7 +70,7 @@ define('admin/manage/privileges', [
 						}
 					});
 				} else if (privilege.endsWith('admin:admins-mods') && state) {
-					bootbox.confirm('[[admin/manage/privileges:alert.confirm-admins-mods]]', function (confirm) {
+					modals.confirm('[[admin/manage/privileges:alert.confirm-admins-mods]]', function (confirm) {
 						if (confirm) {
 							$wrapperEl.attr('data-delta', delta);
 							Privileges.applyDeltaState(checkboxEl, delta);
@@ -157,7 +158,7 @@ define('admin/manage/privileges', [
 
 		function throwConfirmModal(method, onConfirm) {
 			const privilegeSubset = getPrivilegeSubset();
-			bootbox.confirm(`[[admin/manage/privileges:alert.confirm-${method}, ${privilegeSubset}]]<br /><br />[[admin/manage/privileges:alert.no-undo]]`, function (ok) {
+			modals.confirm(`[[admin/manage/privileges:alert.confirm-${method}, ${privilegeSubset}]]<br /><br />[[admin/manage/privileges:alert.no-undo]]`, function (ok) {
 				if (ok) {
 					onConfirm.call();
 				}
@@ -200,7 +201,7 @@ define('admin/manage/privileges', [
 			ajaxify.data.privileges = { ...ajaxify.data.privileges, ...privileges };
 			const tpl = parseInt(cid, 10) ? 'admin/partials/privileges/category' : 'admin/partials/privileges/global';
 			const isAdminPriv = ajaxify.currentPage.endsWith('admin/manage/privileges/admin');
-			app.parseAndTranslate(tpl, { privileges, isAdminPriv }).then((html) => {
+			app.parseAndTranslate(tpl, { cid, privileges, isAdminPriv }).then((html) => {
 				// Get currently selected filters
 				const btnIndices = $('.privilege-filters button.btn-warning').map((idx, el) => $(el).index()).get();
 				$('.privilege-table-container').html(html);
@@ -228,7 +229,7 @@ define('admin/manage/privileges', [
 		applyPrivileges(bannedUsersPrivs, getBannedUsersInputSelector);
 
 		// For rest that inherits from registered-users
-		const getRegisteredUsersInputSelector = (privs, i) => `.privilege-table tr[data-group-name]:not([data-group-name="registered-users"],[data-group-name="banned-users"],[data-group-name="guests"],[data-group-name="spiders"]) td[data-privilege="${privs[i]}"] input, .privilege-table tr[data-uid]:not([data-banned]) td[data-privilege="${privs[i]}"] input`;
+		const getRegisteredUsersInputSelector = (privs, i) => `.privilege-table tr[data-group-name]:not([data-group-name="registered-users"],[data-group-name="banned-users"],[data-group-name="guests"],[data-group-name="spiders"],[data-group-name="fediverse"]) td[data-privilege="${privs[i]}"] input, .privilege-table tr[data-uid]:not([data-banned]) td[data-privilege="${privs[i]}"] input`;
 		const registeredUsersPrivs = getPrivilegesFromRow('registered-users');
 		applyPrivileges(registeredUsersPrivs, getRegisteredUsersInputSelector);
 	};
@@ -240,7 +241,7 @@ define('admin/manage/privileges', [
 				inputSelectorFn = () => `.privilege-table tr[data-banned] td[data-privilege]:nth-child(${columnNo}) input`;
 				break;
 			default:
-				inputSelectorFn = () => `.privilege-table tr[data-group-name]:not([data-group-name="registered-users"],[data-group-name="banned-users"],[data-group-name="guests"],[data-group-name="spiders"]) td[data-privilege]:nth-child(${columnNo}) input, .privilege-table tr[data-uid]:not([data-banned]) td[data-privilege]:nth-child(${columnNo}) input`;
+				inputSelectorFn = () => `.privilege-table tr[data-group-name]:not([data-group-name="registered-users"],[data-group-name="banned-users"],[data-group-name="guests"],[data-group-name="spiders"],[data-group-name="fediverse"]) td[data-privilege]:nth-child(${columnNo}) input, .privilege-table tr[data-uid]:not([data-banned]) td[data-privilege]:nth-child(${columnNo}) input`;
 		}
 
 		const sourceChecked = getPrivilegeFromColumn(sourceGroupName, columnNo);
@@ -249,8 +250,8 @@ define('admin/manage/privileges', [
 
 	Privileges.setPrivilege = (member, privilege, state) => api[state ? 'put' : 'del'](`/categories/${isNaN(cid) ? 0 : cid}/privileges/${encodeURIComponent(privilege)}`, { member });
 
-	Privileges.addUserToPrivilegeTable = function () {
-		const modal = bootbox.dialog({
+	Privileges.addUserToPrivilegeTable = async function () {
+		const modal = await modals.dialog({
 			title: '[[admin/manage/categories:alert.find-user]]',
 			message: '<input class="form-control input-lg" placeholder="[[admin/manage/categories:alert.user-search]]" />',
 			show: true,
@@ -268,8 +269,8 @@ define('admin/manage/privileges', [
 		});
 	};
 
-	Privileges.addGroupToPrivilegeTable = function () {
-		const modal = bootbox.dialog({
+	Privileges.addGroupToPrivilegeTable = async function () {
+		const modal = await modals.dialog({
 			title: '[[admin/manage/categories:alert.find-group]]',
 			message: '<input class="form-control input-lg" placeholder="[[admin/manage/categories:alert.group-search]]" />',
 			show: true,
@@ -425,7 +426,6 @@ define('admin/manage/privileges', [
 				groups: [
 					{
 						name: group,
-						nameEscaped: translator.escape(group),
 						privileges: privilegeSet,
 						types: typesMap,
 					},

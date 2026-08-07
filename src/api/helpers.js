@@ -1,18 +1,20 @@
 'use strict';
 
-const url = require('url');
 const user = require('../user');
 const topics = require('../topics');
 const posts = require('../posts');
 const privileges = require('../privileges');
 const plugins = require('../plugins');
+const activitypub = require('../activitypub');
+const utils = require('../utils');
 const socketHelpers = require('../socket.io/helpers');
 const websockets = require('../socket.io');
 const events = require('../events');
 
-exports.setDefaultPostData = function (reqOrSocket, data) {
-	data.uid = reqOrSocket.uid;
-	data.req = exports.buildReqObject(reqOrSocket, { ...data });
+exports.setDefaultPostData = function (req, data) {
+	data.uid = req.uid;
+	data.req = exports.buildReqObject(req, { ...data });
+	data.ip = req.ip;
 	data.timestamp = Date.now();
 	data.fromQueue = false;
 };
@@ -23,11 +25,15 @@ exports.buildReqObject = (req, payload) => {
 	const headers = req.headers || (req.request && req.request.headers) || {};
 	const session = req.session || (req.request && req.request.session) || {};
 	const encrypted = req.connection ? !!req.connection.encrypted : false;
-	let { host } = headers;
+	let host = headers.host || '';
 	const referer = headers.referer || '';
 
-	if (!host) {
-		host = url.parse(referer).host || '';
+	if (!host && referer) {
+		try {
+			host = new URL(referer).host;
+		} catch (err) {
+			// ignore invalid referer
+		}
 	}
 
 	return {
@@ -35,7 +41,7 @@ exports.buildReqObject = (req, payload) => {
 		params: req.params,
 		method: req.method,
 		body: payload || req.body,
-		session: session,
+		session: JSON.parse(JSON.stringify(session)),
 		ip: req.ip,
 		host: host,
 		protocol: encrypted ? 'https' : 'http',
@@ -44,7 +50,9 @@ exports.buildReqObject = (req, payload) => {
 		path: referer.slice(referer.indexOf(host) + host.length),
 		baseUrl: req.baseUrl,
 		originalUrl: req.originalUrl,
-		headers: headers,
+		headers: Object.fromEntries(
+			Object.entries(headers).filter(([key]) => key !== 'cookie'),
+		),
 	};
 };
 
@@ -65,11 +73,24 @@ exports.doTopicAction = async function (action, event, caller, { tids }) {
 	const uids = await user.getUidsFromSet('users:online', 0, -1);
 
 	await Promise.all(tids.map(async (tid) => {
-		const title = await topics.getTopicField(tid, 'title');
+		const { title, cid, mainPid } = await topics.getTopicFields(tid, ['title', 'cid', 'mainPid']);
 		const data = await topics.tools[action](tid, caller.uid);
 		const notifyUids = await privileges.categories.filterUids('topics:read', data.cid, uids);
 		socketHelpers.emitToUids(event, data, notifyUids);
 		await logTopicAction(action, caller, tid, title);
+
+		switch(action) {
+			case 'delete': // falls through
+			case 'purge': {
+				if (utils.isNumber(cid) && parseInt(cid, 10) > 0) {
+					setImmediate(() => {
+						activitypub.out.remove.context(caller.uid, tid); // 7888-style
+						activitypub.out.delete.note(caller.uid, mainPid); // 1b12-style
+						activitypub.out.undo.announce('cid', cid, tid); // microblogs
+					});
+				}
+			}
+		}
 	}));
 };
 
@@ -134,12 +155,41 @@ async function executeCommand(caller, command, eventName, notification, data) {
 		websockets.in(`uid_${caller.uid}`).emit(`posts.${command}`, result);
 		websockets.in(data.room_id).emit(`event:${eventName}`, result);
 	}
-	if (result && command === 'upvote') {
-		socketHelpers.upvote(result, notification);
-	} else if (result && notification) {
-		socketHelpers.sendNotificationToPostOwner(data.pid, caller.uid, command, notification);
-	} else if (result && command === 'unvote') {
-		socketHelpers.rescindUpvoteNotification(data.pid, caller.uid);
+
+	if (result) {
+		switch (command) {
+			case 'upvote': {
+				socketHelpers.upvote(result, notification);
+				setImmediate(() => {
+					activitypub.out.like.note(caller.uid, data.pid);
+				});
+				break;
+			}
+
+			case 'downvote': {
+				setImmediate(() => {
+					activitypub.out.dislike.note(caller.uid, data.pid);
+				});
+				break;
+			}
+
+			case 'unvote': {
+				socketHelpers.rescindUpvoteNotification(data.pid, caller.uid);
+				const verb = result.was.upvoted ? 'like' : 'dislike';
+				setImmediate(() => {
+					activitypub.out.undo[verb](caller.uid, data.pid);
+				});
+				break;
+			}
+
+			default: {
+				if (notification) {
+					socketHelpers.sendNotificationToPostOwner(data.pid, caller.uid, command, notification);
+				}
+				break;
+			}
+		}
 	}
+
 	return result;
 }

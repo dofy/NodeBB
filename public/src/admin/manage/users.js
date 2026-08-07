@@ -1,8 +1,10 @@
 'use strict';
 
 define('admin/manage/users', [
-	'translator', 'benchpress', 'autocomplete', 'api', 'slugify', 'bootbox', 'alerts', 'accounts/invite', 'helpers', 'admin/modules/change-email',
-], function (translator, Benchpress, autocomplete, api, slugify, bootbox, alerts, AccountInvite, helpers, changeEmail) {
+	'translator', 'benchpress', 'autocomplete', 'api', 'slugify', 'modals', 'alerts',
+	'accounts/invite', 'accounts/moderate','helpers', 'admin/modules/change-email',
+], function (translator, Benchpress, autocomplete, api, slugify, modals, alerts,
+	AccountInvite, AccountModerate, helpers, changeEmail) {
 	const Users = {};
 
 	Users.init = function () {
@@ -13,7 +15,8 @@ define('admin/manage/users', [
 			ajaxify.go(window.location.pathname + '?' + qs);
 		});
 
-		$('.export-csv').on('click', function () {
+		$('.export-csv').on('click', async function (ev) {
+			ev.preventDefault();
 			socket.once('event:export-users-csv', function () {
 				alerts.remove('export-users-start');
 				alerts.alert({
@@ -27,15 +30,63 @@ define('admin/manage/users', [
 					timeout: 0,
 				});
 			});
-			socket.emit('admin.user.exportUsersCSV', {}, function (err) {
-				if (err) {
-					return alerts.error(err);
-				}
-				alerts.alert({
-					alert_id: 'export-users-start',
-					message: '[[admin/manage/users:export-users-started]]',
-					timeout: (ajaxify.data.userCount / 5000) * 500,
-				});
+
+			const defaultFields = [
+				{ label: '[[admin/manage/users:export-field-email]]', field: 'email', selected: true },
+				{ label: '[[admin/manage/users:export-field-username]]', field: 'username', selected: true },
+				{ label: '[[admin/manage/users:export-field-uid]]', field: 'uid', selected: true },
+				{ label: '[[admin/manage/users:export-field-ip]]', field: 'ip', selected: true },
+				{ label: '[[admin/manage/users:export-field-joindate]]', field: 'joindate', selected: false },
+				{ label: '[[admin/manage/users:export-field-lastonline]]', field: 'lastonline', selected: false },
+				{ label: '[[admin/manage/users:export-field-lastposttime]]', field: 'lastposttime', selected: false },
+				{ label: '[[admin/manage/users:export-field-reputation]]', field: 'reputation', selected: false },
+				{ label: '[[admin/manage/users:export-field-postcount]]', field: 'postcount', selected: false },
+				{ label: '[[admin/manage/users:export-field-topiccount]]', field: 'topiccount', selected: false },
+				{ label: '[[admin/manage/users:export-field-profileviews]]', field: 'profileviews', selected: false },
+				{ label: '[[admin/manage/users:export-field-followercount]]', field: 'followerCount', selected: false },
+				{ label: '[[admin/manage/users:export-field-followingcount]]', field: 'followingCount', selected: false },
+				{ label: '[[admin/manage/users:export-field-fullname]]', field: 'fullname', selected: false },
+				{ label: '[[admin/manage/users:export-field-birthday]]', field: 'birthday', selected: false },
+				{ label: '[[admin/manage/users:export-field-signature]]', field: 'signature', selected: false },
+				{ label: '[[admin/manage/users:export-field-aboutme]]', field: 'aboutme', selected: false },
+			].concat(ajaxify.data.customUserFields.map(field => ({
+				label: field.name,
+				field: field.key,
+				selected: false,
+			})));
+
+			const options = defaultFields.map((field, i) => (`
+				<div class="form-check mb-2">
+					<input data-field="${field.field}" class="form-check-input" type="checkbox" id="option-${i}" ${field.selected ? 'checked' : ''}>
+					<label class="form-check-label" for="option-${i}">
+						${field.label}
+					</label>
+				</div>`
+			)).join('');
+
+			const modal = await modals.dialog({
+				message: options,
+				title: '[[admin/manage/users:export-users-fields-title]]',
+				buttons: {
+					submit: {
+						label: '[[admin/manage/users:export]]',
+						callback: function () {
+							const fields = modal.find('[data-field]').filter(
+								(index, el) => $(el).is(':checked')
+							).map((index, el) => $(el).attr('data-field')).get();
+							socket.emit('admin.user.exportUsersCSV', { fields }, function (err) {
+								if (err) {
+									return alerts.error(err);
+								}
+								alerts.alert({
+									alert_id: 'export-users-start',
+									message: '[[admin/manage/users:export-users-started]]',
+									timeout: Math.max(5000, (ajaxify.data.userCount / 5000) * 500),
+								});
+							});
+						},
+					},
+				},
 			});
 
 			return false;
@@ -94,10 +145,6 @@ define('admin/manage/users', [
 			unselectAll();
 		}
 
-		$('[component="user/select/all"]').on('click', function () {
-			$('.users-table [component="user/select/single"]').prop('checked', $(this).is(':checked'));
-		});
-
 		$('.manage-groups').on('click', function () {
 			const uids = getSelectedUids();
 			if (!uids.length) {
@@ -108,8 +155,8 @@ define('admin/manage/users', [
 				if (err) {
 					return alerts.error(err);
 				}
-				Benchpress.render('admin/partials/manage_user_groups', data).then(function (html) {
-					const modal = bootbox.dialog({
+				Benchpress.render('admin/partials/manage_user_groups', data).then(async function (html) {
+					const modal = await modals.dialog({
 						message: html,
 						title: '[[admin/manage/users:manage-groups]]',
 						onEscape: true,
@@ -118,7 +165,6 @@ define('admin/manage/users', [
 						autocomplete.group(modal.find('.group-search'), function (ev, ui) {
 							const uid = $(ev.target).attr('data-uid');
 							api.put('/groups/' + ui.item.group.slug + '/membership/' + uid, undefined).then(() => {
-								ui.item.group.nameEscaped = translator.escape(ui.item.group.displayName);
 								app.parseAndTranslate('admin/partials/manage_user_groups', { users: [{ groups: [ui.item.group] }] }, function (html) {
 									$('[data-uid=' + uid + '] .group-area').append(html.find('.group-area').html());
 								});
@@ -141,7 +187,7 @@ define('admin/manage/users', [
 			});
 		});
 
-		$('.set-reputation').on('click', function () {
+		$('.set-reputation').on('click', async function () {
 			const uids = getSelectedUids();
 			if (!uids.length) {
 				alerts.error('[[error:no-users-selected]]');
@@ -154,7 +200,7 @@ define('admin/manage/users', [
 					currentValue = String(user.reputation);
 				}
 			}
-			const modal = bootbox.dialog({
+			const modal = await modals.dialog({
 				message: `<input id="new-reputation" type="text" class="form-control" value="${currentValue}">`,
 				title: '[[admin/manage/users:set-reputation]]',
 				onEscape: true,
@@ -188,65 +234,27 @@ define('admin/manage/users', [
 			});
 		});
 
-		$('.ban-user').on('click', function () {
+		$('.ban-user').on('click', async function () {
 			const uids = getSelectedUids();
 			if (!uids.length) {
 				alerts.error('[[error:no-users-selected]]');
 				return false; // specifically to keep the menu open
 			}
 
-			bootbox.confirm((uids.length > 1 ? '[[admin/manage/users:alerts.confirm-ban-multi]]' : '[[admin/manage/users:alerts.confirm-ban]]'), function (confirm) {
-				if (confirm) {
+			AccountModerate.throwModal({
+				tpl: 'modals/temporary-ban',
+				title: '[[user:ban-account]]',
+				type: 'ban',
+				onSubmit: function (formData) {
 					Promise.all(uids.map(function (uid) {
-						return api.put('/users/' + uid + '/ban');
+						return api.put('/users/' + encodeURIComponent(uid) + '/ban', {
+							until: formData.until,
+							reason: formData.reason,
+						});
 					})).then(() => {
 						onSuccess('[[admin/manage/users:alerts.ban-success]]', '.ban', true);
 					}).catch(alerts.error);
-				}
-			});
-		});
-
-		$('.ban-user-temporary').on('click', function () {
-			const uids = getSelectedUids();
-			if (!uids.length) {
-				alerts.error('[[error:no-users-selected]]');
-				return false; // specifically to keep the menu open
-			}
-
-			Benchpress.render('modals/temporary-ban', {}).then(function (html) {
-				bootbox.dialog({
-					className: 'ban-modal',
-					title: '[[user:ban-account]]',
-					message: html,
-					show: true,
-					buttons: {
-						close: {
-							label: '[[global:close]]',
-							className: 'btn-link',
-						},
-						submit: {
-							label: '[[admin/manage/users:alerts.button-ban-x, ' + uids.length + ']]',
-							callback: function () {
-								const formData = $('.ban-modal form').serializeArray().reduce(function (data, cur) {
-									data[cur.name] = cur.value;
-									return data;
-								}, {});
-								const until = formData.length > 0 ? (
-									Date.now() + (formData.length * 1000 * 60 * 60 * (parseInt(formData.unit, 10) ? 24 : 1))
-								) : 0;
-
-								Promise.all(uids.map(function (uid) {
-									return api.put('/users/' + uid + '/ban', {
-										until: until,
-										reason: formData.reason,
-									});
-								})).then(() => {
-									onSuccess('[[admin/manage/users:alerts.ban-success]]', '.ban', true);
-								}).catch(alerts.error);
-							},
-						},
-					},
-				});
+				},
 			});
 		});
 
@@ -257,10 +265,65 @@ define('admin/manage/users', [
 				return false; // specifically to keep the menu open
 			}
 
-			Promise.all(uids.map(function (uid) {
-				return api.del('/users/' + uid + '/ban');
-			})).then(() => {
-				onSuccess('[[admin/manage/users:alerts.unban-success]]', '.ban', false);
+			AccountModerate.throwModal({
+				tpl: 'modals/unban',
+				title: '[[user:unban-account]]',
+				type: 'ban',
+				onSubmit: function (formData) {
+					Promise.all(uids.map(function (uid) {
+						return api.del('/users/' + encodeURIComponent(uid) + '/ban', {
+							reason: formData.reason || '',
+						});
+					})).then(() => {
+						onSuccess('[[admin/manage/users:alerts.unban-success]]', '.ban', false);
+					}).catch(alerts.error);
+				},
+			});
+		});
+
+
+		$('.mute-user').on('click', async function () {
+			const uids = getSelectedUids();
+			if (!uids.length) {
+				alerts.error('[[error:no-users-selected]]');
+				return false; // specifically to keep the menu open
+			}
+			AccountModerate.throwModal({
+				tpl: 'modals/temporary-mute',
+				title: '[[user:mute-account]]',
+				type: 'mute',
+				onSubmit: function (formData) {
+					Promise.all(uids.map(function (uid) {
+						return api.put(`/users/${encodeURIComponent(uid)}/mute`, {
+							until: formData.until,
+							reason: formData.reason,
+						});
+					})).then(() => {
+						onSuccess('[[admin/manage/users:alerts.mute-success]]', '.mute', true);
+					}).catch(alerts.error);
+				},
+			});
+		});
+
+		$('.unmute-user').on('click', function () {
+			const uids = getSelectedUids();
+			if (!uids.length) {
+				alerts.error('[[error:no-users-selected]]');
+				return false; // specifically to keep the menu open
+			}
+
+			AccountModerate.throwModal({
+				tpl: 'modals/unmute',
+				title: '[[user:unmute-account]]',
+				onSubmit: function (formData) {
+					Promise.all(uids.map(function (uid) {
+						return api.del(`/users/${encodeURIComponent(uid)}/mute`, {
+							reason: formData.reason || '',
+						});
+					})).then(() => {
+						onSuccess('[[admin/manage/users:alerts.unmute-success]]', '.mute', false);
+					}).catch(alerts.error);
+				},
 			});
 		});
 
@@ -299,7 +362,7 @@ define('admin/manage/users', [
 				return;
 			}
 
-			bootbox.confirm('[[admin/manage/users:alerts.confirm-validate-email]]', function (confirm) {
+			modals.confirm('[[admin/manage/users:alerts.confirm-validate-email]]', function (confirm) {
 				if (!confirm) {
 					return;
 				}
@@ -348,7 +411,7 @@ define('admin/manage/users', [
 				})));
 			}
 
-			const modal = bootbox.dialog({
+			const modal = await modals.dialog({
 				message: `<div class="d-flex flex-column gap-2">
 					<label class="form-label">[[user:new-password]]</label>
 					<input id="newPassword" class="form-control" type="text">
@@ -382,7 +445,7 @@ define('admin/manage/users', [
 				return;
 			}
 
-			bootbox.confirm('[[admin/manage/users:alerts.password-reset-confirm]]', function (confirm) {
+			modals.confirm('[[admin/manage/users:alerts.password-reset-confirm]]', function (confirm) {
 				if (confirm) {
 					socket.emit('admin.user.sendPasswordResetEmail', uids, done('[[admin/manage/users:alerts.password-reset-email-sent]]'));
 				}
@@ -395,7 +458,7 @@ define('admin/manage/users', [
 				return;
 			}
 
-			bootbox.confirm('[[admin/manage/users:alerts.confirm-force-password-reset]]', function (confirm) {
+			modals.confirm('[[admin/manage/users:alerts.confirm-force-password-reset]]', function (confirm) {
 				if (confirm) {
 					socket.emit('admin.user.forcePasswordReset', uids, done('[[admin/manage/users:alerts.validate-force-password-reset-success]]'));
 				}
@@ -414,7 +477,12 @@ define('admin/manage/users', [
 			handleDelete('[[admin/manage/users:alerts.confirm-purge]]', '');
 		});
 
+		$('[component="user/select/all"]').on('click', function () {
+			$('.users-table [component="user/select/single"]').prop('checked', $(this).is(':checked'));
+		});
+
 		const tableEl = document.querySelector('.users-table');
+		const $tableEl = $(tableEl);
 		const actionBtn = document.getElementById('action-dropdown');
 		tableEl.addEventListener('change', (e) => {
 			const subselector = e.target.closest('[component="user/select/single"]') || e.target.closest('[component="user/select/all"]');
@@ -428,17 +496,68 @@ define('admin/manage/users', [
 			}
 		});
 
+		let lastSelectedUser;
+		$tableEl.on('click', '[component="user/select/single"]', function (ev) {
+			function selectRange(clickedUserRow) {
+				function selectIndexRange(start, end, isChecked) {
+					if (start > end) {
+						const tmp = start;
+						start = end;
+						end = tmp;
+					}
+					const rows = $('.user-row');
+					for (let i = start; i <= end; i += 1) {
+						rows.eq(i).find('.form-check-input').prop('checked', isChecked).trigger('change');
+					}
+				}
+
+				if (!lastSelectedUser) {
+					lastSelectedUser = $('.user-row').first();
+				}
+
+				const isClickedSelected = clickedUserRow.find('[component="user/select/single"]').is(':checked');
+
+				const clickedIndex = clickedUserRow.index();
+				const lastIndex = lastSelectedUser.index();
+				selectIndexRange(clickedIndex, lastIndex, isClickedSelected);
+			}
+
+			const checkBox = $(this);
+			const userRow = checkBox.parents('.user-row');
+			if (ev.shiftKey) {
+				selectRange(userRow);
+				lastSelectedUser = userRow;
+				return true;
+			}
+
+			lastSelectedUser = userRow;
+		});
+
+		$tableEl.on('click', '[data-copy]', function () {
+			const btn = $(this);
+			navigator.clipboard.writeText(this.getAttribute('data-copy'));
+			btn.find('i')
+				.removeClass('fa-copy')
+				.addClass('fa-check text-success');
+			setTimeout(() => {
+				btn.find('i')
+					.removeClass('fa-check text-success')
+					.addClass('fa-copy');
+			}, 2000);
+			return false;
+		});
+
 		function handleDelete(confirmMsg, path) {
 			const uids = getSelectedUids();
 			if (!uids.length) {
 				return;
 			}
 
-			bootbox.confirm(confirmMsg, function (confirm) {
+			modals.confirm(confirmMsg, function (confirm) {
 				if (confirm) {
 					Promise.all(
 						uids.map(
-							uid => api.del(`/users/${uid}${path}`, {}).then(() => {
+							uid => api.del(`/users/${encodeURIComponent(uid)}${path}`, {}).then(() => {
 								if (path !== '/content') {
 									removeRow(uid);
 								}
@@ -461,8 +580,8 @@ define('admin/manage/users', [
 
 		function handleUserCreate() {
 			$('[data-action="create"]').on('click', function () {
-				Benchpress.render('admin/partials/create_user_modal', {}).then(function (html) {
-					const modal = bootbox.dialog({
+				Benchpress.render('admin/partials/create_user_modal', {}).then(async function (html) {
+					const modal = await modals.dialog({
 						message: html,
 						title: '[[admin/manage/users:alerts.create]]',
 						onEscape: true,
@@ -535,7 +654,7 @@ define('admin/manage/users', [
 				page: 1,
 			});
 		}
-		$('#user-search').on('keyup', utils.debounce(doSearch, 250));
+		$('#user-search').on('input', utils.debounce(doSearch, 500));
 		$('#user-search-by').on('change', doSearch);
 	}
 
@@ -545,7 +664,7 @@ define('admin/manage/users', [
 		params.query = query.query;
 		params.page = query.page;
 		params.sortBy = params.sortBy || 'lastonline';
-		const qs = decodeURIComponent($.param(params));
+		const qs = $.param(params);
 		$.get(config.relative_path + '/api/admin/manage/users?' + qs, function (data) {
 			renderSearchResults(data);
 			const url = config.relative_path + '/admin/manage/users?' + qs;
@@ -577,11 +696,11 @@ define('admin/manage/users', [
 				return;
 			}
 			if (data && data.users.length === 0) {
-				$('#user-notfound-notify').translateHtml('[[admin/manage/users:search.not-found]]')
+				$('#user-notfound-notify').translateText('[[admin/manage/users:search.not-found]]')
 					.removeClass('hidden');
 				$('#user-found-notify').addClass('hidden');
 			} else {
-				$('#user-found-notify').translateHtml(
+				$('#user-found-notify').translateText(
 					translator.compile('admin/manage/users:alerts.x-users-found', data.matchCount, data.timing)
 				).removeClass('hidden');
 				$('#user-notfound-notify').addClass('hidden');
@@ -598,7 +717,7 @@ define('admin/manage/users', [
 			delete params.searchBy;
 		}
 
-		return decodeURIComponent($.param(params));
+		return $.param(params);
 	}
 
 	function handleSort() {
